@@ -4,7 +4,9 @@ use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
 
 use crate::sim::{
-    Category, SimulatedComponent, Telemetry, World, bounds::VecBounds, decay::bounded_exp_decay,
+    Category, SimulatedComponent, Telemetry, World,
+    bounds::VecBounds,
+    decay::{SocProtect, soc_protected_bounds as decay_soc_bounds},
 };
 
 /// Tunables exposed via `(make-battery :soc-protect-margin 10.0 …)`.
@@ -92,40 +94,17 @@ impl Battery {
     }
 }
 
-/// Apply microsim's smooth taper near the SoC limits. Returns `(lower, upper)`
-/// in W. With the default `min_val = 0.3` the inverter still gets ~30% of
-/// rated until it hits the very edge, then 0.
 fn soc_protected_bounds(cfg: &BatteryConfig, soc: f32) -> (f32, f32) {
-    let margin = cfg.soc_protect_margin_pct;
-    if margin <= 0.0 {
-        return (cfg.rated_lower_w, cfg.rated_upper_w);
-    }
-
-    // Charge (positive) tapers as soc approaches soc_upper.
-    let upper = if cfg.soc_upper_pct - soc < margin {
-        cfg.rated_upper_w
-            * bounded_exp_decay(cfg.soc_upper_pct - margin, cfg.soc_upper_pct, soc, 1.2, 0.3)
-    } else {
-        cfg.rated_upper_w
-    };
-
-    // Discharge (negative) tapers as soc approaches soc_lower. The decay is
-    // expressed on the "distance from the threshold" axis; we mirror it by
-    // running the SoC through the same window from the other side.
-    let lower = if soc - cfg.soc_lower_pct < margin {
-        cfg.rated_lower_w
-            * bounded_exp_decay(
-                cfg.soc_lower_pct + margin,
-                cfg.soc_lower_pct,
-                soc,
-                1.2,
-                0.3,
-            )
-    } else {
-        cfg.rated_lower_w
-    };
-
-    (lower, upper)
+    decay_soc_bounds(
+        cfg.rated_lower_w,
+        cfg.rated_upper_w,
+        soc,
+        SocProtect {
+            soc_lower_pct: cfg.soc_lower_pct,
+            soc_upper_pct: cfg.soc_upper_pct,
+            margin_pct: cfg.soc_protect_margin_pct,
+        },
+    )
 }
 
 impl fmt::Display for Battery {
