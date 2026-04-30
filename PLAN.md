@@ -38,11 +38,16 @@ and behavior, the `make-*` functions are thin constructors registered with
   `tulisp = { git = "https://github.com/shsms/tulisp", branch = "vm",
   features = ["sync"] }`. Used for the `AsPlist!` macro, `Plist<T>`
   argument deserialization, and `Shared<dyn TulispAny>` for opaque
-  component handles. **No `tulisp-async`** — Lisp's only job is to
-  build the component graph; once the file finishes loading, every
-  subsequent decision (ticks, ramps, delays, telemetry, set-points)
-  happens in Rust. Microsim uses `(every)` and `run-with-timer` for
-  per-component lifecycles, but those move out of the DSL here.
+  component handles.
+- **tulisp-async** (path-dep, sibling crate). Lisp's role is split
+  into two complementary jobs: (a) **wire the topology** at startup
+  via `make-*` constructors, and (b) **animate the environment**
+  (per-tick voltage / frequency perturbations, scheduled events) via
+  `(every …)` and `(run-with-timer …)` from tulisp-async. Component
+  *physics* — ramps, SoC derate, AC↔DC conversion, set-point
+  validation — stays entirely in Rust. The boundary is firm: a
+  microsim-style per-component `every` lifecycle is not how
+  switchyard models batteries or inverters.
 - **tonic + prost** for the gRPC surface, against the same
   `frequenz-api-microgrid` proto submodule microsim uses.
 - **tokio** for the gRPC runtime + the single-tick scheduler, **chrono**
