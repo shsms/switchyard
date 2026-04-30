@@ -22,6 +22,7 @@ use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
 
 use crate::sim::component::{ComponentHandle, NEXT_ID, SimulatedComponent};
+use crate::sim::runtime::{CommandMode, ComponentRuntime, Health, TelemetryMode};
 
 /// External AC environment shared by all AC components. Mirrors
 /// microsim's `voltage-per-phase` / `ac-frequency` globals.
@@ -51,6 +52,10 @@ struct WorldInner {
     connections: RwLock<Vec<(u64, u64)>>,
     grid_state: RwLock<GridState>,
     physics_tick_ms: AtomicU64,
+    /// Per-component runtime mode flags (health, telemetry mode,
+    /// command mode). Defaulted on register, mutated via the
+    /// `set-component-*` Lisp defuns or directly from server.rs.
+    runtime: RwLock<HashMap<u64, ComponentRuntime>>,
 }
 
 impl World {
@@ -62,6 +67,7 @@ impl World {
                 connections: RwLock::new(Vec::new()),
                 grid_state: RwLock::new(GridState::default()),
                 physics_tick_ms: AtomicU64::new(100),
+                runtime: RwLock::new(HashMap::new()),
             }),
         }
     }
@@ -94,6 +100,13 @@ impl World {
         let id = c.id();
         self.inner.components.write().push(c.clone());
         self.inner.by_id.write().insert(id, c.clone());
+        // Default runtime mode: every flag at "Normal" — i.e. emit
+        // telemetry, accept commands, report physics-derived state.
+        self.inner
+            .runtime
+            .write()
+            .entry(id)
+            .or_insert_with(ComponentRuntime::default);
         ComponentHandle::from_arc(c)
     }
 
@@ -155,9 +168,46 @@ impl World {
         self.inner.components.write().clear();
         self.inner.by_id.write().clear();
         self.inner.connections.write().clear();
+        self.inner.runtime.write().clear();
         // The grid state is environmental (set by the config's `every`
         // timer); we deliberately keep it across reloads so the first
         // tick after reload still has plausible values.
+    }
+
+    pub fn runtime_of(&self, id: u64) -> ComponentRuntime {
+        self.inner
+            .runtime
+            .read()
+            .get(&id)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    pub fn set_health(&self, id: u64, health: Health) {
+        self.inner
+            .runtime
+            .write()
+            .entry(id)
+            .or_insert_with(ComponentRuntime::default)
+            .health = health;
+    }
+
+    pub fn set_telemetry_mode(&self, id: u64, mode: TelemetryMode) {
+        self.inner
+            .runtime
+            .write()
+            .entry(id)
+            .or_insert_with(ComponentRuntime::default)
+            .telemetry = mode;
+    }
+
+    pub fn set_command_mode(&self, id: u64, mode: CommandMode) {
+        self.inner
+            .runtime
+            .write()
+            .entry(id)
+            .or_insert_with(ComponentRuntime::default)
+            .command = mode;
     }
 
     /// Tick every registered component once. Children are stored before

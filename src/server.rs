@@ -29,6 +29,7 @@ use crate::proto::microgrid::{
     StartElectricalComponentRequest, StopElectricalComponentRequest, microgrid_server,
 };
 use crate::proto_conv::{make_component_proto, telemetry_to_proto};
+use crate::sim::runtime::{CommandMode, Health, TelemetryMode};
 use crate::sim::{SetpointError, bounds::VecBounds};
 use crate::timeout_tracker::TimeoutTracker;
 
@@ -179,6 +180,34 @@ impl microgrid_server::Microgrid for MicrogridServer {
             ))
         })?;
 
+        // Runtime fault simulation: command_mode and health are
+        // checked before any physics. Order matters — `Timeout` /
+        // `Error` are wire-level faults, `Health` is application-level
+        // refusal.
+        let runtime = world.runtime_of(req.electrical_component_id);
+        match runtime.command {
+            CommandMode::Timeout => {
+                // Hang until the client gives up. Cheaper than an
+                // unbounded sleep, and cancel-safe (the future is
+                // dropped when the request is cancelled).
+                std::future::pending::<()>().await;
+                unreachable!()
+            }
+            CommandMode::Error => {
+                return Err(tonic::Status::unavailable(format!(
+                    "component {} unreachable",
+                    req.electrical_component_id
+                )));
+            }
+            CommandMode::Normal => {}
+        }
+        if runtime.health != Health::Ok {
+            return Err(tonic::Status::failed_precondition(format!(
+                "component {} is in {:?} state; setpoints rejected",
+                req.electrical_component_id, runtime.health
+            )));
+        }
+
         // Gateway-level envelope check: a real microgrid API gateway
         // intersects the inverter's reported AC bounds with the sum of
         // its children's reported DC bounds and rejects setpoints that
@@ -269,11 +298,34 @@ impl microgrid_server::Microgrid for MicrogridServer {
             // step. Pattern lifted from microsim's server loop.
             let mut next_due = SystemTime::now();
             loop {
-                let snapshot = component.telemetry(&world);
-                let msg = telemetry_to_proto(component.as_ref(), &snapshot);
-                if tx.send(Ok(msg)).await.is_err() {
-                    log::debug!("stream({id}): client disconnected");
-                    break;
+                // Re-read the telemetry mode each iteration so a
+                // mid-stream `(set-component-telemetry-mode)` flip
+                // takes effect on the next sample boundary.
+                match world.runtime_of(id).telemetry {
+                    TelemetryMode::Closed => {
+                        log::debug!("stream({id}): closed by runtime mode");
+                        break;
+                    }
+                    TelemetryMode::Silent => {
+                        // Skip the send; still sleep for `step` so
+                        // we cooperate with the client and re-check
+                        // the mode at the next interval.
+                    }
+                    TelemetryMode::Normal => {
+                        let mut snapshot = component.telemetry(&world);
+                        // Health override: a degraded device reports
+                        // ERROR/STANDBY in its state code, regardless
+                        // of what the physics layer thinks the
+                        // component is doing this tick.
+                        if let Some(label) = world.runtime_of(id).health.state_label() {
+                            snapshot.component_state = Some(label);
+                        }
+                        let msg = telemetry_to_proto(component.as_ref(), &snapshot);
+                        if tx.send(Ok(msg)).await.is_err() {
+                            log::debug!("stream({id}): client disconnected");
+                            break;
+                        }
+                    }
                 }
                 let factor: f32 = if jitter_pct > 0.0 {
                     let j = jitter_pct / 100.0;
@@ -287,9 +339,6 @@ impl microgrid_server::Microgrid for MicrogridServer {
                 let now = SystemTime::now();
                 let dur = target.duration_since(now).unwrap_or(Duration::ZERO);
                 tokio::time::sleep(dur).await;
-                // If we fell so far behind that `target` is already
-                // past the pre-sleep `now`, re-anchor to now instead
-                // of trying to fire several samples back-to-back.
                 next_due = target.max(now);
             }
         });
