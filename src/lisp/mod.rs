@@ -148,6 +148,58 @@ fn register_runtime(ctx: &mut TulispContext, world: &World, metadata: Arc<RwLock
     register_grid_state(ctx, world.clone());
     register_metadata(ctx, metadata);
     register_runtime_modes(ctx, world.clone());
+    register_load_drivers(ctx, world.clone());
+    register_time_helpers(ctx);
+}
+
+fn register_load_drivers(ctx: &mut TulispContext, world: World) {
+    // Push an explicit active-power value into a meter's
+    // fixed-power override. Calling this every N ms inside an
+    // `(every)` callback gives Lisp a way to drive any load curve
+    // (computed from a function or interpolated from a CSV) without
+    // teaching Rust how to read CSV files.
+    ctx.defun(
+        "set-meter-power",
+        move |id: i64, watts: f64| -> Result<bool, Error> {
+            match world.get(id as u64) {
+                Some(c) => {
+                    c.set_active_power_override(watts as f32);
+                    Ok(true)
+                }
+                None => Err(Error::invalid_argument(format!(
+                    "set-meter-power: component {id} not found"
+                ))),
+            }
+        },
+    );
+}
+
+fn register_time_helpers(ctx: &mut TulispContext) {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    // Wall-clock seconds since the Unix epoch as a float. Useful as
+    // a free-running clock for time-driven load profiles.
+    ctx.defun("now-seconds", || -> f64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0)
+    });
+
+    // Seconds since the start of the most recent `window-secs`-aligned
+    // window (anchored to the Unix epoch). For window-secs = 900,
+    // returns 0..900 — equivalent to (mod (now-seconds) 900) but
+    // expresses intent at the call site.
+    ctx.defun("window-elapsed", |window_secs: f64| -> f64 {
+        if window_secs <= 0.0 {
+            return 0.0;
+        }
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0);
+        now.rem_euclid(window_secs)
+    });
 }
 
 fn register_runtime_modes(ctx: &mut TulispContext, world: World) {

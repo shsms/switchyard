@@ -1,20 +1,24 @@
 use std::{fmt, time::Duration};
 
 use chrono::{DateTime, Utc};
+use parking_lot::Mutex;
 
 use crate::sim::{Category, SimulatedComponent, Telemetry, World};
 
 /// A power meter sums its successors' active and reactive power, then
 /// voltage-splits the totals across the three phases. If the parent
-/// registered with explicit `:power`, that value is used verbatim
-/// instead — used for headless consumer / CHP load meters.
+/// registered with explicit `:power` — or a Lisp timer pushed a value
+/// in via `(set-meter-power id W)` — that value is used verbatim
+/// instead, modelling a headless consumer / CHP load.
 pub struct Meter {
     id: u64,
     name: String,
     interval: Duration,
     successors: Vec<u64>,
-    /// Override for headless meters (consumer / CHP branches).
-    fixed_power_w: Option<f32>,
+    /// Override the aggregate-from-successors path with an explicit
+    /// active-power value. Mutex-wrapped so a runtime defun can flip
+    /// it without contending against the per-tick aggregation read.
+    fixed_power_w: Mutex<Option<f32>>,
     stream_jitter_pct: f32,
 }
 
@@ -31,13 +35,13 @@ impl Meter {
             name: format!("meter-{id}"),
             interval,
             successors,
-            fixed_power_w,
+            fixed_power_w: Mutex::new(fixed_power_w),
             stream_jitter_pct,
         }
     }
 
     fn aggregate_active(&self, world: &World) -> f32 {
-        if let Some(p) = self.fixed_power_w {
+        if let Some(p) = *self.fixed_power_w.lock() {
             return p;
         }
         self.successors
@@ -51,7 +55,7 @@ impl Meter {
         // No reactive override on fixed-power meters — those model
         // pure-real loads (consumer kW, CHP). If we ever need a
         // synthetic reactive load, add a `fixed_reactive_var` knob.
-        if self.fixed_power_w.is_some() {
+        if self.fixed_power_w.lock().is_some() {
             return 0.0;
         }
         self.successors
@@ -59,6 +63,13 @@ impl Meter {
             .filter_map(|id| world.get(*id))
             .map(|c| c.aggregate_reactive_var(world))
             .sum()
+    }
+
+    /// Replace the fixed-power override (creating one if there wasn't
+    /// any). Used by `(set-meter-power)` to drive consumer / load
+    /// curves from a Lisp timer.
+    pub fn set_fixed_power(&self, watts: f32) {
+        *self.fixed_power_w.lock() = Some(watts);
     }
 }
 
@@ -116,6 +127,10 @@ impl SimulatedComponent for Meter {
 
     fn aggregate_reactive_var(&self, world: &World) -> f32 {
         self.aggregate_reactive(world)
+    }
+
+    fn set_active_power_override(&self, p: f32) {
+        self.set_fixed_power(p);
     }
 }
 

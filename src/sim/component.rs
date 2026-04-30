@@ -127,6 +127,13 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
     /// silently ignore the call.
     fn set_dc_power(&self, _p: f32) {}
 
+    /// Override the AC-side active power this component reports.
+    /// Used by `(set-meter-power id W)` to drive a Lisp- or CSV-
+    /// computed consumer load curve into a Meter from a timer
+    /// callback. Default no-op — components that don't model
+    /// consumer-style loads silently ignore the call.
+    fn set_active_power_override(&self, _p: f32) {}
+
     /// Like `set_dc_power`, but conveys both active and reactive so
     /// the child can report apparent-power loading on its DC side.
     /// Default forwards the active component to `set_dc_power` and
