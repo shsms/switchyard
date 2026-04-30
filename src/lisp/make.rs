@@ -23,6 +23,7 @@ AsPlist! {
         id: Option<i64> {= None},
         rated_fuse_current<":rated-fuse-current">: Option<i64> {= None},
         successors: Option<Vec<ComponentHandle>> {= None},
+        stream_jitter_pct<":stream-jitter-pct">: Option<f64> {= None},
     }
 }
 
@@ -38,6 +39,7 @@ AsPlist! {
         successors: Option<Vec<ComponentHandle>> {= None},
         hidden: Option<bool> {= None},
         reactive_power<":reactive-power">: Option<f64> {= None},
+        stream_jitter_pct<":stream-jitter-pct">: Option<f64> {= None},
     }
 }
 
@@ -91,6 +93,7 @@ AsPlist! {
         rated_upper<":rated-upper">: Option<f64> {= None},
         command_delay_ms<":command-delay-ms">: Option<i64> {= None},
         ramp_rate<":ramp-rate">: Option<f64> {= None},
+        stream_jitter_pct<":stream-jitter-pct">: Option<f64> {= None},
     }
 }
 
@@ -105,9 +108,13 @@ AsPlist! {
         rated_lower<":rated-lower">: Option<f64> {= None},
         rated_upper<":rated-upper">: Option<f64> {= None},
         initial_soc<":initial-soc">: Option<f64> {= None},
+        soc_lower<":soc-lower">: Option<f64> {= None},
+        soc_upper<":soc-upper">: Option<f64> {= None},
+        soc_protect_margin<":soc-protect-margin">: Option<f64> {= None},
         capacity_wh<":capacity">: Option<f64> {= None},
         command_delay_ms<":command-delay-ms">: Option<i64> {= None},
         ramp_rate<":ramp-rate">: Option<f64> {= None},
+        stream_jitter_pct<":stream-jitter-pct">: Option<f64> {= None},
     }
 }
 
@@ -118,6 +125,7 @@ AsPlist! {
 AsPlist! {
     pub struct ChpArgs {
         id: Option<i64> {= None},
+        stream_jitter_pct<":stream-jitter-pct">: Option<f64> {= None},
     }
 }
 
@@ -130,7 +138,11 @@ pub fn register(ctx: &mut TulispContext, world: World) {
     ctx.defun("make-grid", move |args: Plist<GridArgs>| {
         let a = args.into_inner();
         let id = a.id.map(|x| x as u64).unwrap_or_else(|| w.next_id());
-        let grid = Grid::new(id, a.rated_fuse_current.unwrap_or(0) as u32);
+        let grid = Grid::new(
+            id,
+            a.rated_fuse_current.unwrap_or(0) as u32,
+            a.stream_jitter_pct.unwrap_or(0.0) as f32,
+        );
         let h = w.register(grid);
         connect_successors(&w, id, &a.successors);
         Ok::<_, Error>(h)
@@ -147,7 +159,13 @@ pub fn register(ctx: &mut TulispContext, world: World) {
             .map(|v| v.iter().map(|h| h.id()).collect())
             .unwrap_or_default();
         let fixed = a.power.map(|p| p as f32);
-        let meter = Meter::new(id, interval, succ_ids, fixed);
+        let meter = Meter::new(
+            id,
+            interval,
+            succ_ids,
+            fixed,
+            a.stream_jitter_pct.unwrap_or(0.0) as f32,
+        );
         let h = w.register(meter);
         if !a.hidden.unwrap_or(false) {
             connect_successors(&w, id, &a.successors);
@@ -249,6 +267,9 @@ pub fn register(ctx: &mut TulispContext, world: World) {
             if let Some(v) = a.ramp_rate {
                 cfg.ramp_rate_w_per_s = v as f32;
             }
+            if let Some(v) = a.stream_jitter_pct {
+                cfg.stream_jitter_pct = v as f32;
+            }
             Ok::<_, Error>(w.register(SolarInverter::new(id, interval, cfg)))
         },
     );
@@ -268,6 +289,15 @@ pub fn register(ctx: &mut TulispContext, world: World) {
         if let Some(v) = a.initial_soc {
             cfg.initial_soc_pct = v as f32;
         }
+        if let Some(v) = a.soc_lower {
+            cfg.soc_lower_pct = v as f32;
+        }
+        if let Some(v) = a.soc_upper {
+            cfg.soc_upper_pct = v as f32;
+        }
+        if let Some(v) = a.soc_protect_margin {
+            cfg.soc_protect_margin_pct = v as f32;
+        }
         if let Some(v) = a.capacity_wh {
             cfg.capacity_wh = v as f32;
         }
@@ -277,6 +307,9 @@ pub fn register(ctx: &mut TulispContext, world: World) {
         if let Some(v) = a.ramp_rate {
             cfg.ramp_rate_w_per_s = v as f32;
         }
+        if let Some(v) = a.stream_jitter_pct {
+            cfg.stream_jitter_pct = v as f32;
+        }
         Ok::<_, Error>(w.register(EvCharger::new(id, interval, cfg)))
     });
 
@@ -284,7 +317,8 @@ pub fn register(ctx: &mut TulispContext, world: World) {
     ctx.defun("make-chp", move |args: Plist<ChpArgs>| {
         let a = args.into_inner();
         let id = a.id.map(|x| x as u64).unwrap_or_else(|| w.next_id());
-        Ok::<_, Error>(w.register(Chp::new(id)))
+        let jitter = a.stream_jitter_pct.unwrap_or(0.0) as f32;
+        Ok::<_, Error>(w.register(Chp::new(id, jitter)))
     });
 }
 

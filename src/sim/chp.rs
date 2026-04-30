@@ -11,13 +11,15 @@ use crate::sim::{Category, SimulatedComponent, Telemetry, World};
 pub struct Chp {
     id: u64,
     name: String,
+    stream_jitter_pct: f32,
 }
 
 impl Chp {
-    pub fn new(id: u64) -> Self {
+    pub fn new(id: u64, stream_jitter_pct: f32) -> Self {
         Self {
             id,
             name: format!("chp-{id}"),
+            stream_jitter_pct,
         }
     }
 }
@@ -40,6 +42,9 @@ impl SimulatedComponent for Chp {
     }
     fn stream_interval(&self) -> Duration {
         Duration::from_secs(1)
+    }
+    fn stream_jitter_pct(&self) -> f32 {
+        self.stream_jitter_pct
     }
     fn tick(&self, _w: &World, _n: DateTime<Utc>, _d: Duration) {}
     fn telemetry(&self, _w: &World) -> Telemetry {

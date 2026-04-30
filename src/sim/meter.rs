@@ -14,16 +14,24 @@ pub struct Meter {
     successors: Vec<u64>,
     /// Override for headless meters (consumer / CHP branches).
     fixed_power_w: Option<f32>,
+    stream_jitter_pct: f32,
 }
 
 impl Meter {
-    pub fn new(id: u64, interval: Duration, successors: Vec<u64>, fixed_power_w: Option<f32>) -> Self {
+    pub fn new(
+        id: u64,
+        interval: Duration,
+        successors: Vec<u64>,
+        fixed_power_w: Option<f32>,
+        stream_jitter_pct: f32,
+    ) -> Self {
         Self {
             id,
             name: format!("meter-{id}"),
             interval,
             successors,
             fixed_power_w,
+            stream_jitter_pct,
         }
     }
 }
@@ -46,6 +54,9 @@ impl SimulatedComponent for Meter {
     }
     fn stream_interval(&self) -> Duration {
         self.interval
+    }
+    fn stream_jitter_pct(&self) -> f32 {
+        self.stream_jitter_pct
     }
     fn tick(&self, _world: &World, _now: DateTime<Utc>, _dt: Duration) {}
 

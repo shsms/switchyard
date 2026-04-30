@@ -21,6 +21,7 @@ pub struct SolarInverterConfig {
     pub sunlight_pct: f32,
     pub command_delay: Duration,
     pub ramp_rate_w_per_s: f32,
+    pub stream_jitter_pct: f32,
 }
 
 impl Default for SolarInverterConfig {
@@ -31,6 +32,7 @@ impl Default for SolarInverterConfig {
             sunlight_pct: 100.0,
             command_delay: Duration::ZERO,
             ramp_rate_w_per_s: f32::INFINITY,
+            stream_jitter_pct: 0.0,
         }
     }
 }
@@ -140,5 +142,9 @@ impl SimulatedComponent for SolarInverter {
 
     fn subtype(&self) -> Option<&'static str> {
         Some("solar")
+    }
+
+    fn stream_jitter_pct(&self) -> f32 {
+        self.cfg.stream_jitter_pct
     }
 }
