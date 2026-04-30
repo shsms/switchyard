@@ -113,26 +113,35 @@ impl SimulatedComponent for BatteryInverter {
             self.ramp.set_target(own.clamp(target));
         }
 
-        let commanded = self.ramp.advance(dt);
+        let commanded_p = self.ramp.advance(dt);
+        let commanded_q = *self.reactive_var.lock();
 
         // Distribute equal shares onto the DC bus and read back what
-        // each battery actually accepted (each `set_dc_power` clips
-        // locally to its own derated bounds). The measured aggregate
-        // is what we publish to clients, not the ramp value.
-        let measured = if self.successors.is_empty() {
-            commanded
+        // each battery actually accepted. Active is clamped at the
+        // BMS; reactive flows through unmodified (the battery doesn't
+        // refuse Q — the inverter is what terminates reactive energy).
+        let (measured_p, measured_q) = if self.successors.is_empty() {
+            (commanded_p, commanded_q)
         } else {
-            let share = commanded / self.successors.len() as f32;
-            let mut sum = 0.0;
+            let n = self.successors.len() as f32;
+            let p_share = commanded_p / n;
+            let q_share = commanded_q / n;
+            let mut sum_p = 0.0;
+            let mut sum_q = 0.0;
             for id in &self.successors {
                 if let Some(child) = world.get(*id) {
-                    child.set_dc_power(share);
-                    sum += child.aggregate_power_w();
+                    child.set_dc_active_reactive(p_share, q_share);
+                    sum_p += child.aggregate_power_w();
+                    sum_q += child.aggregate_reactive_var();
                 }
             }
-            sum
+            (sum_p, sum_q)
         };
-        *self.measured_w.lock() = measured;
+        *self.measured_w.lock() = measured_p;
+        // Q accepted by the children = what we publish on the AC
+        // side. In the no-batteries branch, this is just the commanded
+        // setpoint (nothing clips Q).
+        *self.reactive_var.lock() = measured_q;
     }
 
     fn telemetry(&self, world: &World) -> Telemetry {

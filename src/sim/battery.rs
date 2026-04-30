@@ -54,7 +54,15 @@ pub struct Battery {
 
 #[derive(Debug, Clone)]
 struct BatteryState {
+    /// Active DC power in W. Drives SoC integration — net energy
+    /// transferred is set by P only, even when the inverter is also
+    /// pushing reactive load through the DC bus.
     power_w: f32,
+    /// Reactive component the inverter pushed onto the DC bus this
+    /// tick. Doesn't change SoC, but inflates dc_current and
+    /// apparent dc_power in telemetry to reflect the conductor /
+    /// capacitor / IGBT loading a real DC ammeter would read.
+    reactive_var: f32,
     energy_wh: f32,
     soc_pct: f32,
     /// Cached effective DC bounds — recomputed every tick from SoC,
@@ -74,6 +82,7 @@ impl Battery {
             cfg,
             state: Mutex::new(BatteryState {
                 power_w: 0.0,
+                reactive_var: 0.0,
                 energy_wh: 0.0,
                 soc_pct: init_soc,
                 effective_lower_w: l,
@@ -150,6 +159,13 @@ impl SimulatedComponent for Battery {
 
     fn telemetry(&self, _world: &World) -> Telemetry {
         let s = self.state.lock().clone();
+        // Apparent DC magnitude with sign of P. Reactive load
+        // doesn't move net energy (so SoC integrates on `power_w`
+        // alone, see tick()) but it does flow through the conductors,
+        // so dc_power and dc_current here reflect the apparent
+        // loading a real instrument would read.
+        let apparent = (s.power_w * s.power_w + s.reactive_var * s.reactive_var).sqrt();
+        let signed_apparent = apparent * if s.power_w >= 0.0 { 1.0 } else { -1.0 };
         Telemetry {
             id: self.id,
             category: Some(Category::Battery),
@@ -158,9 +174,9 @@ impl SimulatedComponent for Battery {
             soc_upper_pct: Some(self.cfg.soc_upper_pct),
             capacity_wh: Some(self.cfg.capacity_wh),
             dc_voltage_v: Some(self.cfg.voltage_v),
-            dc_power_w: Some(s.power_w),
+            dc_power_w: Some(signed_apparent),
             dc_current_a: Some(if self.cfg.voltage_v != 0.0 {
-                s.power_w / self.cfg.voltage_v
+                signed_apparent / self.cfg.voltage_v
             } else {
                 0.0
             }),
@@ -185,6 +201,21 @@ impl SimulatedComponent for Battery {
     fn set_dc_power(&self, p: f32) {
         let mut s = self.state.lock();
         s.power_w = p.clamp(s.effective_lower_w, s.effective_upper_w);
+        s.reactive_var = 0.0;
+    }
+
+    /// Active+reactive variant. Active is clamped to the SoC envelope
+    /// like in `set_dc_power`; reactive is stored verbatim — the
+    /// battery itself doesn't refuse Q, the inverter is what
+    /// terminates reactive energy on the AC side.
+    fn set_dc_active_reactive(&self, p: f32, q: f32) {
+        let mut s = self.state.lock();
+        s.power_w = p.clamp(s.effective_lower_w, s.effective_upper_w);
+        s.reactive_var = q;
+    }
+
+    fn aggregate_reactive_var(&self) -> f32 {
+        self.state.lock().reactive_var
     }
 
     fn rated_active_bounds(&self) -> Option<(f32, f32)> {

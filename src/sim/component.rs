@@ -134,6 +134,21 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
     /// silently ignore the call.
     fn set_dc_power(&self, _p: f32) {}
 
+    /// Like `set_dc_power`, but conveys both active and reactive so
+    /// the child can report apparent-power loading on its DC side.
+    /// Default forwards the active component to `set_dc_power` and
+    /// drops Q — keeps non-battery components working unchanged.
+    fn set_dc_active_reactive(&self, p: f32, _q: f32) {
+        self.set_dc_power(p);
+    }
+
+    /// Aggregate reactive power flowing through this component
+    /// (used by parent inverters to read back what their children
+    /// accepted). Default 0 for components that don't carry Q.
+    fn aggregate_reactive_var(&self) -> f32 {
+        0.0
+    }
+
     /// Static rated active-power bounds (W), if applicable. Used by
     /// `ListElectricalComponents` to populate `metric_config_bounds`.
     fn rated_active_bounds(&self) -> Option<(f32, f32)> {
