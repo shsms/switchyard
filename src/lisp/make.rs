@@ -166,16 +166,15 @@ pub fn register(ctx: &mut TulispContext, world: World) {
     let w = world.clone();
     ctx.defun("make-grid", move |args: Plist<GridArgs>| {
         let a = args.into_inner();
-        let id = a.id.map(|x| x as u64).unwrap_or_else(|| w.next_id());
+        let id = id_or_next(&w, a.id);
         let grid = Grid::new(
             id,
             a.rated_fuse_current.unwrap_or(0) as u32,
             a.stream_jitter_pct.unwrap_or(0.0) as f32,
         );
-        let h = w.register(grid);
-        apply_initial_modes(
+        let h = register_with_modes(
             &w,
-            id,
+            grid,
             a.health.as_deref(),
             a.telemetry_mode.as_deref(),
             a.command_mode.as_deref(),
@@ -187,25 +186,23 @@ pub fn register(ctx: &mut TulispContext, world: World) {
     let w = world.clone();
     ctx.defun("make-meter", move |args: Plist<MeterArgs>| {
         let a = args.into_inner();
-        let id = a.id.map(|x| x as u64).unwrap_or_else(|| w.next_id());
+        let id = id_or_next(&w, a.id);
         let interval = ms_to_duration(a.interval, 1000);
         let succ_ids: Vec<u64> = a
             .successors
             .as_ref()
             .map(|v| v.iter().map(|h| h.id()).collect())
             .unwrap_or_default();
-        let fixed = a.power.map(|p| p as f32);
         let meter = Meter::new(
             id,
             interval,
             succ_ids,
-            fixed,
+            a.power.map(|p| p as f32),
             a.stream_jitter_pct.unwrap_or(0.0) as f32,
         );
-        let h = w.register(meter);
-        apply_initial_modes(
+        let h = register_with_modes(
             &w,
-            id,
+            meter,
             a.health.as_deref(),
             a.telemetry_mode.as_deref(),
             a.command_mode.as_deref(),
@@ -219,7 +216,7 @@ pub fn register(ctx: &mut TulispContext, world: World) {
     let w = world.clone();
     ctx.defun("make-battery", move |args: Plist<BatteryArgs>| {
         let a = args.into_inner();
-        let id = a.id.map(|x| x as u64).unwrap_or_else(|| w.next_id());
+        let id = id_or_next(&w, a.id);
         let interval = ms_to_duration(a.interval, 1000);
         let mut cfg = BatteryConfig::default();
         if let Some(v) = a.capacity_wh {
@@ -249,15 +246,13 @@ pub fn register(ctx: &mut TulispContext, world: World) {
         if let Some(v) = a.stream_jitter_pct {
             cfg.stream_jitter_pct = v as f32;
         }
-        let h = w.register(Battery::new(id, interval, cfg));
-        apply_initial_modes(
+        register_with_modes(
             &w,
-            id,
+            Battery::new(id, interval, cfg),
             a.health.as_deref(),
             a.telemetry_mode.as_deref(),
             a.command_mode.as_deref(),
-        )?;
-        Ok::<_, Error>(h)
+        )
     });
 
     let w = world.clone();
@@ -265,7 +260,7 @@ pub fn register(ctx: &mut TulispContext, world: World) {
         "make-battery-inverter",
         move |args: Plist<BatteryInverterArgs>| {
             let a = args.into_inner();
-            let id = a.id.map(|x| x as u64).unwrap_or_else(|| w.next_id());
+            let id = id_or_next(&w, a.id);
             let interval = ms_to_duration(a.interval, 1000);
             let mut cfg = BatteryInverterConfig::default();
             if let Some(v) = a.rated_lower {
@@ -294,15 +289,13 @@ pub fn register(ctx: &mut TulispContext, world: World) {
             //   :reactive-pf-limit 0.5            ;; tighter PF, no kVA
             // without needing a third "mode" symbol.
             if a.reactive_pf_limit.is_some() || a.reactive_apparent_va.is_some() {
-                let pf = a
-                    .reactive_pf_limit
-                    .and_then(|v| if v > 0.0 { Some(v as f32) } else { None });
-                let apparent = a
-                    .reactive_apparent_va
-                    .and_then(|v| if v > 0.0 { Some(v as f32) } else { None });
                 cfg.reactive = crate::sim::reactive::ReactiveCapability {
-                    pf_limit: pf,
-                    apparent_va: apparent,
+                    pf_limit: a
+                        .reactive_pf_limit
+                        .and_then(|v| if v > 0.0 { Some(v as f32) } else { None }),
+                    apparent_va: a
+                        .reactive_apparent_va
+                        .and_then(|v| if v > 0.0 { Some(v as f32) } else { None }),
                 };
             }
             let succ_ids: Vec<u64> = a
@@ -310,11 +303,9 @@ pub fn register(ctx: &mut TulispContext, world: World) {
                 .as_ref()
                 .map(|v| v.iter().map(|h| h.id()).collect())
                 .unwrap_or_default();
-            let inv = BatteryInverter::new(id, interval, cfg, succ_ids);
-            let h = w.register(inv);
-            apply_initial_modes(
+            let h = register_with_modes(
                 &w,
-                id,
+                BatteryInverter::new(id, interval, cfg, succ_ids),
                 a.health.as_deref(),
                 a.telemetry_mode.as_deref(),
                 a.command_mode.as_deref(),
@@ -329,7 +320,7 @@ pub fn register(ctx: &mut TulispContext, world: World) {
         "make-solar-inverter",
         move |args: Plist<SolarInverterArgs>| {
             let a = args.into_inner();
-            let id = a.id.map(|x| x as u64).unwrap_or_else(|| w.next_id());
+            let id = id_or_next(&w, a.id);
             let interval = ms_to_duration(a.interval, 1000);
             let mut cfg = SolarInverterConfig::default();
             if let Some(v) = a.sunlight_pct {
@@ -350,22 +341,20 @@ pub fn register(ctx: &mut TulispContext, world: World) {
             if let Some(v) = a.stream_jitter_pct {
                 cfg.stream_jitter_pct = v as f32;
             }
-            let h = w.register(SolarInverter::new(id, interval, cfg));
-            apply_initial_modes(
+            register_with_modes(
                 &w,
-                id,
+                SolarInverter::new(id, interval, cfg),
                 a.health.as_deref(),
                 a.telemetry_mode.as_deref(),
                 a.command_mode.as_deref(),
-            )?;
-            Ok::<_, Error>(h)
+            )
         },
     );
 
     let w = world.clone();
     ctx.defun("make-ev-charger", move |args: Plist<EvChargerArgs>| {
         let a = args.into_inner();
-        let id = a.id.map(|x| x as u64).unwrap_or_else(|| w.next_id());
+        let id = id_or_next(&w, a.id);
         let interval = ms_to_duration(a.interval, 1000);
         let mut cfg = EvChargerConfig::default();
         if let Some(v) = a.rated_lower {
@@ -398,31 +387,27 @@ pub fn register(ctx: &mut TulispContext, world: World) {
         if let Some(v) = a.stream_jitter_pct {
             cfg.stream_jitter_pct = v as f32;
         }
-        let h = w.register(EvCharger::new(id, interval, cfg));
-        apply_initial_modes(
+        register_with_modes(
             &w,
-            id,
+            EvCharger::new(id, interval, cfg),
             a.health.as_deref(),
             a.telemetry_mode.as_deref(),
             a.command_mode.as_deref(),
-        )?;
-        Ok::<_, Error>(h)
+        )
     });
 
     let w = world;
     ctx.defun("make-chp", move |args: Plist<ChpArgs>| {
         let a = args.into_inner();
-        let id = a.id.map(|x| x as u64).unwrap_or_else(|| w.next_id());
+        let id = id_or_next(&w, a.id);
         let jitter = a.stream_jitter_pct.unwrap_or(0.0) as f32;
-        let h = w.register(Chp::new(id, jitter));
-        apply_initial_modes(
+        register_with_modes(
             &w,
-            id,
+            Chp::new(id, jitter),
             a.health.as_deref(),
             a.telemetry_mode.as_deref(),
             a.command_mode.as_deref(),
-        )?;
-        Ok::<_, Error>(h)
+        )
     });
 }
 
@@ -436,6 +421,36 @@ fn connect_successors(world: &World, parent: u64, successors: &Option<Vec<Compon
 
 fn ms_to_duration(ms: Option<i64>, default_ms: u64) -> Duration {
     Duration::from_millis(ms.map(|x| x.max(0) as u64).unwrap_or(default_ms))
+}
+
+/// Resolve the component id from an `:id` plist value, falling back to
+/// `World::next_id()` when omitted. Centralized so casts stay one
+/// place — each make-* used to inline the same `as u64 / next_id()`
+/// pattern.
+fn id_or_next(world: &World, explicit: Option<i64>) -> u64 {
+    explicit
+        .map(|x| x as u64)
+        .unwrap_or_else(|| world.next_id())
+}
+
+/// Register a freshly-built component, then apply any initial runtime
+/// mode args. Returns the handle so the caller can also wire
+/// connections / `setq` it for cross-references.
+///
+/// Centralising this guarantees every make-* applies modes in the
+/// same order (health, then telemetry, then command) right after
+/// registration — before any tick or subscriber runs.
+fn register_with_modes<C: crate::sim::SimulatedComponent + 'static>(
+    world: &World,
+    component: C,
+    health: Option<&str>,
+    telemetry: Option<&str>,
+    command: Option<&str>,
+) -> Result<ComponentHandle, Error> {
+    let id = component.id();
+    let h = world.register(component);
+    apply_initial_modes(world, id, health, telemetry, command)?;
+    Ok(h)
 }
 
 /// Apply initial runtime mode args from a plist constructor. Each
