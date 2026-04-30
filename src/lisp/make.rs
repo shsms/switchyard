@@ -4,14 +4,18 @@
 //! returns a `ComponentHandle` (an opaque `Shared<dyn TulispAny>` on
 //! the lisp side).
 
+use std::str::FromStr;
 use std::time::Duration;
 
 use tulisp::{AsPlist, Error, Plist, TulispContext};
 
 use crate::sim::{
     Battery, BatteryInverter, Chp, ComponentHandle, EvCharger, Grid, Meter, SolarInverter, World,
-    battery::BatteryConfig, ev_charger::EvChargerConfig, inverter::battery_inverter::BatteryInverterConfig,
+    battery::BatteryConfig,
+    ev_charger::EvChargerConfig,
+    inverter::battery_inverter::BatteryInverterConfig,
     inverter::solar_inverter::SolarInverterConfig,
+    runtime::{CommandMode, Health, TelemetryMode},
 };
 
 // -----------------------------------------------------------------------------
@@ -24,6 +28,9 @@ AsPlist! {
         rated_fuse_current<":rated-fuse-current">: Option<i64> {= None},
         successors: Option<Vec<ComponentHandle>> {= None},
         stream_jitter_pct<":stream-jitter-pct">: Option<f64> {= None},
+        health<":health">: Option<String> {= None},
+        telemetry_mode<":telemetry-mode">: Option<String> {= None},
+        command_mode<":command-mode">: Option<String> {= None},
     }
 }
 
@@ -40,6 +47,9 @@ AsPlist! {
         hidden: Option<bool> {= None},
         reactive_power<":reactive-power">: Option<f64> {= None},
         stream_jitter_pct<":stream-jitter-pct">: Option<f64> {= None},
+        health<":health">: Option<String> {= None},
+        telemetry_mode<":telemetry-mode">: Option<String> {= None},
+        command_mode<":command-mode">: Option<String> {= None},
     }
 }
 
@@ -60,6 +70,9 @@ AsPlist! {
         rated_upper<":rated-upper">: Option<f64> {= None},
         soc_protect_margin<":soc-protect-margin">: Option<f64> {= None},
         stream_jitter_pct<":stream-jitter-pct">: Option<f64> {= None},
+        health<":health">: Option<String> {= None},
+        telemetry_mode<":telemetry-mode">: Option<String> {= None},
+        command_mode<":command-mode">: Option<String> {= None},
     }
 }
 
@@ -77,6 +90,9 @@ AsPlist! {
         command_delay_ms<":command-delay-ms">: Option<i64> {= None},
         ramp_rate<":ramp-rate">: Option<f64> {= None},
         stream_jitter_pct<":stream-jitter-pct">: Option<f64> {= None},
+        health<":health">: Option<String> {= None},
+        telemetry_mode<":telemetry-mode">: Option<String> {= None},
+        command_mode<":command-mode">: Option<String> {= None},
     }
 }
 
@@ -94,6 +110,9 @@ AsPlist! {
         command_delay_ms<":command-delay-ms">: Option<i64> {= None},
         ramp_rate<":ramp-rate">: Option<f64> {= None},
         stream_jitter_pct<":stream-jitter-pct">: Option<f64> {= None},
+        health<":health">: Option<String> {= None},
+        telemetry_mode<":telemetry-mode">: Option<String> {= None},
+        command_mode<":command-mode">: Option<String> {= None},
     }
 }
 
@@ -115,6 +134,9 @@ AsPlist! {
         command_delay_ms<":command-delay-ms">: Option<i64> {= None},
         ramp_rate<":ramp-rate">: Option<f64> {= None},
         stream_jitter_pct<":stream-jitter-pct">: Option<f64> {= None},
+        health<":health">: Option<String> {= None},
+        telemetry_mode<":telemetry-mode">: Option<String> {= None},
+        command_mode<":command-mode">: Option<String> {= None},
     }
 }
 
@@ -126,6 +148,9 @@ AsPlist! {
     pub struct ChpArgs {
         id: Option<i64> {= None},
         stream_jitter_pct<":stream-jitter-pct">: Option<f64> {= None},
+        health<":health">: Option<String> {= None},
+        telemetry_mode<":telemetry-mode">: Option<String> {= None},
+        command_mode<":command-mode">: Option<String> {= None},
     }
 }
 
@@ -144,6 +169,13 @@ pub fn register(ctx: &mut TulispContext, world: World) {
             a.stream_jitter_pct.unwrap_or(0.0) as f32,
         );
         let h = w.register(grid);
+        apply_initial_modes(
+            &w,
+            id,
+            a.health.as_deref(),
+            a.telemetry_mode.as_deref(),
+            a.command_mode.as_deref(),
+        )?;
         connect_successors(&w, id, &a.successors);
         Ok::<_, Error>(h)
     });
@@ -167,6 +199,13 @@ pub fn register(ctx: &mut TulispContext, world: World) {
             a.stream_jitter_pct.unwrap_or(0.0) as f32,
         );
         let h = w.register(meter);
+        apply_initial_modes(
+            &w,
+            id,
+            a.health.as_deref(),
+            a.telemetry_mode.as_deref(),
+            a.command_mode.as_deref(),
+        )?;
         if !a.hidden.unwrap_or(false) {
             connect_successors(&w, id, &a.successors);
         }
@@ -206,7 +245,15 @@ pub fn register(ctx: &mut TulispContext, world: World) {
         if let Some(v) = a.stream_jitter_pct {
             cfg.stream_jitter_pct = v as f32;
         }
-        Ok::<_, Error>(w.register(Battery::new(id, interval, cfg)))
+        let h = w.register(Battery::new(id, interval, cfg));
+        apply_initial_modes(
+            &w,
+            id,
+            a.health.as_deref(),
+            a.telemetry_mode.as_deref(),
+            a.command_mode.as_deref(),
+        )?;
+        Ok::<_, Error>(h)
     });
 
     let w = world.clone();
@@ -239,6 +286,13 @@ pub fn register(ctx: &mut TulispContext, world: World) {
                 .unwrap_or_default();
             let inv = BatteryInverter::new(id, interval, cfg, succ_ids);
             let h = w.register(inv);
+            apply_initial_modes(
+                &w,
+                id,
+                a.health.as_deref(),
+                a.telemetry_mode.as_deref(),
+                a.command_mode.as_deref(),
+            )?;
             connect_successors(&w, id, &a.successors);
             Ok::<_, Error>(h)
         },
@@ -270,7 +324,15 @@ pub fn register(ctx: &mut TulispContext, world: World) {
             if let Some(v) = a.stream_jitter_pct {
                 cfg.stream_jitter_pct = v as f32;
             }
-            Ok::<_, Error>(w.register(SolarInverter::new(id, interval, cfg)))
+            let h = w.register(SolarInverter::new(id, interval, cfg));
+            apply_initial_modes(
+                &w,
+                id,
+                a.health.as_deref(),
+                a.telemetry_mode.as_deref(),
+                a.command_mode.as_deref(),
+            )?;
+            Ok::<_, Error>(h)
         },
     );
 
@@ -310,7 +372,15 @@ pub fn register(ctx: &mut TulispContext, world: World) {
         if let Some(v) = a.stream_jitter_pct {
             cfg.stream_jitter_pct = v as f32;
         }
-        Ok::<_, Error>(w.register(EvCharger::new(id, interval, cfg)))
+        let h = w.register(EvCharger::new(id, interval, cfg));
+        apply_initial_modes(
+            &w,
+            id,
+            a.health.as_deref(),
+            a.telemetry_mode.as_deref(),
+            a.command_mode.as_deref(),
+        )?;
+        Ok::<_, Error>(h)
     });
 
     let w = world;
@@ -318,7 +388,15 @@ pub fn register(ctx: &mut TulispContext, world: World) {
         let a = args.into_inner();
         let id = a.id.map(|x| x as u64).unwrap_or_else(|| w.next_id());
         let jitter = a.stream_jitter_pct.unwrap_or(0.0) as f32;
-        Ok::<_, Error>(w.register(Chp::new(id, jitter)))
+        let h = w.register(Chp::new(id, jitter));
+        apply_initial_modes(
+            &w,
+            id,
+            a.health.as_deref(),
+            a.telemetry_mode.as_deref(),
+            a.command_mode.as_deref(),
+        )?;
+        Ok::<_, Error>(h)
     });
 }
 
@@ -332,4 +410,42 @@ fn connect_successors(world: &World, parent: u64, successors: &Option<Vec<Compon
 
 fn ms_to_duration(ms: Option<i64>, default_ms: u64) -> Duration {
     Duration::from_millis(ms.map(|x| x.max(0) as u64).unwrap_or(default_ms))
+}
+
+/// Apply initial runtime mode args from a plist constructor. Each
+/// `make-*` calls this immediately after `world.register(...)` so a
+/// component declared with `:health 'error` is broken from the very
+/// first tick.
+fn apply_initial_modes(
+    world: &World,
+    id: u64,
+    health: Option<&str>,
+    telemetry: Option<&str>,
+    command: Option<&str>,
+) -> Result<(), Error> {
+    if let Some(h) = health {
+        let h = Health::from_str(h).map_err(|_| {
+            Error::invalid_argument(format!(
+                "unknown :health '{h}'; expected ok/error/standby"
+            ))
+        })?;
+        world.set_health(id, h);
+    }
+    if let Some(t) = telemetry {
+        let t = TelemetryMode::from_str(t).map_err(|_| {
+            Error::invalid_argument(format!(
+                "unknown :telemetry-mode '{t}'; expected normal/silent/closed"
+            ))
+        })?;
+        world.set_telemetry_mode(id, t);
+    }
+    if let Some(c) = command {
+        let c = CommandMode::from_str(c).map_err(|_| {
+            Error::invalid_argument(format!(
+                "unknown :command-mode '{c}'; expected normal/timeout/error"
+            ))
+        })?;
+        world.set_command_mode(id, c);
+    }
+    Ok(())
 }
