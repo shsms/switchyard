@@ -78,8 +78,8 @@ impl VecBounds {
         }
         let mut prev_upper: Option<f32> = None;
         for b in &self.0 {
-            if let Some(lower) = b.lower {
-                if value < lower {
+            if let Some(lower) = b.lower
+                && value < lower {
                     return match prev_upper {
                         // <= so equidistant ties pull to the lower-magnitude
                         // edge (matches microsim's behaviour).
@@ -87,7 +87,6 @@ impl VecBounds {
                         _ => lower,
                     };
                 }
-            }
             if let Some(upper) = b.upper {
                 prev_upper = Some(upper);
             }
@@ -141,16 +140,14 @@ impl VecBounds {
 }
 
 fn bounds_contains(b: &Bounds, value: f32) -> bool {
-    if let Some(l) = b.lower {
-        if value < l {
+    if let Some(l) = b.lower
+        && value < l {
             return false;
         }
-    }
-    if let Some(u) = b.upper {
-        if value > u {
+    if let Some(u) = b.upper
+        && value > u {
             return false;
         }
-    }
     true
 }
 
@@ -164,14 +161,13 @@ fn bounds_intersect(a: &Bounds, b: &Bounds) -> Bounds {
     }
     let lower = pick(a.lower, b.lower, f32::max);
     let upper = pick(a.upper, b.upper, f32::min);
-    if let (Some(l), Some(u)) = (lower, upper) {
-        if l > u {
+    if let (Some(l), Some(u)) = (lower, upper)
+        && l > u {
             return Bounds {
                 lower: None,
                 upper: None,
             };
         }
-    }
     Bounds { lower, upper }
 }
 
@@ -198,13 +194,13 @@ fn squash(mut input: Vec<Bounds>) -> VecBounds {
         return VecBounds(input);
     }
     let mut squashed = Vec::new();
-    let mut current = input[0].clone();
+    let mut current = input[0];
     for next in &input[1..] {
         if let Some(merged) = merge_if_overlapping(&current, next) {
             current = merged;
         } else {
             squashed.push(current);
-            current = next.clone();
+            current = *next;
         }
     }
     squashed.push(current);
@@ -260,7 +256,8 @@ impl ComponentBounds {
 
     pub fn drop_expired(&mut self, now: DateTime<Utc>) {
         while let Some(front) = self.augmented.front() {
-            let ttl = chrono::Duration::from_std(front.lifetime).unwrap_or(chrono::Duration::zero());
+            let ttl =
+                chrono::Duration::from_std(front.lifetime).unwrap_or(chrono::Duration::zero());
             if front.create_ts + ttl < now {
                 self.augmented.pop_front();
             } else {

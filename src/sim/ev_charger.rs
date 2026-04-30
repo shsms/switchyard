@@ -160,8 +160,7 @@ impl SimulatedComponent for EvCharger {
         let p = self.ramp.advance(dt);
         let mut s = self.state.lock();
         s.energy_wh += p * dt.as_secs_f32() / 3600.0;
-        s.soc_pct = (self.cfg.initial_soc_pct
-            + (s.energy_wh / self.cfg.capacity_wh) * 100.0)
+        s.soc_pct = (self.cfg.initial_soc_pct + (s.energy_wh / self.cfg.capacity_wh) * 100.0)
             .clamp(0.0, 100.0);
     }
 
@@ -179,10 +178,7 @@ impl SimulatedComponent for EvCharger {
             capacity_wh: Some(self.cfg.capacity_wh),
             per_phase_voltage_v: Some(grid.voltage_per_phase),
             frequency_hz: Some(grid.frequency_hz),
-            active_power_bounds: Some(VecBounds::single(
-                s.effective_lower_w,
-                s.effective_upper_w,
-            )),
+            active_power_bounds: Some(VecBounds::single(s.effective_lower_w, s.effective_upper_w)),
             cable_state: Some("ev-charging-cable-locked-at-ev"),
             ..Default::default()
         }

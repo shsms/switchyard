@@ -30,14 +30,26 @@ pub fn soc_protected_bounds(
 
     let upper = if p.soc_upper_pct - soc < p.margin_pct {
         rated_upper
-            * bounded_exp_decay(p.soc_upper_pct - p.margin_pct, p.soc_upper_pct, soc, 1.2, 0.3)
+            * bounded_exp_decay(
+                p.soc_upper_pct - p.margin_pct,
+                p.soc_upper_pct,
+                soc,
+                1.2,
+                0.3,
+            )
     } else {
         rated_upper
     };
 
     let lower = if soc - p.soc_lower_pct < p.margin_pct {
         rated_lower
-            * bounded_exp_decay(p.soc_lower_pct + p.margin_pct, p.soc_lower_pct, soc, 1.2, 0.3)
+            * bounded_exp_decay(
+                p.soc_lower_pct + p.margin_pct,
+                p.soc_lower_pct,
+                soc,
+                1.2,
+                0.3,
+            )
     } else {
         rated_lower
     };
@@ -102,7 +114,10 @@ mod tests {
             margin_pct: 10.0,
         };
         // Mid-band: full rated.
-        assert_eq!(soc_protected_bounds(-30000.0, 30000.0, 50.0, p), (-30000.0, 30000.0));
+        assert_eq!(
+            soc_protected_bounds(-30000.0, 30000.0, 50.0, p),
+            (-30000.0, 30000.0)
+        );
         // Near upper: upper derates, lower untouched.
         let (lo, hi) = soc_protected_bounds(-30000.0, 30000.0, 85.0, p);
         assert_eq!(lo, -30000.0);
@@ -110,7 +125,10 @@ mod tests {
         // Near lower: lower derates (less negative), upper untouched.
         let (lo, hi) = soc_protected_bounds(-30000.0, 30000.0, 15.0, p);
         assert_eq!(hi, 30000.0);
-        assert!(lo > -30000.0 && lo < 0.0, "expected derated lower, got {lo}");
+        assert!(
+            lo > -30000.0 && lo < 0.0,
+            "expected derated lower, got {lo}"
+        );
     }
 
     #[test]
@@ -118,7 +136,10 @@ mod tests {
         let a = bounded_exp_decay(80.0, 90.0, 82.0, 1.2, 0.3);
         let b = bounded_exp_decay(80.0, 90.0, 85.0, 1.2, 0.3);
         let c = bounded_exp_decay(80.0, 90.0, 88.0, 1.2, 0.3);
-        assert!(a > b && b > c, "expected monotone decreasing, got {a} {b} {c}");
+        assert!(
+            a > b && b > c,
+            "expected monotone decreasing, got {a} {b} {c}"
+        );
         assert!((0.0..=1.0).contains(&a));
         assert!((0.0..=1.0).contains(&c));
     }

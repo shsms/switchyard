@@ -188,29 +188,25 @@ pub fn telemetry_to_proto(
         let mut sample = simple_sample(now, Metric::DcPower, p);
         // Only attach bounds to DC for batteries — for AC components
         // they are attached above.
-        if cat == Category::Battery {
-            if let Some(b) = &t.active_power_bounds {
+        if cat == Category::Battery
+            && let Some(b) = &t.active_power_bounds {
                 sample.bounds = b.0.clone();
             }
-        }
         samples.push(sample);
     }
 
-    if let Some(s) = t.component_state {
-        if let Some(code) = parse_state(s) {
+    if let Some(s) = t.component_state
+        && let Some(code) = parse_state(s) {
             states.push(code as i32);
         }
-    }
-    if let Some(s) = t.relay_state {
-        if let Some(code) = parse_state(s) {
+    if let Some(s) = t.relay_state
+        && let Some(code) = parse_state(s) {
             states.push(code as i32);
         }
-    }
-    if let Some(s) = t.cable_state {
-        if let Some(code) = parse_state(s) {
+    if let Some(s) = t.cable_state
+        && let Some(code) = parse_state(s) {
             states.push(code as i32);
         }
-    }
 
     ReceiveElectricalComponentTelemetryStreamResponse {
         telemetry: Some(ElectricalComponentTelemetry {
@@ -221,7 +217,6 @@ pub fn telemetry_to_proto(
                 states,
                 ..Default::default()
             }],
-            ..Default::default()
         }),
     }
 }
@@ -231,9 +226,9 @@ fn simple_sample(now: Option<Timestamp>, metric: Metric, value: f32) -> MetricSa
         sample_time: now,
         metric: metric as i32,
         value: Some(MetricValueVariant {
-            metric_value_variant: Some(
-                metric_value_variant::MetricValueVariant::SimpleMetric(SimpleMetricValue { value }),
-            ),
+            metric_value_variant: Some(metric_value_variant::MetricValueVariant::SimpleMetric(
+                SimpleMetricValue { value },
+            )),
         }),
         ..Default::default()
     }

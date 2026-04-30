@@ -106,7 +106,7 @@ impl World {
             .runtime
             .write()
             .entry(id)
-            .or_insert_with(ComponentRuntime::default);
+            .or_default();
         ComponentHandle::from_arc(c)
     }
 
@@ -134,10 +134,7 @@ impl World {
     /// the downstream physical envelope — a real inverter has no data
     /// link to its battery's BMS limits, but the gateway sees both
     /// telemetry streams and intersects them on the client's behalf.
-    pub fn aggregate_child_bounds(
-        &self,
-        parent: u64,
-    ) -> Option<crate::sim::bounds::VecBounds> {
+    pub fn aggregate_child_bounds(&self, parent: u64) -> Option<crate::sim::bounds::VecBounds> {
         use crate::sim::bounds::VecBounds;
         let child_ids: Vec<u64> = self
             .inner
@@ -188,7 +185,7 @@ impl World {
             .runtime
             .write()
             .entry(id)
-            .or_insert_with(ComponentRuntime::default)
+            .or_default()
             .health = health;
     }
 
@@ -197,7 +194,7 @@ impl World {
             .runtime
             .write()
             .entry(id)
-            .or_insert_with(ComponentRuntime::default)
+            .or_default()
             .telemetry = mode;
     }
 
@@ -206,7 +203,7 @@ impl World {
             .runtime
             .write()
             .entry(id)
-            .or_insert_with(ComponentRuntime::default)
+            .or_default()
             .command = mode;
     }
 

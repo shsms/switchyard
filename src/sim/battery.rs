@@ -137,8 +137,7 @@ impl SimulatedComponent for Battery {
 
         // Energy ↔ SoC update from current power.
         s.energy_wh += s.power_w * dt.as_secs_f32() / 3600.0;
-        s.soc_pct = (self.cfg.initial_soc_pct
-            + (s.energy_wh / self.cfg.capacity_wh) * 100.0)
+        s.soc_pct = (self.cfg.initial_soc_pct + (s.energy_wh / self.cfg.capacity_wh) * 100.0)
             .clamp(0.0, 100.0);
 
         // Refresh SoC-derated bounds.
@@ -180,10 +179,7 @@ impl SimulatedComponent for Battery {
             } else {
                 0.0
             }),
-            active_power_bounds: Some(VecBounds::single(
-                s.effective_lower_w,
-                s.effective_upper_w,
-            )),
+            active_power_bounds: Some(VecBounds::single(s.effective_lower_w, s.effective_upper_w)),
             component_state: Some(power_to_state(s.power_w)),
             relay_state: Some("relay-closed"),
             ..Default::default()

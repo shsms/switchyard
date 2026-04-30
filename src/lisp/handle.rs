@@ -12,14 +12,10 @@ use crate::sim::ComponentHandle;
 
 impl TulispConvertible for ComponentHandle {
     fn from_tulisp(value: &TulispObject) -> Result<Self, Error> {
-        let any = value
-            .as_any()
-            .map_err(|e| e.with_trace(value.clone()))?;
+        let any = value.as_any().map_err(|e| e.with_trace(value.clone()))?;
         any.downcast_ref::<ComponentHandle>()
             .cloned()
-            .ok_or_else(|| {
-                Error::type_mismatch(format!("Expected ComponentHandle, got {value}"))
-            })
+            .ok_or_else(|| Error::type_mismatch(format!("Expected ComponentHandle, got {value}")))
     }
     fn into_tulisp(self) -> TulispObject {
         Shared::new(self).into()
@@ -32,9 +28,7 @@ impl TryFrom<TulispObject> for ComponentHandle {
         let any = value.as_any().map_err(|e| e.with_trace(value.clone()))?;
         any.downcast_ref::<ComponentHandle>()
             .cloned()
-            .ok_or_else(|| {
-                Error::type_mismatch(format!("Expected ComponentHandle, got {value}"))
-            })
+            .ok_or_else(|| Error::type_mismatch(format!("Expected ComponentHandle, got {value}")))
     }
 }
 
@@ -44,9 +38,7 @@ impl TryFrom<&TulispObject> for ComponentHandle {
         let any = value.as_any().map_err(|e| e.with_trace(value.clone()))?;
         any.downcast_ref::<ComponentHandle>()
             .cloned()
-            .ok_or_else(|| {
-                Error::type_mismatch(format!("Expected ComponentHandle, got {value}"))
-            })
+            .ok_or_else(|| Error::type_mismatch(format!("Expected ComponentHandle, got {value}")))
     }
 }
 

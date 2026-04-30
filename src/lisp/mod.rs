@@ -64,10 +64,7 @@ impl Config {
         // Rust; lisp's only job is wiring + scripting the world
         // around it. Must be called inside a tokio runtime —
         // TokioExecutor::new captures Handle::current().
-        tulisp_async::register(
-            &mut ctx,
-            Arc::new(tulisp_async::TokioExecutor::new()),
-        );
+        tulisp_async::register(&mut ctx, Arc::new(tulisp_async::TokioExecutor::new()));
 
         if let Err(e) = ctx.eval_file(filename) {
             log::error!("Tulisp error:\n{}", e.format(&ctx));
@@ -119,7 +116,10 @@ impl Config {
         )
         .unwrap();
         watcher
-            .watch(Path::new(&self.filename), notify::RecursiveMode::NonRecursive)
+            .watch(
+                Path::new(&self.filename),
+                notify::RecursiveMode::NonRecursive,
+            )
             .unwrap();
 
         while let Some(res) = rx.recv().await {
@@ -208,14 +208,20 @@ fn register_metadata(ctx: &mut TulispContext, metadata: Arc<RwLock<Metadata>>) {
         Ok(true)
     });
     let m = metadata.clone();
-    ctx.defun("set-microgrid-name", move |name: String| -> Result<bool, Error> {
-        m.write().name = name;
-        Ok(true)
-    });
-    ctx.defun("set-socket-addr", move |addr: String| -> Result<bool, Error> {
-        metadata.write().socket_addr = addr;
-        Ok(true)
-    });
+    ctx.defun(
+        "set-microgrid-name",
+        move |name: String| -> Result<bool, Error> {
+            m.write().name = name;
+            Ok(true)
+        },
+    );
+    ctx.defun(
+        "set-socket-addr",
+        move |addr: String| -> Result<bool, Error> {
+            metadata.write().socket_addr = addr;
+            Ok(true)
+        },
+    );
 }
 
 fn add_log_functions(ctx: &mut TulispContext) {
@@ -250,15 +256,12 @@ fn register_reset(ctx: &mut TulispContext, world: World) {
 
 fn register_grid_state(ctx: &mut TulispContext, world: World) {
     let w = world.clone();
-    ctx.defun(
-        "set-frequency",
-        move |hz: f64| -> Result<bool, Error> {
-            let mut state = w.grid_state();
-            state.frequency_hz = hz as f32;
-            w.set_grid_state(state);
-            Ok(true)
-        },
-    );
+    ctx.defun("set-frequency", move |hz: f64| -> Result<bool, Error> {
+        let mut state = w.grid_state();
+        state.frequency_hz = hz as f32;
+        w.set_grid_state(state);
+        Ok(true)
+    });
 
     let w = world.clone();
     ctx.defun(

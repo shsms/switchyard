@@ -60,11 +60,7 @@ impl ReactiveCapability {
             hi = p.abs();
         }
 
-        if lo > hi {
-            (0.0, 0.0)
-        } else {
-            (lo, hi)
-        }
+        if lo > hi { (0.0, 0.0) } else { (lo, hi) }
     }
 
     pub fn contains(&self, p: f32, q: f32) -> bool {

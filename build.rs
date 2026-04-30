@@ -6,12 +6,9 @@ use std::path::PathBuf;
 fn main() -> Result<(), std::io::Error> {
     let proto_root = std::env::var("SWITCHYARD_PROTO_ROOT")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            PathBuf::from("../microsim/submodules/frequenz-api-microgrid")
-        });
+        .unwrap_or_else(|_| PathBuf::from("../microsim/submodules/frequenz-api-microgrid"));
 
-    let microgrid_proto = proto_root
-        .join("proto/frequenz/api/microgrid/v1alpha18/microgrid.proto");
+    let microgrid_proto = proto_root.join("proto/frequenz/api/microgrid/v1alpha18/microgrid.proto");
     let common_proto_root = proto_root.join("submodules/frequenz-api-common/proto");
     let google_proto_root = proto_root.join("submodules/api-common-protos");
 

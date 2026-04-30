@@ -205,12 +205,8 @@ async fn cmd_list(
             .map(|c| vec![c.to_proto() as i32])
             .unwrap_or_default(),
         electrical_component_ids: ids,
-        ..Default::default()
     };
-    let resp = client
-        .list_electrical_components(req)
-        .await?
-        .into_inner();
+    let resp = client.list_electrical_components(req).await?.into_inner();
     if json {
         println!("{:#?}", resp.electrical_components);
         return Ok(());
@@ -243,7 +239,6 @@ async fn cmd_connections(
     let req = ListElectricalComponentConnectionsRequest {
         source_electrical_component_ids: from,
         destination_electrical_component_ids: to,
-        ..Default::default()
     };
     let resp = client
         .list_electrical_component_connections(req)
@@ -262,24 +257,19 @@ async fn cmd_connections(
     Ok(())
 }
 
-async fn cmd_tree(
-    client: &mut MicrogridClient<Channel>,
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn cmd_tree(client: &mut MicrogridClient<Channel>) -> Result<(), Box<dyn std::error::Error>> {
     let comps = client
         .list_electrical_components(ListElectricalComponentsRequest::default())
         .await?
         .into_inner()
         .electrical_components;
     let conns = client
-        .list_electrical_component_connections(
-            ListElectricalComponentConnectionsRequest::default(),
-        )
+        .list_electrical_component_connections(ListElectricalComponentConnectionsRequest::default())
         .await?
         .into_inner()
         .electrical_component_connections;
 
-    let by_id: BTreeMap<u64, &ElectricalComponent> =
-        comps.iter().map(|c| (c.id, c)).collect();
+    let by_id: BTreeMap<u64, &ElectricalComponent> = comps.iter().map(|c| (c.id, c)).collect();
     let mut children: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
     let mut has_parent: BTreeSet<u64> = BTreeSet::new();
     for c in &conns {
@@ -317,12 +307,7 @@ fn print_tree(
         "├── "
     };
     let label = match by_id.get(&id) {
-        Some(c) => format!(
-            "[{}] {} ({})",
-            c.id,
-            c.name,
-            short_category(c.category)
-        ),
+        Some(c) => format!("[{}] {} ({})", c.id, c.name, short_category(c.category)),
         None => format!("[{id}] <unknown>"),
     };
     println!("{prefix}{connector}{label}");
@@ -385,9 +370,7 @@ async fn cmd_stream(
                 } else {
                     s.bounds
                         .iter()
-                        .map(|b| {
-                            format!("[{}, {}]", fmt_opt(b.lower), fmt_opt(b.upper))
-                        })
+                        .map(|b| format!("[{}, {}]", fmt_opt(b.lower), fmt_opt(b.upper)))
                         .collect::<Vec<_>>()
                         .join(",")
                 };
@@ -404,11 +387,10 @@ async fn cmd_stream(
             }
         }
         got += 1;
-        if let Some(n) = samples {
-            if got >= n {
+        if let Some(n) = samples
+            && got >= n {
                 break;
             }
-        }
     }
     Ok(())
 }
@@ -429,15 +411,21 @@ async fn cmd_set_power(
             PowerType::Active as i32
         },
         request_lifetime: lifetime,
-        ..Default::default()
     };
     let mut stream = client
         .set_electrical_component_power(req)
         .await?
         .into_inner();
     while let Some(msg) = stream.message().await? {
-        let name = switchyard::proto::microgrid::SetElectricalComponentPowerRequestStatus::try_from(msg.status)
-            .map(|s| s.as_str_name().trim_start_matches("SET_ELECTRICAL_COMPONENT_POWER_REQUEST_STATUS_").to_string())
+        let name =
+            switchyard::proto::microgrid::SetElectricalComponentPowerRequestStatus::try_from(
+                msg.status,
+            )
+            .map(|s| {
+                s.as_str_name()
+                    .trim_start_matches("SET_ELECTRICAL_COMPONENT_POWER_REQUEST_STATUS_")
+                    .to_string()
+            })
             .unwrap_or_else(|_| msg.status.to_string());
         println!("status: {name}");
         if let Some(t) = msg.valid_until_time {
@@ -463,7 +451,6 @@ async fn cmd_augment(
             upper: Some(upper),
         }],
         request_lifetime: Some(lifetime),
-        ..Default::default()
     };
     let resp = client
         .augment_electrical_component_bounds(req)
@@ -523,11 +510,10 @@ fn short_subtype(c: &ElectricalComponent) -> String {
 fn active_bounds(c: &ElectricalComponent) -> (Option<f32>, Option<f32>) {
     for b in &c.metric_config_bounds {
         let metric = Metric::try_from(b.metric).ok();
-        if matches!(metric, Some(Metric::AcPowerActive) | Some(Metric::DcPower)) {
-            if let Some(cb) = &b.config_bounds {
+        if matches!(metric, Some(Metric::AcPowerActive) | Some(Metric::DcPower))
+            && let Some(cb) = &b.config_bounds {
                 return (cb.lower, cb.upper);
             }
-        }
     }
     (None, None)
 }

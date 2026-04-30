@@ -30,10 +30,11 @@ pub enum SetpointError {
 impl fmt::Display for SetpointError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::OutOfBounds { value, lower, upper } => write!(
-                f,
-                "set-point {value} W out of bounds [{lower}, {upper}]"
-            ),
+            Self::OutOfBounds {
+                value,
+                lower,
+                upper,
+            } => write!(f, "set-point {value} W out of bounds [{lower}, {upper}]"),
             Self::NotHealthy => write!(f, "component is not healthy"),
             Self::Unsupported => write!(f, "operation not supported by this component type"),
         }

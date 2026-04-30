@@ -57,8 +57,8 @@ impl CommandDelay {
     pub fn poll(&self, now: DateTime<Utc>) -> Option<f32> {
         let mut s = self.state.lock();
         if let Some((set_at, v)) = s.pending {
-            let due = set_at
-                + chrono::Duration::from_std(self.delay).unwrap_or(chrono::Duration::zero());
+            let due =
+                set_at + chrono::Duration::from_std(self.delay).unwrap_or(chrono::Duration::zero());
             if now >= due {
                 s.armed = Some(v);
                 s.pending = None;
@@ -164,10 +164,7 @@ mod tests {
         let cd = CommandDelay::new(Duration::from_secs(2));
         cd.set_target(t0, 5000.0);
         assert_eq!(cd.poll(t0 + chrono::Duration::seconds(1)), None);
-        assert_eq!(
-            cd.poll(t0 + chrono::Duration::seconds(2)),
-            Some(5000.0)
-        );
+        assert_eq!(cd.poll(t0 + chrono::Duration::seconds(2)), Some(5000.0));
     }
 
     #[test]

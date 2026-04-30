@@ -451,9 +451,7 @@ fn apply_initial_modes(
 ) -> Result<(), Error> {
     if let Some(h) = health {
         let h = Health::from_str(h).map_err(|_| {
-            Error::invalid_argument(format!(
-                "unknown :health '{h}'; expected ok/error/standby"
-            ))
+            Error::invalid_argument(format!("unknown :health '{h}'; expected ok/error/standby"))
         })?;
         world.set_health(id, h);
     }

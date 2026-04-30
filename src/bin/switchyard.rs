@@ -5,10 +5,8 @@ use std::path::PathBuf;
 
 use simplelog::{ColorChoice, Config as LogConfig, LevelFilter, TermLogger, TerminalMode};
 use switchyard::{
-    lisp::Config,
-    proto::microgrid::microgrid_server::MicrogridServer as MicrogridGrpcServer,
-    server::MicrogridServer,
-    sim::World,
+    lisp::Config, proto::microgrid::microgrid_server::MicrogridServer as MicrogridGrpcServer,
+    server::MicrogridServer, sim::World,
 };
 use tonic::transport::Server;
 

@@ -214,11 +214,9 @@ impl microgrid_server::Microgrid for MicrogridServer {
         // exceed the result. Switchyard does the same here so client
         // code sees the production behaviour even though the inverter
         // and battery don't share a data link in our model.
-        if matches!(power_type, PowerType::Active) {
-            if let Some(child_env) = world.aggregate_child_bounds(req.electrical_component_id) {
-                let own = component
-                    .effective_active_bounds()
-                    .unwrap_or_default();
+        if matches!(power_type, PowerType::Active)
+            && let Some(child_env) = world.aggregate_child_bounds(req.electrical_component_id) {
+                let own = component.effective_active_bounds().unwrap_or_default();
                 let envelope = own.intersect(&child_env);
                 if !envelope.contains(req.power) {
                     return Err(tonic::Status::failed_precondition(format!(
@@ -227,7 +225,6 @@ impl microgrid_server::Microgrid for MicrogridServer {
                     )));
                 }
             }
-        }
 
         let result = match power_type {
             PowerType::Unspecified => {
@@ -279,11 +276,11 @@ impl microgrid_server::Microgrid for MicrogridServer {
         let id = request.into_inner().electrical_component_id;
         let world = self.config.world();
 
-        let component = world.get(id).ok_or_else(|| {
-            tonic::Status::not_found(format!("component {id} not found"))
-        })?;
+        let component = world
+            .get(id)
+            .ok_or_else(|| tonic::Status::not_found(format!("component {id} not found")))?;
         let interval = component.stream_interval();
-        let jitter_pct = component.stream_jitter_pct().max(0.0).min(100.0);
+        let jitter_pct = component.stream_jitter_pct().clamp(0.0, 100.0);
 
         let (tx, rx) = tokio::sync::mpsc::channel(128);
         tokio::spawn(async move {
@@ -333,8 +330,7 @@ impl microgrid_server::Microgrid for MicrogridServer {
                 } else {
                     1.0
                 };
-                let step =
-                    Duration::from_secs_f32((interval.as_secs_f32() * factor).max(0.001));
+                let step = Duration::from_secs_f32((interval.as_secs_f32() * factor).max(0.001));
                 let target = next_due + step;
                 let now = SystemTime::now();
                 let dur = target.duration_since(now).unwrap_or(Duration::ZERO);
@@ -352,10 +348,7 @@ impl microgrid_server::Microgrid for MicrogridServer {
     ) -> Result<tonic::Response<AugmentElectricalComponentBoundsResponse>, tonic::Status> {
         let req = request.into_inner();
         let target_metric = Metric::try_from(req.target_metric).map_err(|_| {
-            tonic::Status::invalid_argument(format!(
-                "invalid metric type: {}",
-                req.target_metric
-            ))
+            tonic::Status::invalid_argument(format!("invalid metric type: {}", req.target_metric))
         })?;
         if target_metric != Metric::AcPowerActive {
             return Err(tonic::Status::invalid_argument(format!(
@@ -364,10 +357,7 @@ impl microgrid_server::Microgrid for MicrogridServer {
             )));
         }
 
-        let lifetime_s = req
-            .request_lifetime
-            .unwrap_or(5)
-            .clamp(5, 15 * 60) as u64;
+        let lifetime_s = req.request_lifetime.unwrap_or(5).clamp(5, 15 * 60);
         let lifetime = Duration::from_secs(lifetime_s);
         let now = chrono::Utc::now();
 
@@ -430,7 +420,9 @@ impl microgrid_server::Microgrid for MicrogridServer {
         &self,
         _request: tonic::Request<AckElectricalComponentErrorRequest>,
     ) -> Result<tonic::Response<()>, tonic::Status> {
-        Err(tonic::Status::unimplemented("ack-error not yet implemented"))
+        Err(tonic::Status::unimplemented(
+            "ack-error not yet implemented",
+        ))
     }
 }
 
