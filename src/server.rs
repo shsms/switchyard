@@ -171,6 +171,11 @@ impl microgrid_server::Microgrid for MicrogridServer {
         let req = request.into_inner();
         let power_type = PowerType::try_from(req.power_type)
             .map_err(|_| tonic::Status::invalid_argument("invalid power type"))?;
+        if matches!(power_type, PowerType::Unspecified) {
+            return Err(tonic::Status::invalid_argument(
+                "Power type cannot be UNSPECIFIED.",
+            ));
+        }
 
         let world = self.config.world();
         let component = world.get(req.electrical_component_id).ok_or_else(|| {
@@ -227,13 +232,11 @@ impl microgrid_server::Microgrid for MicrogridServer {
             }
 
         let result = match power_type {
-            PowerType::Unspecified => {
-                return Err(tonic::Status::invalid_argument(
-                    "Power type cannot be UNSPECIFIED.",
-                ));
-            }
             PowerType::Active => component.set_active_setpoint(req.power),
             PowerType::Reactive => component.set_reactive_setpoint(req.power),
+            // Unspecified rejected up front; tonic enums don't carry
+            // unknown variants, so this is exhaustive.
+            PowerType::Unspecified => unreachable!(),
         };
 
         if let Err(e) = result {
@@ -334,7 +337,17 @@ impl microgrid_server::Microgrid for MicrogridServer {
                 let target = next_due + step;
                 let now = SystemTime::now();
                 let dur = target.duration_since(now).unwrap_or(Duration::ZERO);
-                tokio::time::sleep(dur).await;
+                // Wake on the dwell elapsing OR the client dropping.
+                // Without this, a Silent stream that the client drops
+                // would leak this task forever — tx.send only fires
+                // (and only fails) in Normal mode.
+                tokio::select! {
+                    _ = tokio::time::sleep(dur) => {}
+                    _ = tx.closed() => {
+                        log::debug!("stream({id}): client disconnected (during dwell)");
+                        break;
+                    }
+                }
                 next_due = target.max(now);
             }
         });
