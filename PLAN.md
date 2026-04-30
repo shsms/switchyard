@@ -377,7 +377,6 @@ A snapshot of where switchyard sits relative to microsim. Items marked
 | Feature | Notes |
 |---|---|
 | **TUI** | Microsim ships a 350-line ratatui-based terminal UI for live inspection (`--tui`). Switchyard is headless; clients use `swctl` or grpcurl. |
-| **Dynamic reactive bounds** | Microsim recomputes reactive limits as ±35% of \|actual P\| per sample. Switchyard publishes static rated reactive bounds in `metric_config_bounds`; the inverter still validates a setpoint against ±35% of the *current ramp value*, but the published bounds don't update. |
 | **`dt:now` / `dt:milliseconds` / `dt:minutes`** | Microsim exposes time helpers for scheduling absolute-time events. Switchyard has none. |
 | **`microsim-etags`** | Editor jump-to-definition support for the Lisp config. Switchyard has no equivalent binary. |
 | **`:per-phase-power 'symbol`** | Microsim meters can read a Lisp-side global on every tick (consumer load profile fed from one timer into N meters). Switchyard meters take a static `:power` literal; dynamic injection requires a per-meter Rust setter defun. |
@@ -396,6 +395,8 @@ A snapshot of where switchyard sits relative to microsim. Items marked
 | **`:stream-jitter-pct`** | Per-component random jitter on telemetry stream cadence so multi-subscriber clients see streams drifting independently. |
 | **Two-layer setpoint validation** | API gateway intersects `inverter.bounds ∩ Σ children.bounds` and rejects out-of-envelope setpoints with the explicit envelope in the error message. |
 | **Decoupled inverter ↔ battery** | Inverter publishes measured output and its own bounds only; battery self-clamps on ingress. No data coupling between the two devices, matching real hardware. |
+| **Composable reactive capability** | Two orthogonal optional constraints per inverter: PF cap (`\|Q\| ≤ k×\|P\|`) and apparent / kVA cap (`P² + Q² ≤ S²`). Microsim hardcodes the PF case at 0.35; switchyard exposes both as `:reactive-pf-limit` and `:reactive-apparent-va`, recomputes the live envelope every tick, and publishes it on the `AC_POWER_REACTIVE` metric sample. |
+| **Apparent DC telemetry** | Battery reports `dc_power_w = sign(P) × √(P² + Q²)` and `dc_current_a = dc_power_w / V_dc`, reflecting the conductor / IGBT loading a real DC instrument would read. SoC integration stays on active P only. |
 | **`swctl` CLI** | clap-based client (`info` / `list` / `tree` / `stream` / `set-power` / `augment-bounds`). Microsim users went via grpcurl or the Frequenz SDK. |
 | **`World::aggregate_child_bounds`** | Public Rust API for walking the topology and summing children's bounds. Microsim's equivalent lives entirely in Lisp. |
 

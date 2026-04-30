@@ -48,6 +48,11 @@
                  :command-delay-ms 1500
                  :ramp-rate         5000.0
                  :stream-jitter-pct 8.0
+                 ;; kVA-limited inverter (apparent-power circle of
+                 ;; 32 kVA), no PF cap. Q allowance is full ±32 kVA at
+                 ;; P=0 and shrinks as P approaches 30 kW.
+                 :reactive-pf-limit 0.0          ;; 0 = disabled
+                 :reactive-apparent-va 32000.0   ;; kVA-circle envelope
                  :successors (list (make-battery
                                     :initial-soc          85.0
                                     :soc-protect-margin   10.0

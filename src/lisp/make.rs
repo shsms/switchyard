@@ -93,6 +93,10 @@ AsPlist! {
         health<":health">: Option<String> {= None},
         telemetry_mode<":telemetry-mode">: Option<String> {= None},
         command_mode<":command-mode">: Option<String> {= None},
+        /// PF-style Q cap: |Q| ≤ k × |P|. Pass nil to disable.
+        reactive_pf_limit<":reactive-pf-limit">: Option<f64> {= None},
+        /// kVA-style Q cap: P² + Q² ≤ apparent². Pass nil to disable.
+        reactive_apparent_va<":reactive-apparent-va">: Option<f64> {= None},
     }
 }
 
@@ -278,6 +282,28 @@ pub fn register(ctx: &mut TulispContext, world: World) {
             }
             if let Some(v) = a.stream_jitter_pct {
                 cfg.stream_jitter_pct = v as f32;
+            }
+            // Reactive capability semantics:
+            //   neither arg present  → microsim-compatible PF=0.35 default
+            //   either arg present   → override the default with both
+            //                          (the unspecified one is "disabled")
+            //   value ≤ 0.0          → that constraint is disabled
+            // This lets the user write
+            //   :reactive-apparent-va 32000.0     ;; kVA only
+            //   :reactive-pf-limit 0.0 :reactive-apparent-va 0.0 ;; unrestricted
+            //   :reactive-pf-limit 0.5            ;; tighter PF, no kVA
+            // without needing a third "mode" symbol.
+            if a.reactive_pf_limit.is_some() || a.reactive_apparent_va.is_some() {
+                let pf = a
+                    .reactive_pf_limit
+                    .and_then(|v| if v > 0.0 { Some(v as f32) } else { None });
+                let apparent = a
+                    .reactive_apparent_va
+                    .and_then(|v| if v > 0.0 { Some(v as f32) } else { None });
+                cfg.reactive = crate::sim::reactive::ReactiveCapability {
+                    pf_limit: pf,
+                    apparent_va: apparent,
+                };
             }
             let succ_ids: Vec<u64> = a
                 .successors
