@@ -8,6 +8,7 @@ pub mod grid;
 pub mod inverter;
 pub mod meter;
 pub mod ramp;
+pub mod reactive;
 pub mod runtime;
 pub mod world;
 

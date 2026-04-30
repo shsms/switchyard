@@ -7,6 +7,7 @@ use crate::sim::{
     Category, SetpointError, SimulatedComponent, Telemetry, World,
     bounds::ComponentBounds,
     ramp::{CommandDelay, Ramp},
+    reactive::ReactiveCapability,
 };
 
 #[derive(Clone, Debug)]
@@ -17,6 +18,8 @@ pub struct BatteryInverterConfig {
     /// W/s; use `f32::INFINITY` to disable ramping.
     pub ramp_rate_w_per_s: f32,
     pub stream_jitter_pct: f32,
+    /// Q envelope. Default microsim-compatible PF cap of 0.35.
+    pub reactive: ReactiveCapability,
 }
 
 impl Default for BatteryInverterConfig {
@@ -27,6 +30,7 @@ impl Default for BatteryInverterConfig {
             command_delay: Duration::ZERO,
             ramp_rate_w_per_s: f32::INFINITY,
             stream_jitter_pct: 0.0,
+            reactive: ReactiveCapability::microsim_default(),
         }
     }
 }
@@ -176,12 +180,17 @@ impl SimulatedComponent for BatteryInverter {
     }
 
     fn set_reactive_setpoint(&self, vars: f32) -> Result<(), SetpointError> {
-        let abs_p = self.ramp.actual().abs();
-        if vars < -0.35 * abs_p || vars > 0.35 * abs_p {
+        // Q is validated against the live envelope at the *current*
+        // active power, not the rated upper. As P drops, the
+        // allowable Q drops with it (PF-style cap) or expands toward
+        // the kVA edge.
+        let p_now = *self.measured_w.lock();
+        let (lo, hi) = self.cfg.reactive.q_bounds_at(p_now);
+        if vars < lo || vars > hi {
             return Err(SetpointError::OutOfBounds {
                 value: vars,
-                lower: -0.35 * abs_p,
-                upper: 0.35 * abs_p,
+                lower: lo,
+                upper: hi,
             });
         }
         *self.reactive_var.lock() = vars;
@@ -229,6 +238,11 @@ impl SimulatedComponent for BatteryInverter {
 
     fn effective_active_bounds(&self) -> Option<crate::sim::bounds::VecBounds> {
         Some(self.bounds.lock().effective())
+    }
+
+    fn reactive_bounds(&self) -> Option<(f32, f32)> {
+        let p = *self.measured_w.lock();
+        Some(self.cfg.reactive.q_bounds_at(p))
     }
 }
 

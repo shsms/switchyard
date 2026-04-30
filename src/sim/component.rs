@@ -172,6 +172,13 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
     fn stream_jitter_pct(&self) -> f32 {
         0.0
     }
+
+    /// Current `(lower, upper)` reactive-power envelope, derived from
+    /// the component's reactive capability and its current active P.
+    /// `None` for components that don't model reactive power.
+    fn reactive_bounds(&self) -> Option<(f32, f32)> {
+        None
+    }
 }
 
 /// Cloneable handle that we hand to Lisp via `Shared<dyn TulispAny>`.
