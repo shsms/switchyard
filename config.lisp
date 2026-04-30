@@ -21,13 +21,77 @@
 (set-socket-addr "[::1]:8800")  ;; takes effect on next launch
 
 ;; -----------------------------------------------------------------------------
-;; Environment animation — driven by `every` rather than baked-in
-;; constants. Lisp's job is to inject realistic per-tick noise into the
-;; AC environment so streamed telemetry reflects what a real microgrid
-;; sees (a slowly wandering line voltage, a frequency that drifts a
-;; few mHz around 50.0).
+;; Topology — nested for visual clarity. The whole graph is one
+;; expression; reading top-to-bottom traces the grid → main meter →
+;; per-branch meters → underlying device chain.
 ;; -----------------------------------------------------------------------------
 
+(make-grid
+ :id 1
+ :rated-fuse-current 100
+ :successors
+ (list
+  (make-meter
+   :id 2
+   :interval 200
+   :successors
+   (list
+    ;; Battery branch: SCADA delay + slew-rate-limited ramp,
+    ;; kVA-circle reactive envelope, slight per-stream jitter on both
+    ;; the inverter and the battery underneath it.
+    (make-meter
+     :successors
+     (list (make-battery-inverter
+            :command-delay-ms     1500
+            :ramp-rate            5000.0
+            :stream-jitter-pct    8.0
+            :reactive-pf-limit    0.0      ;; 0 = disabled
+            :reactive-apparent-va 32000.0  ;; kVA-circle envelope
+            :successors
+            (list (make-battery
+                   :initial-soc        85.0
+                   :soc-protect-margin 10.0
+                   :stream-jitter-pct  8.0)))))
+
+    ;; Solar branch.
+    (make-meter
+     :successors
+     (list (make-solar-inverter
+            :sunlight%         80.0
+            :ramp-rate         2000.0
+            :stream-jitter-pct 5.0)))
+
+    ;; EV branch — near-full so the SoC-protect taper is observable.
+    (make-meter
+     :stream-jitter-pct 4.0
+     :successors
+     (list (make-ev-charger
+            :initial-soc        92.0
+            :soc-upper          100.0
+            :soc-protect-margin 10.0
+            :rated-upper        22000.0
+            :command-delay-ms   500
+            :ramp-rate          3000.0
+            :stream-jitter-pct  10.0)))
+
+    ;; CHP modeled as a constant -2 kW generator on its meter.
+    (make-meter
+     :power -2000.0
+     :successors (list (make-chp)))
+
+    ;; Hidden consumer meter — invisible in ListComponents / tree but
+    ;; aggregated into the main meter. Driven dynamically by the
+    ;; consumer-curve timer below via id 100.
+    (make-meter :id 100 :hidden t :power 1000.0)))))
+
+;; -----------------------------------------------------------------------------
+;; Time-driven animation. Both `every` blocks run the callback once
+;; synchronously at load time, so they live AFTER the topology — that
+;; way the consumer-load timer's first call finds component id 100.
+;; -----------------------------------------------------------------------------
+
+;; Per-tick noise on the AC environment: a slowly wandering line
+;; voltage and a frequency that drifts a few mHz around 50 Hz.
 (every
  :milliseconds 200
  :call (lambda ()
@@ -38,86 +102,29 @@
          (set-frequency
           (+ 49.99 (/ (random 4) 100.0)))))
 
-;; -----------------------------------------------------------------------------
-;; Topology
-;; -----------------------------------------------------------------------------
-
-;; Battery branch — SCADA delay + slew-rate-limited ramp + slight
-;; per-stream jitter on both the inverter and the battery.
-(setq inv-bat-1 (make-battery-inverter
-                 :command-delay-ms 1500
-                 :ramp-rate         5000.0
-                 :stream-jitter-pct 8.0
-                 ;; kVA-limited inverter (apparent-power circle of
-                 ;; 32 kVA), no PF cap. Q allowance is full ±32 kVA at
-                 ;; P=0 and shrinks as P approaches 30 kW.
-                 :reactive-pf-limit 0.0          ;; 0 = disabled
-                 :reactive-apparent-va 32000.0   ;; kVA-circle envelope
-                 :successors (list (make-battery
-                                    :initial-soc          85.0
-                                    :soc-protect-margin   10.0
-                                    :stream-jitter-pct    8.0))))
-
-;; Solar branch.
-(setq inv-pv-1 (make-solar-inverter
-                :sunlight%         80.0
-                :ramp-rate         2000.0
-                :stream-jitter-pct 5.0))
-
-;; EV charger near-full so the SoC-protect taper is observable.
-(setq ev-1 (make-ev-charger
-            :initial-soc        92.0
-            :soc-upper          100.0
-            :soc-protect-margin 10.0
-            :rated-upper        22000.0
-            :command-delay-ms   500
-            :ramp-rate          3000.0
-            :stream-jitter-pct  10.0))
-
-;; CHP modeled as a constant -2 kW load on its meter.
-(setq chp-1 (make-chp))
-
-(setq meter-bat (make-meter :successors (list inv-bat-1)))
-(setq meter-pv  (make-meter :successors (list inv-pv-1)))
-(setq meter-ev  (make-meter :successors (list ev-1)
-                            :stream-jitter-pct 4.0))
-(setq meter-chp (make-meter :power -2000.0 :successors (list chp-1)))
-;; Hidden consumer meters are driven dynamically from Lisp. Both
-;; approaches are demonstrated; pick whichever fits your scenario.
-
-;; ── (a) Function-driven consumer ────────────────────────────────────
-;; Shape: low first half (1 kW), gradual ramp through the second half,
-;; then a sudden spike near the end of every 15-minute window. Anything
-;; expressible as a Lisp function over the elapsed window time works.
-(setq meter-load (make-meter :hidden t :power 1000.0))
+;; Consumer-load curve over a 15-minute window.
+;; Shape: low first half (1 kW), 7-min ramp 1 → ~16 kW, sudden 16 kW
+;; spike near the end. Replace with (csv-lookup …) for a profile
+;; recorded from real data; the setter doesn't care where the value
+;; comes from.
 (defun consumer-curve (t-window)
-  (cond ((< t-window 450.0) 1000.0)              ;; first half: 1 kW
-        ((> t-window 870.0) 16000.0)             ;; spike near end of window
-        (t (+ 1000.0 (* 35.0 (- t-window 450.0)))))) ;; 7-min ramp 1 → ~16 kW
+  (cond ((< t-window 450.0) 1000.0)
+        ((> t-window 870.0) 16000.0)
+        (t (+ 1000.0 (* 35.0 (- t-window 450.0))))))
+
 (every
  :milliseconds 200
  :call (lambda ()
-         (set-meter-power (component-id meter-load)
-                          (consumer-curve (window-elapsed 900.0)))))
+         (set-meter-power 100 (consumer-curve (window-elapsed 900.0)))))
 
-;; ── (b) CSV-driven consumer (alternative; uncomment to use) ─────────
+;; ── CSV-driven alternative (uncomment to swap with the function above) ──
 ;; (setq csv-data    (csv-load "sim/example_load.csv"))
 ;; (setq csv-anchor  (now-seconds))   ;; t=0 in the CSV maps to "now"
 ;; (every
 ;;  :milliseconds 1000
 ;;  :call (lambda ()
 ;;          (let ((rel (mod (- (now-seconds) csv-anchor) 900.0)))
-;;            (set-meter-power (component-id meter-load)
+;;            (set-meter-power 100
 ;;                             (+ (csv-lookup csv-data "kitchen" rel)
 ;;                                (csv-lookup csv-data "bedroom" rel)
 ;;                                (csv-lookup csv-data "office" rel))))))
-
-(setq main-meter (make-meter
-                  :id 2
-                  :interval 200
-                  :successors (list meter-bat meter-pv meter-ev meter-chp meter-load)))
-
-(make-grid
- :id 1
- :rated-fuse-current 100
- :successors (list main-meter))
