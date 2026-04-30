@@ -21,6 +21,52 @@
 (set-socket-addr "[::1]:8800")  ;; takes effect on next launch
 
 ;; -----------------------------------------------------------------------------
+;; Time-driven animation. `every` runs the callback every :milliseconds
+;; (no synchronous first call), so these blocks can sit alongside the
+;; topology rather than after it.
+;; -----------------------------------------------------------------------------
+
+;; Per-tick noise on the AC environment: a slowly wandering line
+;; voltage and a frequency that drifts a few mHz around 50 Hz.
+(every
+ :milliseconds 200
+ :call (lambda ()
+         (set-voltage-per-phase
+          (+ 229.0 (/ (random 200) 100.0))
+          (+ 229.0 (/ (random 200) 100.0))
+          (+ 229.0 (/ (random 200) 100.0)))
+         (set-frequency
+          (+ 49.99 (/ (random 4) 100.0)))))
+
+;; Consumer-load curve over a 15-minute window, driving meter id 100
+;; (the hidden consumer meter declared in the topology below).
+;; Shape: low first half (1 kW), 7-min ramp 1 → ~16 kW, sudden 16 kW
+;; spike near the end. Replace with (csv-lookup …) for a profile
+;; recorded from real data; the setter doesn't care where the value
+;; comes from.
+(defun consumer-curve (t-window)
+  (cond ((< t-window 450.0) 1000.0)
+        ((> t-window 870.0) 16000.0)
+        (t (+ 1000.0 (* 35.0 (- t-window 450.0))))))
+
+(every
+ :milliseconds 200
+ :call (lambda ()
+         (set-meter-power 100 (consumer-curve (window-elapsed 900.0)))))
+
+;; ── CSV-driven alternative (uncomment to swap with the function above) ──
+;; (setq csv-data    (csv-load "sim/example_load.csv"))
+;; (setq csv-anchor  (now-seconds))   ;; t=0 in the CSV maps to "now"
+;; (every
+;;  :milliseconds 1000
+;;  :call (lambda ()
+;;          (let ((rel (mod (- (now-seconds) csv-anchor) 900.0)))
+;;            (set-meter-power 100
+;;                             (+ (csv-lookup csv-data "kitchen" rel)
+;;                                (csv-lookup csv-data "bedroom" rel)
+;;                                (csv-lookup csv-data "office" rel))))))
+
+;; -----------------------------------------------------------------------------
 ;; Topology — nested for visual clarity. The whole graph is one
 ;; expression; reading top-to-bottom traces the grid → main meter →
 ;; per-branch meters → underlying device chain.
@@ -81,50 +127,5 @@
 
     ;; Hidden consumer meter — invisible in ListComponents / tree but
     ;; aggregated into the main meter. Driven dynamically by the
-    ;; consumer-curve timer below via id 100.
+    ;; consumer-curve timer above via id 100.
     (make-meter :id 100 :hidden t :power 1000.0)))))
-
-;; -----------------------------------------------------------------------------
-;; Time-driven animation. Both `every` blocks run the callback once
-;; synchronously at load time, so they live AFTER the topology — that
-;; way the consumer-load timer's first call finds component id 100.
-;; -----------------------------------------------------------------------------
-
-;; Per-tick noise on the AC environment: a slowly wandering line
-;; voltage and a frequency that drifts a few mHz around 50 Hz.
-(every
- :milliseconds 200
- :call (lambda ()
-         (set-voltage-per-phase
-          (+ 229.0 (/ (random 200) 100.0))
-          (+ 229.0 (/ (random 200) 100.0))
-          (+ 229.0 (/ (random 200) 100.0)))
-         (set-frequency
-          (+ 49.99 (/ (random 4) 100.0)))))
-
-;; Consumer-load curve over a 15-minute window.
-;; Shape: low first half (1 kW), 7-min ramp 1 → ~16 kW, sudden 16 kW
-;; spike near the end. Replace with (csv-lookup …) for a profile
-;; recorded from real data; the setter doesn't care where the value
-;; comes from.
-(defun consumer-curve (t-window)
-  (cond ((< t-window 450.0) 1000.0)
-        ((> t-window 870.0) 16000.0)
-        (t (+ 1000.0 (* 35.0 (- t-window 450.0))))))
-
-(every
- :milliseconds 200
- :call (lambda ()
-         (set-meter-power 100 (consumer-curve (window-elapsed 900.0)))))
-
-;; ── CSV-driven alternative (uncomment to swap with the function above) ──
-;; (setq csv-data    (csv-load "sim/example_load.csv"))
-;; (setq csv-anchor  (now-seconds))   ;; t=0 in the CSV maps to "now"
-;; (every
-;;  :milliseconds 1000
-;;  :call (lambda ()
-;;          (let ((rel (mod (- (now-seconds) csv-anchor) 900.0)))
-;;            (set-meter-power 100
-;;                             (+ (csv-lookup csv-data "kitchen" rel)
-;;                                (csv-lookup csv-data "bedroom" rel)
-;;                                (csv-lookup csv-data "office" rel))))))

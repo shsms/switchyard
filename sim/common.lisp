@@ -35,12 +35,13 @@ hot-reload starts from a clean slate."
 ;; -----------------------------------------------------------------------------
 
 (defun every (&rest plist)
-  "Call :call once now, then every :milliseconds ms thereafter. The
-underlying timer handle is pushed onto `active-timers` so reset-state
+  "Call :call every :milliseconds ms. First firing happens after the
+interval has elapsed — not synchronously at load time — so a config
+file can put `every` blocks anywhere relative to the topology they
+reference. The handle is pushed onto `active-timers` so reset-state
 can cancel it on reload."
   (let* ((ms (plist-get plist :milliseconds))
          (func (plist-get plist :call))
          (secs (/ ms 1000.0)))
-    (funcall func)
     (setq active-timers
           (cons (run-with-timer secs secs func) active-timers))))
