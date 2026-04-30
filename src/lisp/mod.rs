@@ -147,6 +147,53 @@ fn register_runtime(ctx: &mut TulispContext, world: &World, metadata: Arc<RwLock
     register_reset(ctx, world.clone());
     register_grid_state(ctx, world.clone());
     register_metadata(ctx, metadata);
+    register_runtime_modes(ctx, world.clone());
+}
+
+fn register_runtime_modes(ctx: &mut TulispContext, world: World) {
+    use crate::sim::runtime::{CommandMode, Health, TelemetryMode};
+    use std::str::FromStr;
+
+    let w = world.clone();
+    ctx.defun(
+        "set-component-health",
+        move |id: i64, label: String| -> Result<bool, Error> {
+            let h = Health::from_str(&label).map_err(|_| {
+                Error::invalid_argument(format!(
+                    "unknown health label '{label}'; expected ok/error/standby"
+                ))
+            })?;
+            w.set_health(id as u64, h);
+            Ok(true)
+        },
+    );
+
+    let w = world.clone();
+    ctx.defun(
+        "set-component-telemetry-mode",
+        move |id: i64, label: String| -> Result<bool, Error> {
+            let m = TelemetryMode::from_str(&label).map_err(|_| {
+                Error::invalid_argument(format!(
+                    "unknown telemetry mode '{label}'; expected normal/silent/closed"
+                ))
+            })?;
+            w.set_telemetry_mode(id as u64, m);
+            Ok(true)
+        },
+    );
+
+    ctx.defun(
+        "set-component-command-mode",
+        move |id: i64, label: String| -> Result<bool, Error> {
+            let m = CommandMode::from_str(&label).map_err(|_| {
+                Error::invalid_argument(format!(
+                    "unknown command mode '{label}'; expected normal/timeout/error"
+                ))
+            })?;
+            world.set_command_mode(id as u64, m);
+            Ok(true)
+        },
+    );
 }
 
 fn register_metadata(ctx: &mut TulispContext, metadata: Arc<RwLock<Metadata>>) {
