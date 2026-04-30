@@ -123,6 +123,7 @@ impl SimulatedComponent for BatteryInverter {
             per_phase_voltage_v: Some(grid.voltage_per_phase),
             per_phase_current_a: Some(per_phase_current(pp, rpp, grid.voltage_per_phase)),
             frequency_hz: Some(grid.frequency_hz),
+            active_power_bounds: Some(self.bounds.lock().effective()),
             component_state: Some(power_state(p)),
             ..Default::default()
         }
@@ -178,6 +179,14 @@ impl SimulatedComponent for BatteryInverter {
         // current grid voltage if it needs more accuracy.
         let p = self.ramp.actual();
         (p / 3.0, p / 3.0, p / 3.0)
+    }
+
+    fn rated_active_bounds(&self) -> Option<(f32, f32)> {
+        Some((self.cfg.rated_lower_w, self.cfg.rated_upper_w))
+    }
+
+    fn subtype(&self) -> Option<&'static str> {
+        Some("battery")
     }
 }
 

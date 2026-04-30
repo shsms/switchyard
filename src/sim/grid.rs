@@ -47,4 +47,8 @@ impl SimulatedComponent for Grid {
             ..Default::default()
         }
     }
+
+    fn rated_fuse_current(&self) -> Option<u32> {
+        Some(self.rated_fuse_current)
+    }
 }

@@ -9,24 +9,44 @@
 pub mod handle;
 pub mod make;
 
-use std::{path::Path, time::Duration};
+use std::{
+    path::Path,
+    sync::Arc,
+    time::Duration,
+};
 
 use notify::{RecommendedWatcher, Watcher};
+use parking_lot::RwLock;
 use tulisp::{Error, SharedMut, TulispContext};
 
 use crate::sim::World;
+
+/// Microgrid identity metadata. Kept minimal for now — the full set
+/// (delivery area, EIC, location) lands when the server needs it.
+#[derive(Debug, Clone, Default)]
+pub struct Metadata {
+    pub microgrid_id: u64,
+    pub enterprise_id: u64,
+    pub name: String,
+    pub socket_addr: String,
+}
 
 #[derive(Clone)]
 pub struct Config {
     filename: String,
     pub(crate) ctx: SharedMut<TulispContext>,
     pub(crate) world: World,
+    pub(crate) metadata: Arc<RwLock<Metadata>>,
 }
 
 impl Config {
     pub fn new(filename: &str) -> Self {
         let mut ctx = TulispContext::new();
         let world = World::new();
+        let metadata = Arc::new(RwLock::new(Metadata {
+            socket_addr: "[::1]:8800".to_string(),
+            ..Default::default()
+        }));
 
         let config_path = Path::new(filename);
         if let Some(p) = config_path.parent() {
@@ -34,7 +54,7 @@ impl Config {
                 .unwrap_or_else(|e| panic!("set_load_path({}): {:?}", p.display(), e));
         }
 
-        register_runtime(&mut ctx, &world);
+        register_runtime(&mut ctx, &world, metadata.clone());
 
         if let Err(e) = ctx.eval_file(filename) {
             log::error!("Tulisp error:\n{}", e.format(&ctx));
@@ -44,7 +64,16 @@ impl Config {
             filename: filename.to_string(),
             ctx: SharedMut::new(ctx),
             world,
+            metadata,
         }
+    }
+
+    pub fn metadata(&self) -> Metadata {
+        self.metadata.read().clone()
+    }
+
+    pub fn socket_addr(&self) -> String {
+        self.metadata.read().socket_addr.clone()
     }
 
     pub fn world(&self) -> World {
@@ -98,12 +127,35 @@ impl Config {
 }
 
 /// Register every Rust function the config DSL needs.
-fn register_runtime(ctx: &mut TulispContext, world: &World) {
+fn register_runtime(ctx: &mut TulispContext, world: &World, metadata: Arc<RwLock<Metadata>>) {
     add_log_functions(ctx);
     handle::register(ctx);
     make::register(ctx, world.clone());
     register_reset(ctx, world.clone());
     register_grid_state(ctx, world.clone());
+    register_metadata(ctx, metadata);
+}
+
+fn register_metadata(ctx: &mut TulispContext, metadata: Arc<RwLock<Metadata>>) {
+    let m = metadata.clone();
+    ctx.defun("set-microgrid-id", move |id: i64| -> Result<bool, Error> {
+        m.write().microgrid_id = id as u64;
+        Ok(true)
+    });
+    let m = metadata.clone();
+    ctx.defun("set-enterprise-id", move |id: i64| -> Result<bool, Error> {
+        m.write().enterprise_id = id as u64;
+        Ok(true)
+    });
+    let m = metadata.clone();
+    ctx.defun("set-microgrid-name", move |name: String| -> Result<bool, Error> {
+        m.write().name = name;
+        Ok(true)
+    });
+    ctx.defun("set-socket-addr", move |addr: String| -> Result<bool, Error> {
+        metadata.write().socket_addr = addr;
+        Ok(true)
+    });
 }
 
 fn add_log_functions(ctx: &mut TulispContext) {

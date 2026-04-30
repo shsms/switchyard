@@ -133,4 +133,12 @@ impl SimulatedComponent for SolarInverter {
     fn aggregate_power_w(&self) -> f32 {
         self.ramp.actual()
     }
+
+    fn rated_active_bounds(&self) -> Option<(f32, f32)> {
+        Some((self.cfg.rated_lower_w, self.cfg.rated_upper_w))
+    }
+
+    fn subtype(&self) -> Option<&'static str> {
+        Some("solar")
+    }
 }

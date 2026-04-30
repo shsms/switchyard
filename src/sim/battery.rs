@@ -3,7 +3,7 @@ use std::{fmt, time::Duration};
 use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
 
-use crate::sim::{Category, SimulatedComponent, Telemetry, World};
+use crate::sim::{Category, SimulatedComponent, Telemetry, World, bounds::VecBounds};
 
 /// Tunables exposed via `(make-battery :soc-charge-protect t :soc-charge-protect-margin 10.0 …)`.
 #[derive(Clone, Debug)]
@@ -120,6 +120,10 @@ impl SimulatedComponent for Battery {
             } else {
                 0.0
             }),
+            active_power_bounds: Some(VecBounds::single(
+                self.cfg.rated_lower_w,
+                self.cfg.rated_upper_w,
+            )),
             component_state: Some(power_to_state(s.power_w)),
             relay_state: Some("relay-closed"),
             ..Default::default()
@@ -132,6 +136,10 @@ impl SimulatedComponent for Battery {
 
     fn set_dc_power(&self, p: f32) {
         self.set_power_w(p);
+    }
+
+    fn rated_active_bounds(&self) -> Option<(f32, f32)> {
+        Some((self.cfg.rated_lower_w, self.cfg.rated_upper_w))
     }
 }
 

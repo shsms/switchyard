@@ -133,6 +133,26 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
     /// drive their batteries). Default no-op so non-DC components
     /// silently ignore the call.
     fn set_dc_power(&self, _p: f32) {}
+
+    /// Static rated active-power bounds (W), if applicable. Used by
+    /// `ListElectricalComponents` to populate `metric_config_bounds`.
+    fn rated_active_bounds(&self) -> Option<(f32, f32)> {
+        None
+    }
+
+    /// Rated fuse current at the grid connection point.
+    fn rated_fuse_current(&self) -> Option<u32> {
+        None
+    }
+
+    /// Subtype label, used by `make_component_proto` to drive the
+    /// proto-level enums (e.g. `InverterType`, `BatteryType`,
+    /// `EvChargerType`). Free-form so the trait doesn't depend on
+    /// proto types — `proto_conv` matches on known strings and falls
+    /// back to "unspecified".
+    fn subtype(&self) -> Option<&'static str> {
+        None
+    }
 }
 
 /// Cloneable handle that we hand to Lisp via `Shared<dyn TulispAny>`.

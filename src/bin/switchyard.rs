@@ -1,13 +1,19 @@
-//! Headless switchyard simulator — loads `config.lisp`, spawns the
-//! physics tick, and (eventually) serves gRPC. For the scaffold pass,
-//! it exercises the load + tick path without binding to a port.
+//! Headless switchyard simulator: load `config.lisp`, spawn the
+//! physics tick, serve the Microgrid gRPC API.
 
 use std::path::PathBuf;
 
 use simplelog::{ColorChoice, Config as LogConfig, LevelFilter, TermLogger, TerminalMode};
-use switchyard::{lisp::Config, sim::World};
+use switchyard::{
+    lisp::Config,
+    proto::microgrid::microgrid_server::MicrogridServer as MicrogridGrpcServer,
+    server::MicrogridServer,
+    sim::World,
+};
+use tonic::transport::Server;
 
-fn main() {
+#[tokio::main(flavor = "multi_thread")]
+async fn main() {
     TermLogger::init(
         LevelFilter::Info,
         LogConfig::default(),
@@ -22,23 +28,29 @@ fn main() {
     let cfg_path = PathBuf::from(cfg_path);
     log::info!("Loading config from {}", cfg_path.display());
 
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
+    let config = Config::new(cfg_path.to_str().unwrap());
+    let world = config.world();
+    log::info!(
+        "Loaded {} components, {} connections",
+        world.components().len(),
+        world.connections().len()
+    );
+
+    World::clone(&world).spawn_physics();
+
+    let socket_addr_str = config.socket_addr();
+    let socket_addr = socket_addr_str
+        .parse()
+        .unwrap_or_else(|e| panic!("invalid socket addr {socket_addr_str:?}: {e}"));
+    log::info!("Microgrid gRPC server listening on {socket_addr_str}");
+
+    // Watch the config file in the background so saves trigger reload.
+    tokio::spawn(config.clone().watch());
+
+    let server = MicrogridServer::new(config);
+    Server::builder()
+        .add_service(MicrogridGrpcServer::new(server))
+        .serve(socket_addr)
+        .await
         .unwrap();
-
-    rt.block_on(async move {
-        // Construct Config inside the runtime — tulisp-async's
-        // TokioExecutor captures Handle::current() at construction.
-        let config = Config::new(cfg_path.to_str().unwrap());
-        let world = config.world();
-        log::info!(
-            "Loaded {} components, {} connections",
-            world.components().len(),
-            world.connections().len()
-        );
-
-        World::clone(&world).spawn_physics();
-        config.watch().await;
-    });
 }
