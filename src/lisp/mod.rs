@@ -48,11 +48,16 @@ impl Config {
             ..Default::default()
         }));
 
+        // `Path::parent()` returns `Some("")` for bare filenames like
+        // "config.lisp" — tulisp rejects empty paths, so fall back to
+        // the current directory in that case.
         let config_path = Path::new(filename);
-        if let Some(p) = config_path.parent() {
-            ctx.set_load_path(Some(p))
-                .unwrap_or_else(|e| panic!("set_load_path({}): {:?}", p.display(), e));
-        }
+        let load_dir: &Path = match config_path.parent() {
+            Some(p) if !p.as_os_str().is_empty() => p,
+            _ => Path::new("."),
+        };
+        ctx.set_load_path(Some(load_dir))
+            .unwrap_or_else(|e| panic!("set_load_path({}): {:?}", load_dir.display(), e));
 
         register_runtime(&mut ctx, &world, metadata.clone());
 
