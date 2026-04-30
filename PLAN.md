@@ -319,6 +319,55 @@ Phase markers correspond to the existing TaskList items.
 - `ListSensors` / sensor telemetry — microsim leaves this `todo!()` and
   switchyard will too.
 
+## Open design issues
+
+### Inverter ↔ battery coupling is currently data, not electrical
+
+In the real world an inverter and the battery sitting on its DC bus
+share **only an electrical coupling** — a pair of busbars, no data
+link. The inverter does not "know" the battery's SoC-protective
+limits; it just pushes current onto the bus, and the battery's BMS
+clamps or trips locally. Software clients of the inverter learn about
+the resulting derate by *measuring the inverter* (its actual output
+power, its bounds telemetry derived from what it can deliver), not by
+peeking inside the battery.
+
+Switchyard currently violates this. The shipped implementation has
+`BatteryInverter::combined_bounds(world) = self.bounds.effective() ∩
+Σ children.effective_active_bounds()`, used both for setpoint
+validation and to pull the ramp target back into the children's
+envelope each tick. That is a synthetic data path — the inverter is
+reading a Rust-level method on the battery struct that no real
+inverter could read on a real battery.
+
+What the right model looks like:
+
+1. **Inverter is the only authority on its own AC-side bounds.** Its
+   `effective_active_bounds()` is rated ∩ active augmentations; nothing
+   about children enters that calculation.
+2. **Battery is the only authority on its DC-side bounds.** Its tick
+   already self-clamps incoming `set_dc_power`, but right now the
+   inverter pre-empts that by clamping upstream. Drop the upstream
+   clamp; let the battery refuse what it cannot accept.
+3. **The inverter's *measured* output is the sum of what its children
+   actually accepted**, not the value the ramp drove toward. The
+   inverter's telemetry's `active_power_w` should track that measured
+   value; the difference between commanded and measured is the
+   physical signal that a real client uses to infer "the battery is
+   limiting me".
+4. **Bounds telemetry on the inverter is its own bounds.** A client
+   that wants to know the *aggregate* envelope queries each child
+   stream and sums on the client side, the same way it would in
+   production.
+
+Until that refactor lands, the current behaviour is convenient (a
+single setpoint reach reports cleanly) but architecturally incorrect.
+Track in a follow-up: replace `combined_bounds` with measured-output
+aggregation; keep `effective_active_bounds()` on the trait (still
+useful for batteries' own telemetry and for non-inverter aggregations
+like a meter that reports a battery's DC bound), but stop calling it
+from the inverter.
+
 ## Risk notes
 
 - **Locking**: tulisp `vm` branch's `Shared<dyn TulispAny>` is
