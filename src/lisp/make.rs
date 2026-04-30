@@ -56,6 +56,8 @@ AsPlist! {
         voltage: Option<f64> {= None},
         rated_lower<":rated-lower">: Option<f64> {= None},
         rated_upper<":rated-upper">: Option<f64> {= None},
+        soc_protect_margin<":soc-protect-margin">: Option<f64> {= None},
+        stream_jitter_pct<":stream-jitter-pct">: Option<f64> {= None},
     }
 }
 
@@ -72,6 +74,7 @@ AsPlist! {
         rated_upper<":rated-upper">: Option<f64> {= None},
         command_delay_ms<":command-delay-ms">: Option<i64> {= None},
         ramp_rate<":ramp-rate">: Option<f64> {= None},
+        stream_jitter_pct<":stream-jitter-pct">: Option<f64> {= None},
     }
 }
 
@@ -179,6 +182,12 @@ pub fn register(ctx: &mut TulispContext, world: World) {
         if let Some(v) = a.rated_upper {
             cfg.rated_upper_w = v as f32;
         }
+        if let Some(v) = a.soc_protect_margin {
+            cfg.soc_protect_margin_pct = v as f32;
+        }
+        if let Some(v) = a.stream_jitter_pct {
+            cfg.stream_jitter_pct = v as f32;
+        }
         Ok::<_, Error>(w.register(Battery::new(id, interval, cfg)))
     });
 
@@ -201,6 +210,9 @@ pub fn register(ctx: &mut TulispContext, world: World) {
             }
             if let Some(v) = a.ramp_rate {
                 cfg.ramp_rate_w_per_s = v as f32;
+            }
+            if let Some(v) = a.stream_jitter_pct {
+                cfg.stream_jitter_pct = v as f32;
             }
             let succ_ids: Vec<u64> = a
                 .successors

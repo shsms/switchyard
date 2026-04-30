@@ -3,9 +3,11 @@ use std::{fmt, time::Duration};
 use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
 
-use crate::sim::{Category, SimulatedComponent, Telemetry, World, bounds::VecBounds};
+use crate::sim::{
+    Category, SimulatedComponent, Telemetry, World, bounds::VecBounds, decay::bounded_exp_decay,
+};
 
-/// Tunables exposed via `(make-battery :soc-charge-protect t :soc-charge-protect-margin 10.0 …)`.
+/// Tunables exposed via `(make-battery :soc-protect-margin 10.0 …)`.
 #[derive(Clone, Debug)]
 pub struct BatteryConfig {
     pub capacity_wh: f32,
@@ -15,6 +17,13 @@ pub struct BatteryConfig {
     pub voltage_v: f32,
     pub rated_lower_w: f32,
     pub rated_upper_w: f32,
+    /// Width of the SoC band (in % points) where the rated DC bound is
+    /// tapered toward zero. With margin = 10 and `soc_upper_pct = 90`,
+    /// the charge bound starts decaying at SoC=80% and reaches 0 at
+    /// SoC=90%. Same on the discharge side near `soc_lower_pct`. Set to
+    /// `0.0` to disable.
+    pub soc_protect_margin_pct: f32,
+    pub stream_jitter_pct: f32,
 }
 
 impl Default for BatteryConfig {
@@ -27,6 +36,8 @@ impl Default for BatteryConfig {
             voltage_v: 800.0,
             rated_lower_w: -30_000.0,
             rated_upper_w: 30_000.0,
+            soc_protect_margin_pct: 10.0,
+            stream_jitter_pct: 0.0,
         }
     }
 }
@@ -44,11 +55,16 @@ struct BatteryState {
     power_w: f32,
     energy_wh: f32,
     soc_pct: f32,
+    /// Cached effective DC bounds — recomputed every tick from SoC,
+    /// then read by `effective_active_bounds` and the inverter.
+    effective_lower_w: f32,
+    effective_upper_w: f32,
 }
 
 impl Battery {
     pub fn new(id: u64, interval: Duration, cfg: BatteryConfig) -> Self {
         let init_soc = cfg.initial_soc_pct;
+        let (l, u) = soc_protected_bounds(&cfg, init_soc);
         Self {
             id,
             name: format!("bat-{id}"),
@@ -58,6 +74,8 @@ impl Battery {
                 power_w: 0.0,
                 energy_wh: 0.0,
                 soc_pct: init_soc,
+                effective_lower_w: l,
+                effective_upper_w: u,
             }),
         }
     }
@@ -66,13 +84,48 @@ impl Battery {
         self.state.lock().power_w
     }
 
-    /// Set DC power (positive = charging from inverter, negative =
-    /// discharging into inverter). Bounds are enforced by the parent
-    /// inverter; this method is unconditional so the inverter can
-    /// distribute its share verbatim.
+    /// Set DC power without bounds-checking — the inverter is the
+    /// authority on what gets distributed; clamping happens upstream
+    /// so we can attribute the limit to the right component.
     pub fn set_power_w(&self, p: f32) {
         self.state.lock().power_w = p;
     }
+}
+
+/// Apply microsim's smooth taper near the SoC limits. Returns `(lower, upper)`
+/// in W. With the default `min_val = 0.3` the inverter still gets ~30% of
+/// rated until it hits the very edge, then 0.
+fn soc_protected_bounds(cfg: &BatteryConfig, soc: f32) -> (f32, f32) {
+    let margin = cfg.soc_protect_margin_pct;
+    if margin <= 0.0 {
+        return (cfg.rated_lower_w, cfg.rated_upper_w);
+    }
+
+    // Charge (positive) tapers as soc approaches soc_upper.
+    let upper = if cfg.soc_upper_pct - soc < margin {
+        cfg.rated_upper_w
+            * bounded_exp_decay(cfg.soc_upper_pct - margin, cfg.soc_upper_pct, soc, 1.2, 0.3)
+    } else {
+        cfg.rated_upper_w
+    };
+
+    // Discharge (negative) tapers as soc approaches soc_lower. The decay is
+    // expressed on the "distance from the threshold" axis; we mirror it by
+    // running the SoC through the same window from the other side.
+    let lower = if soc - cfg.soc_lower_pct < margin {
+        cfg.rated_lower_w
+            * bounded_exp_decay(
+                cfg.soc_lower_pct + margin,
+                cfg.soc_lower_pct,
+                soc,
+                1.2,
+                0.3,
+            )
+    } else {
+        cfg.rated_lower_w
+    };
+
+    (lower, upper)
 }
 
 impl fmt::Display for Battery {
@@ -94,14 +147,33 @@ impl SimulatedComponent for Battery {
     fn stream_interval(&self) -> Duration {
         self.interval
     }
+    fn stream_jitter_pct(&self) -> f32 {
+        self.cfg.stream_jitter_pct
+    }
 
     fn tick(&self, _world: &World, _now: DateTime<Utc>, dt: Duration) {
         let mut s = self.state.lock();
+
+        // Energy ↔ SoC update from current power.
         s.energy_wh += s.power_w * dt.as_secs_f32() / 3600.0;
-        // SoC% derived from energy with one decimal place
         s.soc_pct = (self.cfg.initial_soc_pct
             + (s.energy_wh / self.cfg.capacity_wh) * 100.0)
             .clamp(0.0, 100.0);
+
+        // Refresh SoC-derated bounds.
+        let (l, u) = soc_protected_bounds(&self.cfg, s.soc_pct);
+        s.effective_lower_w = l;
+        s.effective_upper_w = u;
+
+        // Self-clamp: if the inverter just pushed power that's above
+        // the new derated ceiling, pull it back. The inverter will
+        // re-aggregate next tick and stop overshooting.
+        if s.power_w > s.effective_upper_w {
+            s.power_w = s.effective_upper_w;
+        }
+        if s.power_w < s.effective_lower_w {
+            s.power_w = s.effective_lower_w;
+        }
     }
 
     fn telemetry(&self, _world: &World) -> Telemetry {
@@ -121,8 +193,8 @@ impl SimulatedComponent for Battery {
                 0.0
             }),
             active_power_bounds: Some(VecBounds::single(
-                self.cfg.rated_lower_w,
-                self.cfg.rated_upper_w,
+                s.effective_lower_w,
+                s.effective_upper_w,
             )),
             component_state: Some(power_to_state(s.power_w)),
             relay_state: Some("relay-closed"),
@@ -140,6 +212,11 @@ impl SimulatedComponent for Battery {
 
     fn rated_active_bounds(&self) -> Option<(f32, f32)> {
         Some((self.cfg.rated_lower_w, self.cfg.rated_upper_w))
+    }
+
+    fn effective_active_bounds(&self) -> Option<VecBounds> {
+        let s = self.state.lock();
+        Some(VecBounds::single(s.effective_lower_w, s.effective_upper_w))
     }
 }
 

@@ -16,6 +16,7 @@ pub struct BatteryInverterConfig {
     pub command_delay: Duration,
     /// W/s; use `f32::INFINITY` to disable ramping.
     pub ramp_rate_w_per_s: f32,
+    pub stream_jitter_pct: f32,
 }
 
 impl Default for BatteryInverterConfig {
@@ -25,6 +26,7 @@ impl Default for BatteryInverterConfig {
             rated_upper_w: 30_000.0,
             command_delay: Duration::ZERO,
             ramp_rate_w_per_s: f32::INFINITY,
+            stream_jitter_pct: 0.0,
         }
     }
 }
@@ -90,9 +92,24 @@ impl SimulatedComponent for BatteryInverter {
     fn tick(&self, world: &World, now: DateTime<Utc>, dt: Duration) {
         self.bounds.lock().drop_expired(now);
 
+        // Combine our own bounds with the per-tick effective bounds of
+        // every healthy child battery, so a near-full pack pulls the
+        // inverter ceiling down even if its own rated range is wider.
+        let combined = self.combined_bounds(world);
+
         if let Some(target) = self.delay.poll(now) {
-            let clamped = self.bounds.lock().clamp(target);
+            let clamped = combined.clamp(target);
             self.ramp.set_target(clamped);
+        } else {
+            // No new command, but children may have just derated under
+            // our feet — pull the existing target back inside the new
+            // envelope so the ramp tapers smoothly rather than cliffing
+            // at the next set-point.
+            let t = self.ramp.target();
+            let clamped = combined.clamp(t);
+            if (clamped - t).abs() > f32::EPSILON {
+                self.ramp.set_target(clamped);
+            }
         }
 
         let actual = self.ramp.advance(dt);
@@ -123,13 +140,17 @@ impl SimulatedComponent for BatteryInverter {
             per_phase_voltage_v: Some(grid.voltage_per_phase),
             per_phase_current_a: Some(per_phase_current(pp, rpp, grid.voltage_per_phase)),
             frequency_hz: Some(grid.frequency_hz),
-            active_power_bounds: Some(self.bounds.lock().effective()),
+            active_power_bounds: Some(self.combined_bounds(world)),
             component_state: Some(power_state(p)),
             ..Default::default()
         }
     }
 
     fn set_active_setpoint(&self, power_w: f32) -> Result<(), SetpointError> {
+        // We don't have a `&World` here (the trait method is per-component),
+        // so children-summing happens in tick(). Validation here uses our
+        // own (post-augmentation) bounds — anything beyond that is a hard
+        // protocol error; the SoC clamp is enforced silently via tick().
         let eff = self.bounds.lock().effective();
         if !eff.contains(power_w) {
             return Err(SetpointError::OutOfBounds {
@@ -187,6 +208,37 @@ impl SimulatedComponent for BatteryInverter {
 
     fn subtype(&self) -> Option<&'static str> {
         Some("battery")
+    }
+
+    fn stream_jitter_pct(&self) -> f32 {
+        self.cfg.stream_jitter_pct
+    }
+
+    fn effective_active_bounds(&self) -> Option<crate::sim::bounds::VecBounds> {
+        Some(self.bounds.lock().effective())
+    }
+}
+
+impl BatteryInverter {
+    /// Effective bounds = own bounds ∩ Σ children effective bounds.
+    /// Falls back to own bounds if there are no healthy successors.
+    fn combined_bounds(&self, world: &World) -> crate::sim::bounds::VecBounds {
+        use crate::sim::bounds::VecBounds;
+        let own = self.bounds.lock().effective();
+        if self.successors.is_empty() {
+            return own;
+        }
+        let summed = VecBounds::sum_single(
+            self.successors
+                .iter()
+                .filter_map(|id| world.get(*id))
+                .filter_map(|c| c.effective_active_bounds()),
+        );
+        if summed.0.is_empty() {
+            own
+        } else {
+            own.intersect(&summed)
+        }
     }
 }
 

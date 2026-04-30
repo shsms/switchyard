@@ -11,11 +11,18 @@
 (set-frequency 50.0)
 (set-voltage-per-phase 230.0 230.0 230.0)
 
-;; Battery branch — SCADA delay + slew-rate-limited ramp.
+;; Battery branch — SCADA delay + slew-rate-limited ramp + slight
+;; per-stream jitter on both the inverter and the battery so multi-
+;; subscriber clients see them drifting independently. The battery
+;; is started near full so the SoC-protect taper is observable.
 (setq inv-bat-1 (make-battery-inverter
                  :command-delay-ms 1500
                  :ramp-rate         5000.0
-                 :successors (list (make-battery))))
+                 :stream-jitter-pct 8.0
+                 :successors (list (make-battery
+                                    :initial-soc          85.0
+                                    :soc-protect-margin   10.0
+                                    :stream-jitter-pct    8.0))))
 
 ;; Solar branch.
 (setq inv-pv-1 (make-solar-inverter

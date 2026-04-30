@@ -233,10 +233,14 @@ impl microgrid_server::Microgrid for MicrogridServer {
             tonic::Status::not_found(format!("component {id} not found"))
         })?;
         let interval = component.stream_interval();
+        let jitter_pct = component.stream_jitter_pct().max(0.0).min(100.0);
 
         let (tx, rx) = tokio::sync::mpsc::channel(128);
         tokio::spawn(async move {
-            let mut next_due = SystemTime::now();
+            // SmallRng is `Send`; seed from thread_rng once at task
+            // start (which is fine because spawning the task is sync).
+            use rand::{Rng, SeedableRng, rngs::SmallRng};
+            let mut rng = SmallRng::from_entropy();
             loop {
                 let snapshot = component.telemetry(&world);
                 let msg = telemetry_to_proto(component.as_ref(), &snapshot);
@@ -244,15 +248,15 @@ impl microgrid_server::Microgrid for MicrogridServer {
                     log::debug!("stream({id}): client disconnected");
                     break;
                 }
-                next_due += interval;
-                let now = SystemTime::now();
-                let dur = next_due
-                    .duration_since(now)
-                    .unwrap_or(Duration::ZERO);
-                tokio::time::sleep(dur).await;
-                if next_due < now {
-                    next_due = now;
-                }
+                let factor: f32 = if jitter_pct > 0.0 {
+                    let j = jitter_pct / 100.0;
+                    1.0 + rng.gen_range(-j..=j)
+                } else {
+                    1.0
+                };
+                let dwell =
+                    Duration::from_secs_f32((interval.as_secs_f32() * factor).max(0.001));
+                tokio::time::sleep(dwell).await;
             }
         });
 

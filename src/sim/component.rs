@@ -140,6 +140,17 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
         None
     }
 
+    /// Current effective active-power bounds (W) — for batteries this
+    /// is DC, for inverters AC. Differs from `rated_active_bounds` when
+    /// the component derates dynamically (SoC-protective ramp on a
+    /// battery, augmentations on an inverter). Default falls through
+    /// to `rated_active_bounds` so simple components get the obvious
+    /// behaviour for free.
+    fn effective_active_bounds(&self) -> Option<VecBounds> {
+        self.rated_active_bounds()
+            .map(|(l, u)| VecBounds::single(l, u))
+    }
+
     /// Rated fuse current at the grid connection point.
     fn rated_fuse_current(&self) -> Option<u32> {
         None
@@ -152,6 +163,14 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
     /// back to "unspecified".
     fn subtype(&self) -> Option<&'static str> {
         None
+    }
+
+    /// Per-emit jitter applied to the stream interval, in percent
+    /// (0..100). The server picks a uniform random multiplier in
+    /// `1.0 ± pct/100` for every sleep so multi-component streams do
+    /// not lock-step. Default 0 keeps behaviour deterministic.
+    fn stream_jitter_pct(&self) -> f32 {
+        0.0
     }
 }
 

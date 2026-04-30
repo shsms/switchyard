@@ -95,6 +95,37 @@ impl VecBounds {
         prev_upper.unwrap_or(value)
     }
 
+    /// Add two single-bucket bound containers element-wise. Microsim's
+    /// general-case add (handling multi-bucket exclusion zones) is
+    /// overkill for switchyard's current needs — when both sides are
+    /// `[lower, upper]` we just sum the like-signed edges and pick the
+    /// extreme on the cross-signed ones, matching the behaviour the
+    /// inverter aggregation needs.
+    ///
+    /// Empty containers are treated as zero, so `Σ` over an empty set
+    /// of children yields `[0, 0]`.
+    pub fn sum_single(items: impl IntoIterator<Item = Self>) -> Self {
+        let mut lower = 0.0_f32;
+        let mut upper = 0.0_f32;
+        let mut any = false;
+        for vb in items {
+            let Some(b) = vb.0.first().cloned() else {
+                continue;
+            };
+            any = true;
+            if let Some(l) = b.lower {
+                lower += l;
+            }
+            if let Some(u) = b.upper {
+                upper += u;
+            }
+        }
+        if !any {
+            return Self::default();
+        }
+        Self::single(lower, upper)
+    }
+
     pub fn intersect(&self, other: &Self) -> Self {
         let mut result = Vec::new();
         for b1 in &self.0 {
