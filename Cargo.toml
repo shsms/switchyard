@@ -19,6 +19,7 @@ simplelog = "0.12.2"
 rand = { version = "0.8.5", features = ["small_rng"] }
 chrono = "0.4.42"
 parking_lot = "0.12"
+clap = { version = "4", features = ["derive"] }
 
 [build-dependencies]
 tonic-prost-build = { version = "0.14", features = ["cleanup-markdown"] }
@@ -30,3 +31,7 @@ path = "src/lib.rs"
 [[bin]]
 name = "switchyard"
 path = "src/bin/switchyard.rs"
+
+[[bin]]
+name = "swctl"
+path = "src/bin/swctl.rs"
