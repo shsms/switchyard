@@ -367,6 +367,47 @@ for non-inverter aggregations (e.g. a meter that wants to publish the
 battery DC envelope). The constraint is that the inverter does not
 call it on its children.
 
+## Microsim parity matrix
+
+A snapshot of where switchyard sits relative to microsim. Items marked
+"in progress" are being actively closed; the rest are open follow-ups.
+
+### Microsim has, switchyard doesn't
+
+| Feature | Notes |
+|---|---|
+| **TUI** | Microsim ships a 350-line ratatui-based terminal UI for live inspection (`--tui`). Switchyard is headless; clients use `swctl` or grpcurl. |
+| **Component health states** | _In progress._ Microsim's `:config '((component-state . error))` makes a component refuse setpoints. Switchyard implementation in flight as `Health` enum + runtime defun. |
+| **Telemetry / command mode flags** | _In progress._ Microsim simulated unreachable devices via huge `:interval`s. Switchyard models `Silent` / `Closed` telemetry modes and `Timeout` / `Error` command modes orthogonally. |
+| **Dynamic reactive bounds** | Microsim recomputes reactive limits as ±35% of \|actual P\| per sample. Switchyard publishes static rated reactive bounds in `metric_config_bounds`; the inverter still validates a setpoint against ±35% of the *current ramp value*, but the published bounds don't update. |
+| **`dt:now` / `dt:milliseconds` / `dt:minutes`** | Microsim exposes time helpers for scheduling absolute-time events. Switchyard has none. |
+| **`microsim-etags`** | Editor jump-to-definition support for the Lisp config. Switchyard has no equivalent binary. |
+| **`:per-phase-power 'symbol`** | Microsim meters can read a Lisp-side global on every tick (consumer load profile fed from one timer into N meters). Switchyard meters take a static `:power` literal; dynamic injection requires a per-meter Rust setter defun. |
+| **PV inverter min-power cross-talk** | Microsim solar inverters share a `min-available-power` symbol an external timer can drive (e.g. cloud schedule). Switchyard's solar inverter reads `sunlight%` once at construction. |
+
+### Switchyard has, microsim doesn't
+
+| Feature | Notes |
+|---|---|
+| **`SimulatedComponent` trait + modular Rust architecture** | Adding a new component type is one file under `src/sim/` plus one `register` line. |
+| **`AsPlist!` typed plist args** | Compile-time-checked argument structs for every `make-*` instead of runtime `plist-get`. |
+| **`:command-delay-ms`** | Inverters and EV chargers model SCADA round-trip latency before honouring a setpoint. |
+| **`:ramp-rate`** | Slew-rate-limited power tracking (W/s) — actual power moves toward the target at a configurable rate, like a real device protecting cells / breakers. |
+| **`:soc-protect-margin`** | Explicit knob for the SoC-protective derate window on Battery and EvCharger (microsim's curve has a hardcoded 10%). |
+| **`:stream-jitter-pct`** | Per-component random jitter on telemetry stream cadence so multi-subscriber clients see streams drifting independently. |
+| **Two-layer setpoint validation** | API gateway intersects `inverter.bounds ∩ Σ children.bounds` and rejects out-of-envelope setpoints with the explicit envelope in the error message. |
+| **Decoupled inverter ↔ battery** | Inverter publishes measured output and its own bounds only; battery self-clamps on ingress. No data coupling between the two devices, matching real hardware. |
+| **`swctl` CLI** | clap-based client (`info` / `list` / `tree` / `stream` / `set-power` / `augment-bounds`). Microsim users went via grpcurl or the Frequenz SDK. |
+| **`World::aggregate_child_bounds`** | Public Rust API for walking the topology and summing children's bounds. Microsim's equivalent lives entirely in Lisp. |
+
+### Functional parity
+
+Both have: hot-reload via `notify`; gRPC `Microgrid` v1alpha18 surface
+(Get / List / Stream / SetPower / AugmentBounds); `TimeoutTracker`
+resetting stale set-points; anchored telemetry timestamps with no
+per-iteration drift; `(every)` / `(run-with-timer)` for environment
+scripting; config-driven topology assembly.
+
 ## Risk notes
 
 - **Locking**: tulisp `vm` branch's `Shared<dyn TulispAny>` is

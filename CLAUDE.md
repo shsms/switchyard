@@ -91,17 +91,7 @@ in config.lisp). swctl points there by default; override with `--addr`.
    config to script behaviour over time.
 3. Demonstrate via a new line in `config.lisp` and verify via swctl.
 
-## Microsim parity gaps (open work)
+## Microsim parity gaps
 
-- **Component health states** — being implemented; covers `error`/`standby`
-  reporting + setpoint rejection.
-- **Telemetry / command mode flags** — being implemented; covers silent
-  streams, hung commands, etc.
-- **Dynamic reactive bounds** — microsim publishes ±35% of |actual P|
-  per sample; switchyard publishes the static rated reactive bounds.
-- **`dt:now` / `dt:milliseconds` / `dt:minutes`** — Lisp time helpers
-  not yet ported.
-- **`:per-phase-power 'symbol` indirection** — meters can't currently
-  read a Lisp-side global per tick. Workaround: a setter defun + `every`.
-- **TUI** — microsim's ratatui terminal UI (`--tui`) is the largest gap;
-  switchyard ships headless.
+See PLAN.md for the up-to-date comparison of features microsim has and
+switchyard doesn't (and vice versa).
