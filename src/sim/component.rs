@@ -1,0 +1,166 @@
+use std::{
+    fmt,
+    sync::{Arc, atomic::AtomicU64},
+    time::Duration,
+};
+
+use chrono::{DateTime, Utc};
+
+use crate::sim::{bounds::VecBounds, world::World};
+
+/// High-level kind of a component, mirroring the proto category enum but
+/// kept Rust-side so non-gRPC code does not need to depend on protobuf.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Category {
+    Grid,
+    Meter,
+    Inverter,
+    Battery,
+    EvCharger,
+    Chp,
+}
+
+#[derive(Debug, Clone)]
+pub enum SetpointError {
+    OutOfBounds { value: f32, lower: f32, upper: f32 },
+    NotHealthy,
+    Unsupported,
+}
+
+impl fmt::Display for SetpointError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::OutOfBounds { value, lower, upper } => write!(
+                f,
+                "set-point {value} W out of bounds [{lower}, {upper}]"
+            ),
+            Self::NotHealthy => write!(f, "component is not healthy"),
+            Self::Unsupported => write!(f, "operation not supported by this component type"),
+        }
+    }
+}
+
+impl std::error::Error for SetpointError {}
+
+/// Per-tick snapshot a component emits for telemetry / TUI / logging.
+/// All numeric fields are SI units (W, VAR, V, A, %, Wh).
+///
+/// Optional fields stay `None` for component types that do not expose
+/// them — a meter has no SoC; a battery has no AC voltage; etc.
+#[derive(Debug, Default, Clone)]
+pub struct Telemetry {
+    pub id: u64,
+    pub category: Option<Category>,
+
+    pub active_power_w: Option<f32>,
+    pub reactive_power_var: Option<f32>,
+
+    pub per_phase_active_w: Option<(f32, f32, f32)>,
+    pub per_phase_reactive_var: Option<(f32, f32, f32)>,
+    pub per_phase_voltage_v: Option<(f32, f32, f32)>,
+    pub per_phase_current_a: Option<(f32, f32, f32)>,
+
+    pub frequency_hz: Option<f32>,
+
+    pub soc_pct: Option<f32>,
+    pub soc_lower_pct: Option<f32>,
+    pub soc_upper_pct: Option<f32>,
+    pub capacity_wh: Option<f32>,
+    pub dc_voltage_v: Option<f32>,
+    pub dc_current_a: Option<f32>,
+    pub dc_power_w: Option<f32>,
+
+    pub active_power_bounds: Option<VecBounds>,
+
+    pub component_state: Option<&'static str>,
+    pub relay_state: Option<&'static str>,
+    pub cable_state: Option<&'static str>,
+}
+
+/// The single trait every simulated component implements. See PLAN.md
+/// for the rationale; the short version is "everything you need to
+/// schedule, control, and observe a component".
+pub trait SimulatedComponent: Send + Sync + fmt::Display {
+    fn id(&self) -> u64;
+    fn category(&self) -> Category;
+    fn name(&self) -> &str;
+
+    /// Telemetry stream interval requested by the component. The world
+    /// scheduler may sample more often, but gRPC streams use this.
+    fn stream_interval(&self) -> Duration;
+
+    /// Advance internal state by `dt`. Called from `World::tick`.
+    fn tick(&self, world: &World, now: DateTime<Utc>, dt: Duration);
+
+    /// Snapshot current observable state.
+    fn telemetry(&self, world: &World) -> Telemetry;
+
+    fn set_active_setpoint(&self, _power_w: f32) -> Result<(), SetpointError> {
+        Err(SetpointError::Unsupported)
+    }
+    fn set_reactive_setpoint(&self, _vars: f32) -> Result<(), SetpointError> {
+        Err(SetpointError::Unsupported)
+    }
+    fn reset_setpoint(&self) {}
+
+    fn augment_active_bounds(
+        &self,
+        _create_ts: DateTime<Utc>,
+        _bounds: VecBounds,
+        _lifetime: Duration,
+    ) {
+    }
+
+    /// Total real power flowing at this component, used by parents
+    /// (meters, inverters) to aggregate their successors. Default is
+    /// the active power; meters override this to be their measured
+    /// value, batteries override it to be DC power.
+    fn aggregate_power_w(&self) -> f32 {
+        0.0
+    }
+
+    /// Per-phase real power for AC components. Default returns
+    /// `(0,0,0)`; AC components (meters, inverters) override.
+    fn aggregate_per_phase_w(&self) -> (f32, f32, f32) {
+        (0.0, 0.0, 0.0)
+    }
+
+    fn aggregate_per_phase_var(&self) -> (f32, f32, f32) {
+        (0.0, 0.0, 0.0)
+    }
+
+    /// Push DC power onto a child component (used by inverters to
+    /// drive their batteries). Default no-op so non-DC components
+    /// silently ignore the call.
+    fn set_dc_power(&self, _p: f32) {}
+}
+
+/// Cloneable handle that we hand to Lisp via `Shared<dyn TulispAny>`.
+/// Wrapping in a newtype lets us hang `Display`, `Clone`, conversion
+/// trait impls, and a stable `TypeId` off it.
+#[derive(Clone)]
+pub struct ComponentHandle(pub Arc<dyn SimulatedComponent>);
+
+impl ComponentHandle {
+    pub fn new<C: SimulatedComponent + 'static>(c: C) -> Self {
+        Self(Arc::new(c))
+    }
+
+    pub fn from_arc(c: Arc<dyn SimulatedComponent>) -> Self {
+        Self(c)
+    }
+
+    pub fn id(&self) -> u64 {
+        self.0.id()
+    }
+}
+
+impl fmt::Display for ComponentHandle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "<{} #{}>", self.0.name(), self.0.id())
+    }
+}
+
+/// Used by the world's id allocator. Starts at 1000 to match microsim's
+/// id range, which keeps test fixtures portable.
+pub(crate) static NEXT_ID: AtomicU64 = AtomicU64::new(1000);
