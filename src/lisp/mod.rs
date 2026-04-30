@@ -6,6 +6,7 @@
 //! lives in `World`, the lisp interpreter is just the configuration
 //! frontend.
 
+pub mod csv_profile;
 pub mod handle;
 pub mod make;
 
@@ -150,6 +151,7 @@ fn register_runtime(ctx: &mut TulispContext, world: &World, metadata: Arc<RwLock
     register_runtime_modes(ctx, world.clone());
     register_load_drivers(ctx, world.clone());
     register_time_helpers(ctx);
+    csv_profile::register(ctx);
 }
 
 fn register_load_drivers(ctx: &mut TulispContext, world: World) {
@@ -175,15 +177,18 @@ fn register_load_drivers(ctx: &mut TulispContext, world: World) {
 }
 
 fn register_time_helpers(ctx: &mut TulispContext) {
-    use std::time::{SystemTime, UNIX_EPOCH};
+    // chrono::Utc::now goes through the same clock_gettime(CLOCK_REALTIME)
+    // syscall as std::time::SystemTime::now (both elide leap seconds the
+    // same way the kernel does), but using chrono keeps these helpers
+    // consistent with the rest of switchyard's time handling and lets us
+    // extend with calendar-aware variants (seconds-since-midnight, etc.)
+    // without swapping API later.
 
-    // Wall-clock seconds since the Unix epoch as a float. Useful as
-    // a free-running clock for time-driven load profiles.
+    // Wall-clock seconds since the Unix epoch as a float. Free-running
+    // clock for time-driven load profiles.
     ctx.defun("now-seconds", || -> f64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs_f64())
-            .unwrap_or(0.0)
+        let now = chrono::Utc::now();
+        now.timestamp() as f64 + now.timestamp_subsec_nanos() as f64 * 1e-9
     });
 
     // Seconds since the start of the most recent `window-secs`-aligned
@@ -194,11 +199,9 @@ fn register_time_helpers(ctx: &mut TulispContext) {
         if window_secs <= 0.0 {
             return 0.0;
         }
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs_f64())
-            .unwrap_or(0.0);
-        now.rem_euclid(window_secs)
+        let now = chrono::Utc::now();
+        let t = now.timestamp() as f64 + now.timestamp_subsec_nanos() as f64 * 1e-9;
+        t.rem_euclid(window_secs)
     });
 }
 
