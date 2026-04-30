@@ -132,7 +132,7 @@ impl SimulatedComponent for SolarInverter {
         *self.reactive_var.lock() = 0.0;
     }
 
-    fn aggregate_power_w(&self) -> f32 {
+    fn aggregate_power_w(&self, _world: &World) -> f32 {
         self.ramp.actual()
     }
 

@@ -6,6 +6,7 @@ use parking_lot::Mutex;
 use crate::sim::{
     Category, SetpointError, SimulatedComponent, Telemetry, World,
     bounds::ComponentBounds,
+    meter::{per_phase_apparent_current, split_per_phase},
     ramp::{CommandDelay, Ramp},
     reactive::ReactiveCapability,
 };
@@ -131,8 +132,8 @@ impl SimulatedComponent for BatteryInverter {
             for id in &self.successors {
                 if let Some(child) = world.get(*id) {
                     child.set_dc_active_reactive(p_share, q_share);
-                    sum_p += child.aggregate_power_w();
-                    sum_q += child.aggregate_reactive_var();
+                    sum_p += child.aggregate_power_w(world);
+                    sum_q += child.aggregate_reactive_var(world);
                 }
             }
             (sum_p, sum_q)
@@ -160,7 +161,7 @@ impl SimulatedComponent for BatteryInverter {
             per_phase_active_w: Some(pp),
             per_phase_reactive_var: Some(rpp),
             per_phase_voltage_v: Some(grid.voltage_per_phase),
-            per_phase_current_a: Some(per_phase_current(pp, rpp, grid.voltage_per_phase)),
+            per_phase_current_a: Some(per_phase_apparent_current(pp, rpp, grid.voltage_per_phase)),
             frequency_hz: Some(grid.frequency_hz),
             // Reported envelope is OUR own bounds only — clients that
             // want the combined inverter+battery envelope read both
@@ -225,15 +226,12 @@ impl SimulatedComponent for BatteryInverter {
         self.bounds.lock().add_augmentation(ts, bounds, lifetime);
     }
 
-    fn aggregate_power_w(&self) -> f32 {
+    fn aggregate_power_w(&self, _world: &World) -> f32 {
         *self.measured_w.lock()
     }
 
-    fn aggregate_per_phase_w(&self) -> (f32, f32, f32) {
-        // Even split of measured AC output. The meter re-splits using
-        // current grid voltage if it needs more accuracy.
-        let p = *self.measured_w.lock();
-        (p / 3.0, p / 3.0, p / 3.0)
+    fn aggregate_reactive_var(&self, _world: &World) -> f32 {
+        *self.reactive_var.lock()
     }
 
     fn rated_active_bounds(&self) -> Option<(f32, f32)> {
@@ -256,33 +254,6 @@ impl SimulatedComponent for BatteryInverter {
         let p = *self.measured_w.lock();
         Some(self.cfg.reactive.q_bounds_at(p))
     }
-}
-
-fn split_per_phase(total: f32, voltage: (f32, f32, f32)) -> (f32, f32, f32) {
-    let sum = voltage.0 + voltage.1 + voltage.2;
-    if sum == 0.0 {
-        return (0.0, 0.0, 0.0);
-    }
-    (
-        total * voltage.0 / sum,
-        total * voltage.1 / sum,
-        total * voltage.2 / sum,
-    )
-}
-
-fn per_phase_current(
-    p: (f32, f32, f32),
-    r: (f32, f32, f32),
-    v: (f32, f32, f32),
-) -> (f32, f32, f32) {
-    fn one(p: f32, r: f32, v: f32) -> f32 {
-        if v == 0.0 {
-            0.0
-        } else {
-            (p * p + r * r).sqrt() / v
-        }
-    }
-    (one(p.0, r.0, v.0), one(p.1, r.1, v.1), one(p.2, r.2, v.2))
 }
 
 fn power_state(p: f32) -> &'static str {

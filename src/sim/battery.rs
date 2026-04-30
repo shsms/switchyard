@@ -186,7 +186,7 @@ impl SimulatedComponent for Battery {
         }
     }
 
-    fn aggregate_power_w(&self) -> f32 {
+    fn aggregate_power_w(&self, _world: &World) -> f32 {
         self.state.lock().power_w
     }
 
@@ -210,7 +210,7 @@ impl SimulatedComponent for Battery {
         s.reactive_var = q;
     }
 
-    fn aggregate_reactive_var(&self) -> f32 {
+    fn aggregate_reactive_var(&self, _world: &World) -> f32 {
         self.state.lock().reactive_var
     }
 

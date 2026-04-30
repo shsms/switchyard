@@ -204,7 +204,7 @@ impl SimulatedComponent for EvCharger {
         self.ramp.snap_to(0.0);
     }
 
-    fn aggregate_power_w(&self) -> f32 {
+    fn aggregate_power_w(&self, _world: &World) -> f32 {
         self.ramp.actual()
     }
 

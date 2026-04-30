@@ -114,21 +114,12 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
     }
 
     /// Total real power flowing at this component, used by parents
-    /// (meters, inverters) to aggregate their successors. Default is
-    /// the active power; meters override this to be their measured
-    /// value, batteries override it to be DC power.
-    fn aggregate_power_w(&self) -> f32 {
+    /// (meters, inverters) to aggregate their successors. The `world`
+    /// argument is for components that need to recurse into their own
+    /// children (a nested meter sums its inverter, which sums its
+    /// batteries). Pure-leaf components ignore it.
+    fn aggregate_power_w(&self, _world: &World) -> f32 {
         0.0
-    }
-
-    /// Per-phase real power for AC components. Default returns
-    /// `(0,0,0)`; AC components (meters, inverters) override.
-    fn aggregate_per_phase_w(&self) -> (f32, f32, f32) {
-        (0.0, 0.0, 0.0)
-    }
-
-    fn aggregate_per_phase_var(&self) -> (f32, f32, f32) {
-        (0.0, 0.0, 0.0)
     }
 
     /// Push DC power onto a child component (used by inverters to
@@ -146,8 +137,9 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
 
     /// Aggregate reactive power flowing through this component
     /// (used by parent inverters to read back what their children
-    /// accepted). Default 0 for components that don't carry Q.
-    fn aggregate_reactive_var(&self) -> f32 {
+    /// accepted, and by meters to sum their successors). Default 0 for
+    /// components that don't carry Q.
+    fn aggregate_reactive_var(&self, _world: &World) -> f32 {
         0.0
     }
 
