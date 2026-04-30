@@ -113,6 +113,42 @@ impl World {
         self.inner.by_id.read().get(&id).cloned()
     }
 
+    /// Sum the `effective_active_bounds()` of every direct child of
+    /// `parent`. Returns `None` when `parent` has no children that
+    /// expose bounds.
+    ///
+    /// The microgrid API gateway uses this to gate setpoints against
+    /// the downstream physical envelope — a real inverter has no data
+    /// link to its battery's BMS limits, but the gateway sees both
+    /// telemetry streams and intersects them on the client's behalf.
+    pub fn aggregate_child_bounds(
+        &self,
+        parent: u64,
+    ) -> Option<crate::sim::bounds::VecBounds> {
+        use crate::sim::bounds::VecBounds;
+        let child_ids: Vec<u64> = self
+            .inner
+            .connections
+            .read()
+            .iter()
+            .filter(|(p, _)| *p == parent)
+            .map(|(_, c)| *c)
+            .collect();
+        if child_ids.is_empty() {
+            return None;
+        }
+        let bounds: Vec<VecBounds> = child_ids
+            .iter()
+            .filter_map(|id| self.get(*id))
+            .filter_map(|c| c.effective_active_bounds())
+            .collect();
+        if bounds.is_empty() {
+            None
+        } else {
+            Some(VecBounds::sum_single(bounds))
+        }
+    }
+
     /// Wipe every registered component. Called from `(reset-state)` in
     /// the config DSL on hot-reload.
     pub fn reset(&self) {

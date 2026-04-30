@@ -179,6 +179,27 @@ impl microgrid_server::Microgrid for MicrogridServer {
             ))
         })?;
 
+        // Gateway-level envelope check: a real microgrid API gateway
+        // intersects the inverter's reported AC bounds with the sum of
+        // its children's reported DC bounds and rejects setpoints that
+        // exceed the result. Switchyard does the same here so client
+        // code sees the production behaviour even though the inverter
+        // and battery don't share a data link in our model.
+        if matches!(power_type, PowerType::Active) {
+            if let Some(child_env) = world.aggregate_child_bounds(req.electrical_component_id) {
+                let own = component
+                    .effective_active_bounds()
+                    .unwrap_or_default();
+                let envelope = own.intersect(&child_env);
+                if !envelope.contains(req.power) {
+                    return Err(tonic::Status::failed_precondition(format!(
+                        "set-point {} W exceeds combined envelope {}",
+                        req.power, envelope
+                    )));
+                }
+            }
+        }
+
         let result = match power_type {
             PowerType::Unspecified => {
                 return Err(tonic::Status::invalid_argument(
