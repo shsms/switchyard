@@ -172,15 +172,30 @@ fn register_metadata(ctx: &mut TulispContext, metadata: Arc<RwLock<Metadata>>) {
 }
 
 fn add_log_functions(ctx: &mut TulispContext) {
+    use rand::Rng;
     ctx.defun("log.info", |msg: String| log::info!("{msg}"))
         .defun("log.warn", |msg: String| log::warn!("{msg}"))
         .defun("log.error", |msg: String| log::error!("{msg}"))
         .defun("log.debug", |msg: String| log::debug!("{msg}"))
-        .defun("log.trace", |msg: String| log::trace!("{msg}"));
+        .defun("log.trace", |msg: String| log::trace!("{msg}"))
+        // Math + RNG helpers used by ported microsim configs.
+        .defun("ceiling", |n: f64| n.ceil() as i64)
+        .defun("floor", |n: f64| n.floor() as i64)
+        .defun("random", |limit: Option<i64>| {
+            if let Some(limit) = limit {
+                rand::thread_rng().gen_range(0..limit)
+            } else {
+                rand::thread_rng().r#gen()
+            }
+        });
 }
 
 fn register_reset(ctx: &mut TulispContext, world: World) {
-    ctx.defun("reset-state", move || -> Result<bool, Error> {
+    // Rust-side: clear the World registry. The Lisp-side `reset-state`
+    // (in sim/common.lisp) wraps this and also cancels any
+    // outstanding tulisp-async timers so the next config load doesn't
+    // double-fire `every` callbacks.
+    ctx.defun("world-reset", move || -> Result<bool, Error> {
         world.reset();
         Ok(true)
     });
