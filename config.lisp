@@ -26,8 +26,19 @@
 
 ;; Solar branch.
 (setq inv-pv-1 (make-solar-inverter
-                :sunlight% 80.0
-                :ramp-rate 2000.0))
+                :sunlight%         80.0
+                :ramp-rate         2000.0
+                :stream-jitter-pct 5.0))
+
+;; EV charger near-full so the SoC-protect taper is observable.
+(setq ev-1 (make-ev-charger
+            :initial-soc        92.0
+            :soc-upper          100.0
+            :soc-protect-margin 10.0
+            :rated-upper        22000.0
+            :command-delay-ms   500
+            :ramp-rate          3000.0
+            :stream-jitter-pct  10.0))
 
 ;; CHP branch — power literal lives on the meter.
 (setq chp-1 (make-chp))
@@ -35,6 +46,8 @@
 ;; Per-branch meters.
 (setq meter-bat (make-meter :successors (list inv-bat-1)))
 (setq meter-pv  (make-meter :successors (list inv-pv-1)))
+(setq meter-ev  (make-meter :successors (list ev-1)
+                            :stream-jitter-pct 4.0))
 (setq meter-chp (make-meter :power -2000.0 :successors (list chp-1)))
 (setq meter-load (make-meter :hidden t :power 16000.0))
 
@@ -42,7 +55,7 @@
 (setq main-meter (make-meter
                   :id 2
                   :interval 200
-                  :successors (list meter-bat meter-pv meter-chp meter-load)))
+                  :successors (list meter-bat meter-pv meter-ev meter-chp meter-load)))
 
 (make-grid
  :id 1
