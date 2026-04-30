@@ -262,6 +262,12 @@ impl microgrid_server::Microgrid for MicrogridServer {
             // start (which is fine because spawning the task is sync).
             use rand::{Rng, SeedableRng, rngs::SmallRng};
             let mut rng = SmallRng::from_entropy();
+            // Anchor the schedule on a moving target timestamp rather
+            // than on `now` after the work finishes — otherwise the
+            // tx.send / telemetry overhead accumulates each iteration
+            // and the stream slowly drifts out beyond `interval` per
+            // step. Pattern lifted from microsim's server loop.
+            let mut next_due = SystemTime::now();
             loop {
                 let snapshot = component.telemetry(&world);
                 let msg = telemetry_to_proto(component.as_ref(), &snapshot);
@@ -275,9 +281,16 @@ impl microgrid_server::Microgrid for MicrogridServer {
                 } else {
                     1.0
                 };
-                let dwell =
+                let step =
                     Duration::from_secs_f32((interval.as_secs_f32() * factor).max(0.001));
-                tokio::time::sleep(dwell).await;
+                let target = next_due + step;
+                let now = SystemTime::now();
+                let dur = target.duration_since(now).unwrap_or(Duration::ZERO);
+                tokio::time::sleep(dur).await;
+                // If we fell so far behind that `target` is already
+                // past the pre-sleep `now`, re-anchor to now instead
+                // of trying to fire several samples back-to-back.
+                next_due = target.max(now);
             }
         });
 
