@@ -85,13 +85,6 @@ in config.lisp). swctl points there by default; override with `--addr`.
 
 ## Lisp gotchas (current tulisp-vm)
 
-- **`cond` in a `(every …)` / `(run-with-timer …)` body panics** —
-  `cond` compiles to a multi-target jump table whose label addresses
-  don't survive the per-firing ctx switch. The interpreter unwraps a
-  `None` in `bytecode/interpreter.rs::jump_to_pos!`. Use nested `if`
-  instead, and inline the body into the timer's lambda (calls into a
-  `(defun)` that uses `cond` will also fault). Tracked upstream; once
-  fixed we can lift the restriction.
 - **Timer bodies see global symbols / defuns but get a fresh ctx.**
   `setq` and `defun` results survive into the timer's ctx because
   tulisp symbols own their global bindings ctx-independently. Do not

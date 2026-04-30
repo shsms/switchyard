@@ -89,24 +89,16 @@
 ;; Shape: low first half (1 kW), gradual ramp through the second half,
 ;; then a sudden spike near the end of every 15-minute window. Anything
 ;; expressible as a Lisp function over the elapsed window time works.
-;;
-;; Note: nested `if` rather than `cond` is intentional. tulisp-vm's
-;; bytecode label table currently doesn't survive the ctx switch into
-;; the timer body for `cond`'s jump table; `if` compiles to a simpler
-;; form that does. Inline the body into the lambda — calls into a
-;; (defun) with `cond` would also hit the same path.
 (setq meter-load (make-meter :hidden t :power 1000.0))
+(defun consumer-curve (t-window)
+  (cond ((< t-window 450.0) 1000.0)              ;; first half: 1 kW
+        ((> t-window 870.0) 16000.0)             ;; spike near end of window
+        (t (+ 1000.0 (* 35.0 (- t-window 450.0)))))) ;; 7-min ramp 1 → ~16 kW
 (every
  :milliseconds 200
  :call (lambda ()
-         (let ((t-w (window-elapsed 900.0)))
-           (set-meter-power
-            (component-id meter-load)
-            (if (< t-w 450.0)
-                1000.0                                 ;; first half: 1 kW
-              (if (> t-w 870.0)
-                  16000.0                              ;; spike near end
-                (+ 1000.0 (* 35.0 (- t-w 450.0))))))))) ;; 7-min ramp
+         (set-meter-power (component-id meter-load)
+                          (consumer-curve (window-elapsed 900.0)))))
 
 ;; ── (b) CSV-driven consumer (alternative; uncomment to use) ─────────
 ;; (setq csv-data    (csv-load "sim/example_load.csv"))
