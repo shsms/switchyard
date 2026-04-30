@@ -71,6 +71,11 @@ pub struct Telemetry {
     pub dc_power_w: Option<f32>,
 
     pub active_power_bounds: Option<VecBounds>,
+    /// Live reactive-power envelope at the current P. Single-bucket
+    /// `(lower, upper)`, expressed in VAR. Set on inverters that
+    /// implement `reactive_bounds()`; left None for batteries / meters
+    /// / EV chargers / CHP.
+    pub reactive_power_bounds: Option<(f32, f32)>,
 
     pub component_state: Option<&'static str>,
     pub relay_state: Option<&'static str>,

@@ -84,15 +84,18 @@ pub fn make_component_proto(c: &dyn SimulatedComponent) -> ElectricalComponent {
                 upper: Some(upper),
             }),
         });
-        // Mirror microsim's policy: reactive bounds are derived as
-        // ±max(|lower|, |upper|) for AC-side components.
+        // Reactive config bounds: prefer the trait's reactive_bounds()
+        // sampled at full rated active P (the worst-case-most-restrictive
+        // headroom). Falls back to the ±max-rated edge for components
+        // that don't implement reactive_bounds yet.
         if cat != ElectricalComponentCategory::Battery {
-            let edge = lower.abs().max(upper.abs());
+            let p_max = lower.abs().max(upper.abs());
+            let (rlo, rhi) = c.reactive_bounds().unwrap_or((-p_max, p_max));
             bounds.push(MetricConfigBounds {
                 metric: Metric::AcPowerReactive as i32,
                 config_bounds: Some(Bounds {
-                    lower: Some(-edge),
-                    upper: Some(edge),
+                    lower: Some(rlo),
+                    upper: Some(rhi),
                 }),
             });
         }
@@ -151,7 +154,14 @@ pub fn telemetry_to_proto(
         samples.push(sample);
     }
     if let Some(q) = t.reactive_power_var {
-        samples.push(simple_sample(now, Metric::AcPowerReactive, q));
+        let mut sample = simple_sample(now, Metric::AcPowerReactive, q);
+        if let Some((lo, hi)) = t.reactive_power_bounds {
+            sample.bounds = vec![Bounds {
+                lower: Some(lo),
+                upper: Some(hi),
+            }];
+        }
+        samples.push(sample);
     }
 
     // DC / battery-flavoured samples

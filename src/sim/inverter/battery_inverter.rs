@@ -166,6 +166,9 @@ impl SimulatedComponent for BatteryInverter {
             // want the combined inverter+battery envelope read both
             // streams and intersect.
             active_power_bounds: Some(self.bounds.lock().effective()),
+            // Reactive envelope is dynamic: it tightens with P (or
+            // expands toward the kVA edge as P falls).
+            reactive_power_bounds: Some(self.cfg.reactive.q_bounds_at(p)),
             component_state: Some(power_state(p)),
             ..Default::default()
         }
