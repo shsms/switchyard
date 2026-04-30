@@ -118,6 +118,7 @@ impl microgrid_server::Microgrid for MicrogridServer {
             .world()
             .components()
             .iter()
+            .filter(|c| !c.is_hidden())
             .map(|c| make_component_proto(c.as_ref()))
             .filter(|c| {
                 (req.electrical_component_ids.is_empty()

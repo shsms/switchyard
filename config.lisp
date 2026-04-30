@@ -82,7 +82,43 @@
 (setq meter-ev  (make-meter :successors (list ev-1)
                             :stream-jitter-pct 4.0))
 (setq meter-chp (make-meter :power -2000.0 :successors (list chp-1)))
-(setq meter-load (make-meter :hidden t :power 16000.0))
+;; Hidden consumer meters are driven dynamically from Lisp. Both
+;; approaches are demonstrated; pick whichever fits your scenario.
+
+;; ── (a) Function-driven consumer ────────────────────────────────────
+;; Shape: low first half (1 kW), gradual ramp through the second half,
+;; then a sudden spike near the end of every 15-minute window. Anything
+;; expressible as a Lisp function over the elapsed window time works.
+;;
+;; Note: nested `if` rather than `cond` is intentional. tulisp-vm's
+;; bytecode label table currently doesn't survive the ctx switch into
+;; the timer body for `cond`'s jump table; `if` compiles to a simpler
+;; form that does. Inline the body into the lambda — calls into a
+;; (defun) with `cond` would also hit the same path.
+(setq meter-load (make-meter :hidden t :power 1000.0))
+(every
+ :milliseconds 200
+ :call (lambda ()
+         (let ((t-w (window-elapsed 900.0)))
+           (set-meter-power
+            (component-id meter-load)
+            (if (< t-w 450.0)
+                1000.0                                 ;; first half: 1 kW
+              (if (> t-w 870.0)
+                  16000.0                              ;; spike near end
+                (+ 1000.0 (* 35.0 (- t-w 450.0))))))))) ;; 7-min ramp
+
+;; ── (b) CSV-driven consumer (alternative; uncomment to use) ─────────
+;; (setq csv-data    (csv-load "sim/example_load.csv"))
+;; (setq csv-anchor  (now-seconds))   ;; t=0 in the CSV maps to "now"
+;; (every
+;;  :milliseconds 1000
+;;  :call (lambda ()
+;;          (let ((rel (mod (- (now-seconds) csv-anchor) 900.0)))
+;;            (set-meter-power (component-id meter-load)
+;;                             (+ (csv-lookup csv-data "kitchen" rel)
+;;                                (csv-lookup csv-data "bedroom" rel)
+;;                                (csv-lookup csv-data "office" rel))))))
 
 (setq main-meter (make-meter
                   :id 2

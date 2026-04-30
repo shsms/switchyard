@@ -20,6 +20,11 @@ pub struct Meter {
     /// it without contending against the per-tick aggregation read.
     fixed_power_w: Mutex<Option<f32>>,
     stream_jitter_pct: f32,
+    /// Excluded from gRPC component / connection listings, but still
+    /// aggregated by parent meters via World::get. Used for synthetic
+    /// loads / generators that present as a power flow without being
+    /// a discrete addressable component.
+    hidden: bool,
 }
 
 impl Meter {
@@ -29,6 +34,7 @@ impl Meter {
         successors: Vec<u64>,
         fixed_power_w: Option<f32>,
         stream_jitter_pct: f32,
+        hidden: bool,
     ) -> Self {
         Self {
             id,
@@ -37,6 +43,7 @@ impl Meter {
             successors,
             fixed_power_w: Mutex::new(fixed_power_w),
             stream_jitter_pct,
+            hidden,
         }
     }
 
@@ -131,6 +138,10 @@ impl SimulatedComponent for Meter {
 
     fn set_active_power_override(&self, p: f32) {
         self.set_fixed_power(p);
+    }
+
+    fn is_hidden(&self) -> bool {
+        self.hidden
     }
 }
 

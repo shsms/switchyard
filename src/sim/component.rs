@@ -181,6 +181,16 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
         None
     }
 
+    /// Hidden components are still registered (so a parent meter can
+    /// look them up and aggregate their power) but excluded from the
+    /// gRPC `ListElectricalComponents` / `ListConnections` responses
+    /// and from any topology display. Used for synthetic load /
+    /// generator meters that should appear as a "consumer" power flow
+    /// to clients without showing up as discrete components.
+    fn is_hidden(&self) -> bool {
+        false
+    }
+
     /// Per-emit jitter applied to the stream interval, in percent
     /// (0..100). The server picks a uniform random multiplier in
     /// `1.0 ± pct/100` for every sleep so multi-component streams do
@@ -214,6 +224,10 @@ impl ComponentHandle {
 
     pub fn id(&self) -> u64 {
         self.0.id()
+    }
+
+    pub fn is_hidden(&self) -> bool {
+        self.0.is_hidden()
     }
 }
 

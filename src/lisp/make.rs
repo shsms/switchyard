@@ -193,12 +193,14 @@ pub fn register(ctx: &mut TulispContext, world: World) {
             .as_ref()
             .map(|v| v.iter().map(|h| h.id()).collect())
             .unwrap_or_default();
+        let hidden = a.hidden.unwrap_or(false);
         let meter = Meter::new(
             id,
             interval,
             succ_ids,
             a.power.map(|p| p as f32),
             a.stream_jitter_pct.unwrap_or(0.0) as f32,
+            hidden,
         );
         let h = register_with_modes(
             &w,
@@ -207,7 +209,12 @@ pub fn register(ctx: &mut TulispContext, world: World) {
             a.telemetry_mode.as_deref(),
             a.command_mode.as_deref(),
         )?;
-        if !a.hidden.unwrap_or(false) {
+        // Hidden meters: their *outgoing* edges (to children) are
+        // suppressed too, mirroring microsim. The handle-side filter
+        // in connect_successors elsewhere skips edges *into* hidden
+        // children — so a hidden meter is invisible in both directions
+        // while still aggregating into its parent.
+        if !hidden {
             connect_successors(&w, id, &a.successors);
         }
         Ok::<_, Error>(h)
@@ -414,6 +421,12 @@ pub fn register(ctx: &mut TulispContext, world: World) {
 fn connect_successors(world: &World, parent: u64, successors: &Option<Vec<ComponentHandle>>) {
     if let Some(list) = successors {
         for child in list {
+            // Hidden children: aggregated into the parent (succ_ids
+            // captures every successor) but excluded from the
+            // connections graph that gRPC clients see.
+            if child.is_hidden() {
+                continue;
+            }
             world.connect(parent, child.id());
         }
     }
