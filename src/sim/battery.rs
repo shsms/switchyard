@@ -85,13 +85,6 @@ impl Battery {
     pub fn power_w(&self) -> f32 {
         self.state.lock().power_w
     }
-
-    /// Set DC power without bounds-checking — the inverter is the
-    /// authority on what gets distributed; clamping happens upstream
-    /// so we can attribute the limit to the right component.
-    pub fn set_power_w(&self, p: f32) {
-        self.state.lock().power_w = p;
-    }
 }
 
 fn soc_protected_bounds(cfg: &BatteryConfig, soc: f32) -> (f32, f32) {
@@ -185,8 +178,13 @@ impl SimulatedComponent for Battery {
         self.state.lock().power_w
     }
 
+    /// Accept whatever the inverter pushed onto the DC bus, clipped to
+    /// the SoC-protective effective bounds. The inverter has no data
+    /// link that lets it know our limits — it sends a setpoint and
+    /// reads back what was actually accepted.
     fn set_dc_power(&self, p: f32) {
-        self.set_power_w(p);
+        let mut s = self.state.lock();
+        s.power_w = p.clamp(s.effective_lower_w, s.effective_upper_w);
     }
 
     fn rated_active_bounds(&self) -> Option<(f32, f32)> {
