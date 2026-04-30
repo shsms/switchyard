@@ -9,11 +9,7 @@
 pub mod handle;
 pub mod make;
 
-use std::{
-    path::Path,
-    sync::Arc,
-    time::Duration,
-};
+use std::{path::Path, sync::Arc, time::Duration};
 
 use notify::{RecommendedWatcher, Watcher};
 use parking_lot::RwLock;
@@ -60,6 +56,18 @@ impl Config {
             .unwrap_or_else(|e| panic!("set_load_path({}): {:?}", load_dir.display(), e));
 
         register_runtime(&mut ctx, &world, metadata.clone());
+
+        // tulisp-async gives the config DSL access to run-with-timer,
+        // cancel-timer, sleep-for and friends, used to drive
+        // *environment* animation (per-tick voltage / frequency
+        // perturbations, scheduled events). Component logic stays in
+        // Rust; lisp's only job is wiring + scripting the world
+        // around it. Must be called inside a tokio runtime —
+        // TokioExecutor::new captures Handle::current().
+        tulisp_async::register(
+            &mut ctx,
+            Arc::new(tulisp_async::TokioExecutor::new()),
+        );
 
         if let Err(e) = ctx.eval_file(filename) {
             log::error!("Tulisp error:\n{}", e.format(&ctx));
