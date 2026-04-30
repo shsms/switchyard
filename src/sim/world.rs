@@ -21,7 +21,7 @@ use std::{
 use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
 
-use crate::sim::component::{ComponentHandle, NEXT_ID, SimulatedComponent};
+use crate::sim::component::{ComponentHandle, FIRST_AUTO_ID, SimulatedComponent};
 use crate::sim::runtime::{CommandMode, ComponentRuntime, Health, TelemetryMode};
 
 /// External AC environment shared by all AC components. Mirrors
@@ -52,6 +52,10 @@ struct WorldInner {
     connections: RwLock<Vec<(u64, u64)>>,
     grid_state: RwLock<GridState>,
     physics_tick_ms: AtomicU64,
+    /// Per-World id allocator. Reset on `reset()` so a hot-reload
+    /// reuses the same id range microsim would (1000+) — clients
+    /// caching component IDs across reloads see them stay stable.
+    next_id: AtomicU64,
     /// Per-component runtime mode flags (health, telemetry mode,
     /// command mode). Defaulted on register, mutated via the
     /// `set-component-*` Lisp defuns or directly from server.rs.
@@ -67,13 +71,14 @@ impl World {
                 connections: RwLock::new(Vec::new()),
                 grid_state: RwLock::new(GridState::default()),
                 physics_tick_ms: AtomicU64::new(100),
+                next_id: AtomicU64::new(FIRST_AUTO_ID),
                 runtime: RwLock::new(HashMap::new()),
             }),
         }
     }
 
     pub fn next_id(&self) -> u64 {
-        NEXT_ID.fetch_add(1, Ordering::Relaxed)
+        self.inner.next_id.fetch_add(1, Ordering::Relaxed)
     }
 
     pub fn physics_tick(&self) -> Duration {
@@ -160,12 +165,17 @@ impl World {
     }
 
     /// Wipe every registered component. Called from `(reset-state)` in
-    /// the config DSL on hot-reload.
+    /// the config DSL on hot-reload. Also resets the id allocator so a
+    /// reloaded config sees the same ids the previous load saw,
+    /// matching microsim's `(setq comp--id--counter 1000)` behaviour.
     pub fn reset(&self) {
         self.inner.components.write().clear();
         self.inner.by_id.write().clear();
         self.inner.connections.write().clear();
         self.inner.runtime.write().clear();
+        self.inner
+            .next_id
+            .store(FIRST_AUTO_ID, Ordering::Relaxed);
         // The grid state is environmental (set by the config's `every`
         // timer); we deliberately keep it across reloads so the first
         // tick after reload still has plausible values.
@@ -217,10 +227,11 @@ impl World {
         }
     }
 
-    /// Spawn the physics loop. Returns immediately; the loop owns a
-    /// clone of `World` and stops when the World is dropped (the Arc
-    /// strong count goes to zero) or the channel-less stop is wired
-    /// later.
+    /// Spawn the physics loop. Returns immediately. The loop holds an
+    /// `Arc` clone of the World, so the World cannot drop until the
+    /// task exits — and right now there is no exit path. That's fine
+    /// for the long-running binary but means tests that need a clean
+    /// shutdown should call `tick_once` directly instead.
     pub fn spawn_physics(self) {
         tokio::spawn(async move {
             let mut last = Utc::now();

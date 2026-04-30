@@ -1,8 +1,4 @@
-use std::{
-    fmt,
-    sync::{Arc, atomic::AtomicU64},
-    time::Duration,
-};
+use std::{fmt, sync::Arc, time::Duration};
 
 use chrono::{DateTime, Utc};
 
@@ -228,6 +224,7 @@ impl fmt::Display for ComponentHandle {
     }
 }
 
-/// Used by the world's id allocator. Starts at 1000 to match microsim's
-/// id range, which keeps test fixtures portable.
-pub(crate) static NEXT_ID: AtomicU64 = AtomicU64::new(1000);
+/// First auto-allocated component ID. Microsim picks 1000 so explicit
+/// IDs (1, 2, …) on roots/main-meters don't collide; switchyard
+/// matches the convention so test fixtures stay portable.
+pub const FIRST_AUTO_ID: u64 = 1000;
