@@ -112,6 +112,14 @@ impl Ramp {
     }
 
     pub fn set_target(&self, target: f32) {
+        // NaN propagating through the slew math poisons `actual`
+        // permanently; reject it at the door. ±∞ is left through —
+        // a target of f32::INFINITY combined with a finite rate still
+        // gives a well-defined per-tick step.
+        if target.is_nan() {
+            log::warn!("Ramp::set_target ignored NaN");
+            return;
+        }
         self.state.lock().target = target;
     }
 
@@ -182,5 +190,18 @@ mod tests {
         let r = Ramp::new(f32::INFINITY, 0.0);
         r.set_target(5000.0);
         assert_eq!(r.advance(Duration::from_millis(1)), 5000.0);
+    }
+
+    #[test]
+    fn ramp_ignores_nan_target() {
+        let r = Ramp::new(1000.0, 0.0);
+        r.set_target(5000.0);
+        r.advance(Duration::from_secs(1)); // → 1000
+        r.set_target(f32::NAN); // no-op, target stays at 5000
+        let v = r.advance(Duration::from_secs(1));
+        assert!(
+            v.is_finite() && (v - 2000.0).abs() < 1e-3,
+            "expected 2000, got {v}"
+        );
     }
 }
