@@ -377,8 +377,6 @@ A snapshot of where switchyard sits relative to microsim. Items marked
 | Feature | Notes |
 |---|---|
 | **TUI** | Microsim ships a 350-line ratatui-based terminal UI for live inspection (`--tui`). Switchyard is headless; clients use `swctl` or grpcurl. |
-| **Component health states** | _In progress._ Microsim's `:config '((component-state . error))` makes a component refuse setpoints. Switchyard implementation in flight as `Health` enum + runtime defun. |
-| **Telemetry / command mode flags** | _In progress._ Microsim simulated unreachable devices via huge `:interval`s. Switchyard models `Silent` / `Closed` telemetry modes and `Timeout` / `Error` command modes orthogonally. |
 | **Dynamic reactive bounds** | Microsim recomputes reactive limits as ±35% of \|actual P\| per sample. Switchyard publishes static rated reactive bounds in `metric_config_bounds`; the inverter still validates a setpoint against ±35% of the *current ramp value*, but the published bounds don't update. |
 | **`dt:now` / `dt:milliseconds` / `dt:minutes`** | Microsim exposes time helpers for scheduling absolute-time events. Switchyard has none. |
 | **`microsim-etags`** | Editor jump-to-definition support for the Lisp config. Switchyard has no equivalent binary. |
@@ -390,6 +388,7 @@ A snapshot of where switchyard sits relative to microsim. Items marked
 | Feature | Notes |
 |---|---|
 | **`SimulatedComponent` trait + modular Rust architecture** | Adding a new component type is one file under `src/sim/` plus one `register` line. |
+| **Health / telemetry-mode / command-mode runtime knobs** | Three orthogonal flags (`:health`, `:telemetry-mode`, `:command-mode` at construction; `set-component-*` defuns at runtime) simulate device-side faults: `Error` / `Standby` health rejects setpoints with `FailedPrecondition`; `Silent` keeps the stream open with no data; `Closed` ends the stream; `Timeout` hangs SetPower; `Error` returns `Unavailable`. Microsim approximated some of this via huge intervals + `:config '((component-state . error))`. |
 | **`AsPlist!` typed plist args** | Compile-time-checked argument structs for every `make-*` instead of runtime `plist-get`. |
 | **`:command-delay-ms`** | Inverters and EV chargers model SCADA round-trip latency before honouring a setpoint. |
 | **`:ramp-rate`** | Slew-rate-limited power tracking (W/s) — actual power moves toward the target at a configurable rate, like a real device protecting cells / breakers. |
