@@ -37,12 +37,18 @@ pub struct BatteryInverter {
     interval: Duration,
     cfg: BatteryInverterConfig,
     /// IDs of the underlying batteries. The inverter pushes DC power
-    /// onto them via `World::get(id).set_dc_power(share)` on every tick.
+    /// onto them via `World::get(id).set_dc_power(share)` on every tick
+    /// and reads back what was accepted.
     successors: Vec<u64>,
     bounds: Mutex<ComponentBounds>,
     reactive_var: Mutex<f32>,
     delay: CommandDelay,
     ramp: Ramp,
+    /// What the children actually accepted last tick — the AC-side
+    /// quantity a real inverter would publish on its telemetry bus.
+    /// Differs from `ramp.actual()` whenever a battery's BMS clipped
+    /// the share we pushed.
+    measured_w: Mutex<f32>,
 }
 
 impl BatteryInverter {
@@ -65,6 +71,7 @@ impl BatteryInverter {
             reactive_var: Mutex::new(0.0),
             delay,
             ramp,
+            measured_w: Mutex::new(0.0),
         }
     }
 }
@@ -92,41 +99,43 @@ impl SimulatedComponent for BatteryInverter {
     fn tick(&self, world: &World, now: DateTime<Utc>, dt: Duration) {
         self.bounds.lock().drop_expired(now);
 
-        // Combine our own bounds with the per-tick effective bounds of
-        // every healthy child battery, so a near-full pack pulls the
-        // inverter ceiling down even if its own rated range is wider.
-        let combined = self.combined_bounds(world);
-
+        // We only know about our OWN bounds — clamp the pending command
+        // against those, no peeking at the children. The microgrid
+        // gateway gates over-envelope setpoints upstream of us; if one
+        // slips through the children will refuse the excess on their
+        // own and the measured aggregate will simply fall short.
         if let Some(target) = self.delay.poll(now) {
-            let clamped = combined.clamp(target);
-            self.ramp.set_target(clamped);
-        } else {
-            // No new command, but children may have just derated under
-            // our feet — pull the existing target back inside the new
-            // envelope so the ramp tapers smoothly rather than cliffing
-            // at the next set-point.
-            let t = self.ramp.target();
-            let clamped = combined.clamp(t);
-            if (clamped - t).abs() > f32::EPSILON {
-                self.ramp.set_target(clamped);
-            }
+            let own = self.bounds.lock().effective();
+            self.ramp.set_target(own.clamp(target));
         }
 
-        let actual = self.ramp.advance(dt);
+        let commanded = self.ramp.advance(dt);
 
-        if !self.successors.is_empty() {
-            let share = actual / self.successors.len() as f32;
+        // Distribute equal shares onto the DC bus and read back what
+        // each battery actually accepted (each `set_dc_power` clips
+        // locally to its own derated bounds). The measured aggregate
+        // is what we publish to clients, not the ramp value.
+        let measured = if self.successors.is_empty() {
+            commanded
+        } else {
+            let share = commanded / self.successors.len() as f32;
+            let mut sum = 0.0;
             for id in &self.successors {
                 if let Some(child) = world.get(*id) {
                     child.set_dc_power(share);
+                    sum += child.aggregate_power_w();
                 }
             }
-        }
+            sum
+        };
+        *self.measured_w.lock() = measured;
     }
 
     fn telemetry(&self, world: &World) -> Telemetry {
         let grid = world.grid_state();
-        let p = self.ramp.actual();
+        // Report the measured AC output, not the internal ramp state —
+        // those diverge when a battery clips downstream.
+        let p = *self.measured_w.lock();
         let pp = split_per_phase(p, grid.voltage_per_phase);
         let rp = *self.reactive_var.lock();
         let rpp = split_per_phase(rp, grid.voltage_per_phase);
@@ -140,7 +149,10 @@ impl SimulatedComponent for BatteryInverter {
             per_phase_voltage_v: Some(grid.voltage_per_phase),
             per_phase_current_a: Some(per_phase_current(pp, rpp, grid.voltage_per_phase)),
             frequency_hz: Some(grid.frequency_hz),
-            active_power_bounds: Some(self.combined_bounds(world)),
+            // Reported envelope is OUR own bounds only — clients that
+            // want the combined inverter+battery envelope read both
+            // streams and intersect.
+            active_power_bounds: Some(self.bounds.lock().effective()),
             component_state: Some(power_state(p)),
             ..Default::default()
         }
@@ -180,6 +192,7 @@ impl SimulatedComponent for BatteryInverter {
         self.delay.reset();
         self.ramp.set_target(0.0);
         *self.reactive_var.lock() = 0.0;
+        *self.measured_w.lock() = 0.0;
     }
 
     fn augment_active_bounds(
@@ -192,13 +205,13 @@ impl SimulatedComponent for BatteryInverter {
     }
 
     fn aggregate_power_w(&self) -> f32 {
-        self.ramp.actual()
+        *self.measured_w.lock()
     }
 
     fn aggregate_per_phase_w(&self) -> (f32, f32, f32) {
-        // Even split. The meter, on telemetry, will re-split using
+        // Even split of measured AC output. The meter re-splits using
         // current grid voltage if it needs more accuracy.
-        let p = self.ramp.actual();
+        let p = *self.measured_w.lock();
         (p / 3.0, p / 3.0, p / 3.0)
     }
 
@@ -216,29 +229,6 @@ impl SimulatedComponent for BatteryInverter {
 
     fn effective_active_bounds(&self) -> Option<crate::sim::bounds::VecBounds> {
         Some(self.bounds.lock().effective())
-    }
-}
-
-impl BatteryInverter {
-    /// Effective bounds = own bounds ∩ Σ children effective bounds.
-    /// Falls back to own bounds if there are no healthy successors.
-    fn combined_bounds(&self, world: &World) -> crate::sim::bounds::VecBounds {
-        use crate::sim::bounds::VecBounds;
-        let own = self.bounds.lock().effective();
-        if self.successors.is_empty() {
-            return own;
-        }
-        let summed = VecBounds::sum_single(
-            self.successors
-                .iter()
-                .filter_map(|id| world.get(*id))
-                .filter_map(|c| c.effective_active_bounds()),
-        );
-        if summed.0.is_empty() {
-            own
-        } else {
-            own.intersect(&summed)
-        }
     }
 }
 
