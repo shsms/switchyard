@@ -198,17 +198,6 @@ const liveCharts = (() => {
   };
 })();
 
-// vis-network instance + DataSets — module-scoped so the WS
-// topology-changed handler can refresh in place without tearing
-// down the canvas.
-let network = null;
-let nodesDS = null;
-let edgesDS = null;
-// Last topology snapshot keyed by id; used to recover category +
-// subtype on selection (DataSet stores them but it's clearer to keep
-// our own).
-let componentById = new Map();
-
 // Brighten a #rrggbb hex by `n` per channel (clamped to 255). Used to
 // derive hover + selected node-background tints from the canonical
 // category color so the same node visibly reacts to interaction
@@ -262,21 +251,126 @@ function nodeStyleFor(c) {
   };
 }
 
-function buildVisData(topology) {
-  componentById = new Map();
-  const visible = topology.components.filter((c) => !c.hidden);
-  const nodes = visible.map((c) => {
-    componentById.set(c.id, c);
-    return nodeStyleFor(c);
-  });
-  const edges = topology.connections.map(([p, c]) => ({
-    id: `${p}-${c}`,
-    from: p,
-    to: c,
-    arrows: "to",
-  }));
-  return { nodes, edges };
-}
+// vis-network instance + DataSets + last-known component table.
+// All accessors that surrounding code needs go through the module's
+// public API, so callers don't have to reach into vis-network or
+// reconstruct the id → component map themselves. Selection is wired
+// up via setSelectionHandler so applyTopology doesn't need to know
+// about showComponent / clearSide directly.
+const topology = (() => {
+  let network = null;
+  let nodesDS = null;
+  let edgesDS = null;
+  const componentById = new Map();
+  let onSelect = null;
+  let onDeselect = null;
+
+  function buildVisData(data) {
+    componentById.clear();
+    const visible = data.components.filter((c) => !c.hidden);
+    const nodes = visible.map((c) => {
+      componentById.set(c.id, c);
+      return nodeStyleFor(c);
+    });
+    const edges = data.connections.map(([p, c]) => ({
+      id: `${p}-${c}`,
+      from: p,
+      to: c,
+      arrows: "to",
+    }));
+    return { nodes, edges };
+  }
+
+  function apply(data) {
+    const visibleCount = data.components.filter((c) => !c.hidden).length;
+    setStatus(
+      `${visibleCount} components, ${data.connections.length} connections`,
+      "connected",
+    );
+    const { nodes, edges } = buildVisData(data);
+    if (!network) {
+      nodesDS = new vis.DataSet(nodes);
+      edgesDS = new vis.DataSet(edges);
+      network = new vis.Network(
+        document.getElementById("topology"),
+        { nodes: nodesDS, edges: edgesDS },
+        visOptions,
+      );
+      network.on("click", (params) => {
+        if (params.nodes.length) {
+          const id = params.nodes[0];
+          if (onSelect) onSelect(componentById.get(id));
+        } else if (onDeselect) {
+          onDeselect();
+        }
+      });
+      // Right-click → delete confirm. vis-network gives the canvas
+      // pointer; getNodeAt translates to a node id.
+      network.on("oncontext", (params) => {
+        params.event.preventDefault();
+        const id = network.getNodeAt(params.pointer.DOM);
+        if (id == null) return;
+        const c = componentById.get(id);
+        if (!c) return;
+        if (!confirm(`Delete ${c.name} (id ${c.id})?`)) return;
+        fetch(`/api/eval?affects=${c.id}`, {
+          method: "POST",
+          body: `(world-remove-component ${c.id})`,
+        })
+          .then((r) => r.json())
+          .then((res) => {
+            if (!res.ok) notify("Delete failed: " + res.error);
+          });
+      });
+      // Shift toggles vis-network's addEdge mode. Hold Shift, drag
+      // from one node to another to wire them. The addEdge callback
+      // (defined in visOptions) POSTs world-connect and the WS
+      // topology refresh redraws.
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Shift" && network) network.addEdgeMode();
+      });
+      document.addEventListener("keyup", (e) => {
+        if (e.key === "Shift" && network) network.disableEditMode();
+      });
+    } else {
+      // Diff the DataSets — preserves selection, layout positions,
+      // and any in-flight drag interactions, instead of tearing
+      // down the canvas on every WS topology event.
+      const prevSelected = network.getSelectedNodes();
+      const newIds = new Set(nodes.map((n) => n.id));
+      const stale = nodesDS.getIds().filter((id) => !newIds.has(id));
+      if (stale.length) nodesDS.remove(stale);
+      nodesDS.update(nodes);
+
+      const newEdgeIds = new Set(edges.map((e) => e.id));
+      const staleEdges = edgesDS.getIds().filter((id) => !newEdgeIds.has(id));
+      if (staleEdges.length) edgesDS.remove(staleEdges);
+      edgesDS.update(edges);
+
+      if (prevSelected.length) {
+        const stillThere = prevSelected.filter((id) => componentById.has(id));
+        if (stillThere.length) {
+          network.selectNodes(stillThere);
+          if (onSelect) onSelect(componentById.get(stillThere[0]));
+        } else if (onDeselect) {
+          onDeselect();
+        }
+      }
+    }
+  }
+
+  return {
+    apply,
+    get: (id) => componentById.get(id),
+    has: (id) => componentById.has(id),
+    parentsOf: (id) => (network ? network.getConnectedNodes(id, "from") : []),
+    childrenOf: (id) => (network ? network.getConnectedNodes(id, "to") : []),
+    setSelectionHandler(select, deselect) {
+      onSelect = select;
+      onDeselect = deselect;
+    },
+  };
+})();
 
 // Layout: vis-network's hierarchical mode places nodes on
 // integer-numbered levels by edge direction. `LR` reads left → right —
@@ -366,7 +460,7 @@ function knobsFor(d) {
 
 function renderInspect(d, parentIds, childIds, overrides = []) {
   const renderEdgeRow = (id, dataAttr) => {
-    const c = componentById.get(id);
+    const c = topology.get(id);
     const label = c ? c.name : `id ${id}`;
     return `<li>${escapeHtml(label)} <button class="link-btn" ${dataAttr}="${id}">✕</button></li>`;
   };
@@ -538,9 +632,9 @@ async function showComponent(d) {
   // vis-network's getConnectedNodes(id, direction) returns the
   // ids on either side of the selected node — cheaper than walking
   // /api/topology for the disconnect buttons. Display labels get
-  // resolved by renderInspect via componentById lookups.
-  const parentIds = network ? network.getConnectedNodes(d.id, "from") : [];
-  const childIds = network ? network.getConnectedNodes(d.id, "to") : [];
+  // resolved by renderInspect via topology.get().
+  const parentIds = topology.parentsOf(d.id);
+  const childIds = topology.childrenOf(d.id);
   // Pending entries that target this component — shown as
   // "Current overrides" with their own ✕ buttons. Read from the
   // shared pendingState cache so we don't fan out a fresh fetch
@@ -1341,92 +1435,11 @@ function openWebSocket(onTopologyChanged) {
   return ws;
 }
 
-function applyTopology(topology) {
-  const visibleCount = topology.components.filter((c) => !c.hidden).length;
-  setStatus(
-    `${visibleCount} components, ${topology.connections.length} connections`,
-    "connected",
-  );
-  const { nodes, edges } = buildVisData(topology);
-  if (!network) {
-    nodesDS = new vis.DataSet(nodes);
-    edgesDS = new vis.DataSet(edges);
-    network = new vis.Network(
-      document.getElementById("topology"),
-      { nodes: nodesDS, edges: edgesDS },
-      visOptions,
-    );
-
-    network.on("click", (params) => {
-      if (params.nodes.length) {
-        const id = params.nodes[0];
-        showComponent(componentById.get(id));
-      } else {
-        clearSide();
-      }
-    });
-
-    // Right-click → delete confirm. vis-network gives the canvas
-    // pointer; getNodeAt translates to a node id.
-    network.on("oncontext", (params) => {
-      params.event.preventDefault();
-      const id = network.getNodeAt(params.pointer.DOM);
-      if (id == null) return;
-      const c = componentById.get(id);
-      if (!c) return;
-      if (!confirm(`Delete ${c.name} (id ${c.id})?`)) return;
-      fetch(`/api/eval?affects=${c.id}`, {
-        method: "POST",
-        body: `(world-remove-component ${c.id})`,
-      })
-        .then((r) => r.json())
-        .then((res) => {
-          if (!res.ok) notify("Delete failed: " + res.error);
-        });
-    });
-
-    // Shift toggles vis-network's addEdge mode. Hold Shift, drag
-    // from one node to another to wire them. The addEdge callback
-    // (defined in visOptions) POSTs world-connect and the WS topology
-    // refresh redraws.
-    document.addEventListener("keydown", (e) => {
-      if (e.key === "Shift" && network) network.addEdgeMode();
-    });
-    document.addEventListener("keyup", (e) => {
-      if (e.key === "Shift" && network) network.disableEditMode();
-    });
-  } else {
-    // Diff the DataSets — preserves selection, layout positions, and
-    // any in-flight drag interactions, instead of tearing down the
-    // canvas on every WS topology event.
-    const prevSelected = network.getSelectedNodes();
-    const newIds = new Set(nodes.map((n) => n.id));
-    const stale = nodesDS.getIds().filter((id) => !newIds.has(id));
-    if (stale.length) nodesDS.remove(stale);
-    nodesDS.update(nodes);
-
-    const newEdgeIds = new Set(edges.map((e) => e.id));
-    const staleEdges = edgesDS.getIds().filter((id) => !newEdgeIds.has(id));
-    if (staleEdges.length) edgesDS.remove(staleEdges);
-    edgesDS.update(edges);
-
-    if (prevSelected.length) {
-      const stillThere = prevSelected.filter((id) => componentById.has(id));
-      if (stillThere.length) {
-        network.selectNodes(stillThere);
-        showComponent(componentById.get(stillThere[0]));
-      } else {
-        clearSide();
-      }
-    }
-  }
-}
-
 async function refreshTopology() {
   try {
     const res = await fetch("/api/topology");
     if (!res.ok) throw new Error("HTTP " + res.status);
-    applyTopology(await res.json());
+    topology.apply(await res.json());
   } catch (err) {
     setStatus("error: " + err.message, "error");
   }
@@ -1441,6 +1454,10 @@ async function init() {
   setupPendingDialog();
   backfillLogs();
   setupPersistControls();
+  // The topology canvas calls back to showComponent / clearSide on
+  // node click + canvas click (declared further down). Wire it up
+  // before the first apply so the listeners are in place.
+  topology.setSelectionHandler(showComponent, clearSide);
   await refreshTopology();
   await pendingState.refresh();
   // WS push: refresh both the topology (so the canvas reflects the
