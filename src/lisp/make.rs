@@ -97,6 +97,12 @@ AsPlist! {
         reactive_pf_limit<":reactive-pf-limit">: Option<f64> {= None},
         /// kVA-style Q cap: P² + Q² ≤ apparent². Pass nil to disable.
         reactive_apparent_va<":reactive-apparent-va">: Option<f64> {= None},
+        /// Inverter-internal latency before a Q setpoint starts
+        /// being tracked. Defaults to 100 ms.
+        reactive_command_delay_ms<":reactive-command-delay-ms">: Option<i64> {= None},
+        /// Reactive slew rate (VAR/s). Default 2000 ≈ IEEE 1547-2018
+        /// Cat B 5 s OLRT for a 10 kVAR window.
+        reactive_ramp_rate<":reactive-ramp-rate">: Option<f64> {= None},
     }
 }
 
@@ -121,6 +127,11 @@ AsPlist! {
         reactive_pf_limit<":reactive-pf-limit">: Option<f64> {= None},
         /// kVA-style Q cap: P² + Q² ≤ apparent². Pass 0 to disable.
         reactive_apparent_va<":reactive-apparent-va">: Option<f64> {= None},
+        /// Inverter-internal latency before a Q setpoint starts being
+        /// tracked. Defaults to 100 ms.
+        reactive_command_delay_ms<":reactive-command-delay-ms">: Option<i64> {= None},
+        /// Reactive slew rate (VAR/s). Default 2000.
+        reactive_ramp_rate<":reactive-ramp-rate">: Option<f64> {= None},
     }
 }
 
@@ -309,6 +320,12 @@ pub fn register(ctx: &mut TulispContext, world: World) {
                         .and_then(|v| if v > 0.0 { Some(v as f32) } else { None }),
                 };
             }
+            if let Some(v) = a.reactive_command_delay_ms {
+                cfg.reactive_command_delay = Duration::from_millis(v.max(0) as u64);
+            }
+            if let Some(v) = a.reactive_ramp_rate {
+                cfg.reactive_ramp_rate_var_per_s = v as f32;
+            }
             let succ_ids: Vec<u64> = a
                 .successors
                 .as_ref()
@@ -366,6 +383,12 @@ pub fn register(ctx: &mut TulispContext, world: World) {
                         .reactive_apparent_va
                         .and_then(|v| if v > 0.0 { Some(v as f32) } else { None }),
                 };
+            }
+            if let Some(v) = a.reactive_command_delay_ms {
+                cfg.reactive_command_delay = Duration::from_millis(v.max(0) as u64);
+            }
+            if let Some(v) = a.reactive_ramp_rate {
+                cfg.reactive_ramp_rate_var_per_s = v as f32;
             }
             register_with_modes(
                 &w,

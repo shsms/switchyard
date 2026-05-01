@@ -21,6 +21,15 @@ pub struct BatteryInverterConfig {
     pub stream_jitter_pct: f32,
     /// Q envelope. Default microsim-compatible PF cap of 0.35.
     pub reactive: ReactiveCapability,
+    /// SCADA / inverter-internal latency between accepting a Q
+    /// setpoint and starting to track it. Real smart inverters take
+    /// some milliseconds; default 100 ms.
+    pub reactive_command_delay: Duration,
+    /// Reactive slew rate (VAR/s). Sized to give an open-loop
+    /// response time around 5 s when traversing a ~10 kVAR window —
+    /// matches IEEE 1547-2018's Performance Category B default OLRT
+    /// for Volt/VAR control. Use `f32::INFINITY` to disable.
+    pub reactive_ramp_rate_var_per_s: f32,
 }
 
 impl Default for BatteryInverterConfig {
@@ -32,6 +41,8 @@ impl Default for BatteryInverterConfig {
             ramp_rate_w_per_s: f32::INFINITY,
             stream_jitter_pct: 0.0,
             reactive: ReactiveCapability::microsim_default(),
+            reactive_command_delay: Duration::from_millis(100),
+            reactive_ramp_rate_var_per_s: 2000.0,
         }
     }
 }
@@ -51,9 +62,18 @@ pub struct BatteryInverter {
     /// defun can mutate it at runtime — same surface a SunSpec
     /// Modbus client gets on a real smart inverter.
     reactive: Mutex<ReactiveCapability>,
+    /// Published / measured reactive power. Updated each tick from
+    /// what the children accepted (which equals what the reactive
+    /// ramp delivered, since batteries pass Q through unchanged).
     reactive_var: Mutex<f32>,
     delay: CommandDelay,
     ramp: Ramp,
+    /// Same delay-then-slew chain as the active path, but for Q.
+    /// The setpoint enters `reactive_delay`, gets armed after
+    /// `reactive_command_delay`, and `reactive_ramp` slews toward it
+    /// at `reactive_ramp_rate_var_per_s` VAR/s.
+    reactive_delay: CommandDelay,
+    reactive_ramp: Ramp,
     /// What the children actually accepted last tick — the AC-side
     /// quantity a real inverter would publish on its telemetry bus.
     /// Differs from `ramp.actual()` whenever a battery's BMS clipped
@@ -72,6 +92,8 @@ impl BatteryInverter {
         let delay = CommandDelay::new(cfg.command_delay);
         let ramp = Ramp::new(cfg.ramp_rate_w_per_s, 0.0);
         let reactive = cfg.reactive;
+        let reactive_delay = CommandDelay::new(cfg.reactive_command_delay);
+        let reactive_ramp = Ramp::new(cfg.reactive_ramp_rate_var_per_s, 0.0);
         Self {
             id,
             name: format!("inv-bat-{id}"),
@@ -83,6 +105,8 @@ impl BatteryInverter {
             reactive_var: Mutex::new(0.0),
             delay,
             ramp,
+            reactive_delay,
+            reactive_ramp,
             measured_w: Mutex::new(0.0),
         }
     }
@@ -121,8 +145,18 @@ impl SimulatedComponent for BatteryInverter {
             self.ramp.set_target(own.clamp(target));
         }
 
+        // Reactive path: same delay-then-slew shape. The setpoint
+        // was validated against the envelope when accepted, but P
+        // may have moved since then — re-clamp here against the
+        // live envelope before arming the ramp.
+        if let Some(target) = self.reactive_delay.poll(now) {
+            let p_live = *self.measured_w.lock();
+            let (lo, hi) = self.reactive.lock().q_bounds_at(p_live);
+            self.reactive_ramp.set_target(target.clamp(lo, hi));
+        }
+
         let commanded_p = self.ramp.advance(dt);
-        let commanded_q = *self.reactive_var.lock();
+        let commanded_q = self.reactive_ramp.advance(dt);
 
         // Distribute equal shares onto the DC bus and read back what
         // each battery actually accepted. Active is clamped at the
@@ -213,13 +247,18 @@ impl SimulatedComponent for BatteryInverter {
                 upper: hi,
             });
         }
-        *self.reactive_var.lock() = vars;
+        // Validated request enters the reactive command-delay queue;
+        // tick() promotes it after the configured latency and the
+        // reactive ramp slews toward it.
+        self.reactive_delay.set_target(Utc::now(), vars);
         Ok(())
     }
 
     fn reset_setpoint(&self) {
         self.delay.reset();
         self.ramp.set_target(0.0);
+        self.reactive_delay.reset();
+        self.reactive_ramp.set_target(0.0);
         *self.reactive_var.lock() = 0.0;
         *self.measured_w.lock() = 0.0;
     }

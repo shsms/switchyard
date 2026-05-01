@@ -27,6 +27,12 @@ pub struct SolarInverterConfig {
     pub stream_jitter_pct: f32,
     /// Q envelope. Default microsim-compatible PF cap of 0.35.
     pub reactive: ReactiveCapability,
+    /// SCADA / inverter-internal latency before a Q setpoint starts
+    /// being tracked. 100 ms default.
+    pub reactive_command_delay: Duration,
+    /// Reactive slew rate (VAR/s). 2000 default ≈ 5 s OLRT for a
+    /// 10 kVAR window — IEEE 1547-2018 Cat B baseline.
+    pub reactive_ramp_rate_var_per_s: f32,
 }
 
 impl Default for SolarInverterConfig {
@@ -39,6 +45,8 @@ impl Default for SolarInverterConfig {
             ramp_rate_w_per_s: f32::INFINITY,
             stream_jitter_pct: 0.0,
             reactive: ReactiveCapability::microsim_default(),
+            reactive_command_delay: Duration::from_millis(100),
+            reactive_ramp_rate_var_per_s: 2000.0,
         }
     }
 }
@@ -55,6 +63,9 @@ pub struct SolarInverter {
     delay: CommandDelay,
     ramp: Ramp,
     reactive_var: Mutex<f32>,
+    /// Same delay-then-slew chain as the active path, but for Q.
+    reactive_delay: CommandDelay,
+    reactive_ramp: Ramp,
 }
 
 impl SolarInverter {
@@ -65,6 +76,8 @@ impl SolarInverter {
         let ramp = Ramp::new(cfg.ramp_rate_w_per_s, init_p);
         ramp.set_target(init_p);
         let reactive = cfg.reactive;
+        let reactive_delay = CommandDelay::new(cfg.reactive_command_delay);
+        let reactive_ramp = Ramp::new(cfg.reactive_ramp_rate_var_per_s, 0.0);
         Self {
             id,
             name: format!("inv-pv-{id}"),
@@ -75,6 +88,8 @@ impl SolarInverter {
             delay,
             ramp,
             reactive_var: Mutex::new(0.0),
+            reactive_delay,
+            reactive_ramp,
         }
     }
 }
@@ -107,6 +122,17 @@ impl SimulatedComponent for SolarInverter {
             self.ramp.set_target(clamped);
         }
         self.ramp.advance(dt);
+
+        // Reactive path: same delay → ramp shape as P. The setpoint
+        // was envelope-validated when accepted; re-clamp here in
+        // case P drifted while it was sitting in the delay queue.
+        if let Some(target) = self.reactive_delay.poll(now) {
+            let p_live = self.ramp.actual();
+            let (lo, hi) = self.reactive.lock().q_bounds_at(p_live);
+            self.reactive_ramp.set_target(target.clamp(lo, hi));
+        }
+        let q_actual = self.reactive_ramp.advance(dt);
+        *self.reactive_var.lock() = q_actual;
     }
 
     fn telemetry(&self, world: &World) -> Telemetry {
@@ -160,7 +186,10 @@ impl SimulatedComponent for SolarInverter {
                 upper: hi,
             });
         }
-        *self.reactive_var.lock() = vars;
+        // Validated request enters the reactive command-delay queue;
+        // tick() promotes it after the configured latency and the
+        // reactive ramp slews toward it.
+        self.reactive_delay.set_target(Utc::now(), vars);
         Ok(())
     }
 
@@ -168,6 +197,8 @@ impl SimulatedComponent for SolarInverter {
         let init_p = self.cfg.rated_lower_w * self.cfg.sunlight_pct / 100.0;
         self.delay.reset();
         self.ramp.snap_to(init_p);
+        self.reactive_delay.reset();
+        self.reactive_ramp.set_target(0.0);
         *self.reactive_var.lock() = 0.0;
     }
 
