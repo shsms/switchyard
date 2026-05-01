@@ -367,66 +367,103 @@ const topology = (() => {
     rearrangeVerticallyForShortArrows();
   }
 
-  // Within-level barycenter pass: for each node, the desired y is
-  // the mean y of its connected neighbours (across all levels). We
-  // sort each level by desired y and reassign nodes to the level's
-  // existing y-slots in that order — a permutation, so the level's
-  // overall vertical extent and spacing stay put. A few iterations
-  // are enough for typical switchyard topologies (depth ≤ 5);
-  // bigger / wider graphs would benefit from more.
+  // Sugiyama-style barycenter sweeps over the level layers: each
+  // pass reorders one level's nodes by the mean y of their
+  // neighbours in an *adjacent* layer (down-sweep looks at the
+  // previous layer, up-sweep at the next), and a final all-neighbour
+  // pass smooths out anything the directional sweeps couldn't reach.
+  // Reassignment is a within-level permutation onto the level's own
+  // existing y-slots, so the layer's vertical extent and spacing
+  // stay put — only ordering within a layer changes. Effect: arrows
+  // shorten and crossings drop.
   function rearrangeVerticallyForShortArrows() {
     if (!network || !edgesDS || !nodesDS) return;
     const positions = network.getPositions();
     const ids = Object.keys(positions);
     if (ids.length <= 1) return;
 
-    // Group ids by level. Hierarchical LR puts each level at the
-    // same x; round to absorb floating-point quirks.
+    // Group ids by level (rounded x), and remember the level of each
+    // node so the per-direction filter is O(1).
+    const levelOf = new Map();
     const levels = new Map();
     for (const id of ids) {
       const lvl = Math.round(positions[id].x);
+      levelOf.set(id, lvl);
       if (!levels.has(lvl)) levels.set(lvl, []);
       levels.get(lvl).push(id);
     }
+    const sortedLevels = [...levels.keys()].sort((a, b) => a - b);
 
-    // Undirected adjacency map for the barycenter — both directions
-    // pull. Using strings throughout because vis position keys are
-    // stringified ids.
-    const neighbors = new Map();
-    for (const id of ids) neighbors.set(id, []);
+    // Two adjacency maps: predecessors (smaller-x neighbour) and
+    // successors (larger-x neighbour). Edges in vis are directed but
+    // a node sits between its parent and its children regardless of
+    // the arrow direction, so we key by level comparison rather than
+    // edge direction.
+    const preds = new Map();
+    const succs = new Map();
+    for (const id of ids) {
+      preds.set(id, []);
+      succs.set(id, []);
+    }
     for (const e of edgesDS.get()) {
       const f = String(e.from);
       const t = String(e.to);
-      if (neighbors.has(f)) neighbors.get(f).push(t);
-      if (neighbors.has(t)) neighbors.get(t).push(f);
+      if (!preds.has(f) || !preds.has(t)) continue;
+      const lf = levelOf.get(f);
+      const lt = levelOf.get(t);
+      if (lf < lt) {
+        succs.get(f).push(t);
+        preds.get(t).push(f);
+      } else if (lf > lt) {
+        succs.get(t).push(f);
+        preds.get(f).push(t);
+      } else {
+        // Same-level edge: treat as both predecessor and successor
+        // so it pulls in the all-neighbours smoothing pass below.
+        succs.get(f).push(t);
+        succs.get(t).push(f);
+      }
+    }
+
+    function reorder(levelIds, neighborMap) {
+      if (levelIds.length <= 1) return false;
+      const desired = levelIds.map((id) => {
+        const ns = neighborMap.get(id);
+        if (!ns.length) return positions[id].y;
+        let sum = 0;
+        for (const n of ns) sum += positions[n].y;
+        return sum / ns.length;
+      });
+      const slotYs = levelIds
+        .map((id) => positions[id].y)
+        .sort((a, b) => a - b);
+      const order = levelIds
+        .map((_, i) => i)
+        .sort((a, b) => desired[a] - desired[b]);
+      let moved = false;
+      for (let slot = 0; slot < order.length; slot++) {
+        const id = levelIds[order[slot]];
+        const newY = slotYs[slot];
+        if (Math.abs(positions[id].y - newY) > 0.5) {
+          positions[id].y = newY;
+          moved = true;
+        }
+      }
+      return moved;
     }
 
     const ITERATIONS = 24;
     for (let iter = 0; iter < ITERATIONS; iter++) {
       let moved = false;
-      for (const levelIds of levels.values()) {
-        if (levelIds.length <= 1) continue;
-        const desired = levelIds.map((id) => {
-          const ns = neighbors.get(id);
-          if (!ns.length) return positions[id].y;
-          let sum = 0;
-          for (const n of ns) sum += positions[n].y;
-          return sum / ns.length;
-        });
-        const slotYs = levelIds
-          .map((id) => positions[id].y)
-          .sort((a, b) => a - b);
-        const order = levelIds
-          .map((_, i) => i)
-          .sort((a, b) => desired[a] - desired[b]);
-        for (let slot = 0; slot < order.length; slot++) {
-          const id = levelIds[order[slot]];
-          const newY = slotYs[slot];
-          if (Math.abs(positions[id].y - newY) > 0.5) {
-            positions[id].y = newY;
-            moved = true;
-          }
-        }
+      // Down-sweep: roots stay put, each subsequent level orders
+      // by predecessor barycenter.
+      for (let i = 1; i < sortedLevels.length; i++) {
+        if (reorder(levels.get(sortedLevels[i]), preds)) moved = true;
+      }
+      // Up-sweep: leaves stay put, each predecessor level orders
+      // by successor barycenter.
+      for (let i = sortedLevels.length - 2; i >= 0; i--) {
+        if (reorder(levels.get(sortedLevels[i]), succs)) moved = true;
       }
       if (!moved) break;
     }
