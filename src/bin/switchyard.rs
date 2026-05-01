@@ -35,6 +35,7 @@ async fn main() {
     );
 
     World::clone(&world).spawn_physics();
+    World::clone(&world).spawn_history_sampler();
 
     let socket_addr_str = config.socket_addr();
     let socket_addr = socket_addr_str

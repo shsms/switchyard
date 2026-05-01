@@ -22,7 +22,14 @@ use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
 
 use crate::sim::component::{ComponentHandle, FIRST_AUTO_ID, SimulatedComponent};
+use crate::sim::history::{ComponentHistory, History, Metric, Sample};
 use crate::sim::runtime::{CommandMode, ComponentRuntime, Health, TelemetryMode};
+
+/// Hard cap on per-component-per-metric ring buffer length. At the
+/// fixed 1 Hz history sampling cadence (see `spawn_history_sampler`)
+/// this works out to a 10-minute window per series — plenty for the
+/// "what was my control app doing recently" use case.
+const HISTORY_CAPACITY: usize = 600;
 
 /// External AC environment shared by all AC components. Mirrors
 /// microsim's `voltage-per-phase` / `ac-frequency` globals.
@@ -60,6 +67,11 @@ struct WorldInner {
     /// command mode). Defaulted on register, mutated via the
     /// `set-component-*` Lisp defuns or directly from server.rs.
     runtime: RwLock<HashMap<u64, ComponentRuntime>>,
+    /// Per-component telemetry history rings, populated by the
+    /// `spawn_history_sampler` task. Read by the UI's `/api/history`
+    /// endpoint. Cleared on `reset()` so a hot-reload starts charts
+    /// fresh.
+    histories: RwLock<HashMap<u64, ComponentHistory>>,
 }
 
 impl World {
@@ -73,6 +85,7 @@ impl World {
                 physics_tick_ms: AtomicU64::new(100),
                 next_id: AtomicU64::new(FIRST_AUTO_ID),
                 runtime: RwLock::new(HashMap::new()),
+                histories: RwLock::new(HashMap::new()),
             }),
         }
     }
@@ -186,6 +199,7 @@ impl World {
         self.inner.by_id.write().clear();
         self.inner.connections.write().clear();
         self.inner.runtime.write().clear();
+        self.inner.histories.write().clear();
         self.inner.next_id.store(FIRST_AUTO_ID, Ordering::Relaxed);
         // The grid state is environmental (set by the config's `every`
         // timer); we deliberately keep it across reloads so the first
@@ -251,6 +265,69 @@ impl World {
             }
         });
     }
+
+    /// Spawn the history sampler — a single task that walks every
+    /// component once per second and pushes a snapshot into each
+    /// component's per-metric history rings.
+    ///
+    /// Single-task / fixed-cadence on purpose: a per-component task
+    /// at each component's own `stream_interval` would be more
+    /// faithful to gRPC stream semantics, but adds task lifecycle
+    /// management (cancel-on-reload, re-spawn-per-component) for
+    /// little chart-side benefit. 1 Hz × 600-sample capacity = 10
+    /// minutes of history per series, plenty for the v1 charts.
+    pub fn spawn_history_sampler(self) {
+        let cadence = Duration::from_secs(1);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(cadence);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                interval.tick().await;
+                self.record_history_snapshot(Utc::now());
+            }
+        });
+    }
+
+    /// Take one snapshot pass: read every component's telemetry and
+    /// push to its history rings. Extracted so tests can drive sampling
+    /// deterministically without spawning the periodic task.
+    pub fn record_history_snapshot(&self, now: DateTime<Utc>) {
+        let components = self.inner.components.read().clone();
+        let mut histories = self.inner.histories.write();
+        for c in &components {
+            let snap = c.telemetry(self);
+            histories
+                .entry(c.id())
+                .or_insert_with(|| ComponentHistory::new(HISTORY_CAPACITY))
+                .push_snapshot(now, &snap);
+        }
+    }
+
+    /// Read a windowed slice of one component's history for one
+    /// metric. Returns owned samples so the caller can release the
+    /// read lock immediately. `None` if the component or metric has
+    /// no recorded history yet.
+    pub fn history_window(
+        &self,
+        id: u64,
+        metric: Metric,
+        since: DateTime<Utc>,
+    ) -> Option<Vec<Sample>> {
+        let h = self.inner.histories.read();
+        let c = h.get(&id)?;
+        let series: &History = c.get(metric)?;
+        Some(series.iter_window(since).copied().collect())
+    }
+
+    /// List the metrics for which `id` has any recorded history.
+    pub fn history_metrics(&self, id: u64) -> Vec<Metric> {
+        self.inner
+            .histories
+            .read()
+            .get(&id)
+            .map(|c| c.metrics().collect())
+            .unwrap_or_default()
+    }
 }
 
 impl Default for World {
@@ -298,5 +375,80 @@ mod tests {
         assert_eq!(w.parent_count(100), 2);
         // unrelated child unaffected
         assert_eq!(w.parent_count(101), 0);
+    }
+
+    /// Driving `record_history_snapshot` directly populates the
+    /// per-component ring buffers. Verified across multiple ticks via
+    /// the windowed reader and the metric-set introspection.
+    #[test]
+    fn history_snapshot_populates_rings() {
+        use crate::sim::Telemetry;
+        use chrono::TimeZone;
+        struct FixedFlow {
+            id: u64,
+        }
+        impl std::fmt::Display for FixedFlow {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "fixed-{}", self.id)
+            }
+        }
+        impl SimulatedComponent for FixedFlow {
+            fn id(&self) -> u64 {
+                self.id
+            }
+            fn category(&self) -> crate::sim::Category {
+                crate::sim::Category::Battery
+            }
+            fn name(&self) -> &str {
+                "fixed"
+            }
+            fn stream_interval(&self) -> Duration {
+                Duration::from_secs(1)
+            }
+            fn tick(&self, _: &World, _: DateTime<Utc>, _: Duration) {}
+            fn telemetry(&self, _: &World) -> Telemetry {
+                Telemetry {
+                    active_power_w: Some(2500.0),
+                    soc_pct: Some(72.5),
+                    ..Default::default()
+                }
+            }
+        }
+
+        let w = World::new();
+        w.register(FixedFlow { id: 7 });
+        let t0 = Utc.timestamp_opt(1_000, 0).unwrap();
+        let t1 = Utc.timestamp_opt(1_001, 0).unwrap();
+        w.record_history_snapshot(t0);
+        w.record_history_snapshot(t1);
+
+        let metrics: std::collections::HashSet<_> = w.history_metrics(7).into_iter().collect();
+        assert!(metrics.contains(&Metric::ActivePowerW));
+        assert!(metrics.contains(&Metric::SocPct));
+
+        let p = w
+            .history_window(7, Metric::ActivePowerW, Utc.timestamp_opt(0, 0).unwrap())
+            .unwrap();
+        assert_eq!(p.len(), 2);
+        assert_eq!(p[0].value, 2500.0);
+
+        // Windowed read drops samples before `since`.
+        let recent = w.history_window(7, Metric::ActivePowerW, t1).unwrap();
+        assert_eq!(recent.len(), 1);
+    }
+
+    /// `reset()` clears history alongside the rest of the World so a
+    /// hot-reload starts charts fresh — old component-id histories
+    /// don't linger as orphan entries.
+    #[test]
+    fn reset_clears_history() {
+        let w = World::new();
+        // Push directly via the public API by way of a minimal stub.
+        w.inner.histories.write().insert(
+            42,
+            crate::sim::history::ComponentHistory::new(HISTORY_CAPACITY),
+        );
+        w.reset();
+        assert!(w.inner.histories.read().is_empty());
     }
 }
