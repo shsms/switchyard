@@ -301,6 +301,15 @@ fn register_runtime(ctx: &mut TulispContext, world: &World, metadata: Arc<RwLock
 fn register_world_ops(ctx: &mut TulispContext, world: World) {
     let w = world.clone();
     ctx.defun(
+        "world-connect",
+        move |parent: i64, child: i64| -> bool {
+            // World::connect doesn't return a status; we always ack.
+            w.connect(parent as u64, child as u64);
+            true
+        },
+    );
+    let w = world.clone();
+    ctx.defun(
         "world-remove-component",
         move |id: i64| -> bool { w.remove_component(id as u64) },
     );

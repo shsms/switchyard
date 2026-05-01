@@ -367,6 +367,30 @@ function applyTopology(topology) {
       const data = await res.json();
       if (!data.ok) alert("Delete failed: " + data.error);
     });
+    // Shift+drag from one node to another → world-connect.
+    // No live-drawn ghost edge for v1; the new edge appears on
+    // release via the WS topology refresh.
+    let connectSource = null;
+    cy.on("tapstart", "node", (evt) => {
+      const e = evt.originalEvent;
+      if (!e || !e.shiftKey) return;
+      connectSource = evt.target.id();
+    });
+    cy.on("tapend", async (evt) => {
+      if (!connectSource) return;
+      const source = connectSource;
+      connectSource = null;
+      if (evt.target === cy) return; // released over empty canvas
+      if (!evt.target.isNode || !evt.target.isNode()) return;
+      const target = evt.target.id();
+      if (source === target) return; // self-loops disallowed
+      const res = await fetch("/api/eval", {
+        method: "POST",
+        body: `(world-connect ${source} ${target})`,
+      });
+      const data = await res.json();
+      if (!data.ok) alert("Connect failed:\n" + data.error);
+    });
   } else {
     // Remember what the user had selected so we can re-highlight it
     // after the rebuild — or clear the side panel if the component
