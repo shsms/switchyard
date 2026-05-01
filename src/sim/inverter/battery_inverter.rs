@@ -9,6 +9,7 @@ use crate::sim::{
     meter::{per_phase_apparent_current, split_per_phase},
     ramp::{CommandDelay, Ramp},
     reactive::{ReactiveCapability, ReactivePath},
+    runtime::Health,
 };
 
 #[derive(Clone, Debug)]
@@ -124,9 +125,9 @@ impl SimulatedComponent for BatteryInverter {
 
         // Active path: clamp the pending command against our OWN
         // bounds (no peeking at the children — the gateway gates
-        // out-of-envelope setpoints upstream). If one slips through
-        // the children will refuse the excess on their own and the
-        // measured aggregate will simply fall short.
+        // out-of-envelope setpoints upstream). If one slips through,
+        // the children will refuse the excess via their own clamp
+        // and the published battery telemetry will reveal the gap.
         if let Some(target) = self.delay.poll(now) {
             let own = self.bounds.lock().effective();
             self.ramp.set_target(own.clamp(target));
@@ -138,30 +139,33 @@ impl SimulatedComponent for BatteryInverter {
         // envelope at p_live as the command is promoted, then slewed.
         let commanded_q = self.reactive.step(p_live, now, dt);
 
-        // Distribute equal shares onto the DC bus and read back what
-        // each battery actually accepted. Active is clamped at the
-        // BMS; reactive flows through unmodified today (the battery
-        // doesn't refuse Q), so override_published is a no-op for the
-        // common case but stays in place for forward compatibility.
-        let (measured_p, measured_q) = if self.successors.is_empty() {
-            (commanded_p, commanded_q)
-        } else {
-            let n = self.successors.len() as f32;
+        // Distribute equal share among the *healthy* children. Failed
+        // batteries (Health::Error / Standby) are skipped, so the
+        // surviving siblings absorb the full commanded value. Each
+        // child accumulates pushes additively over the tick, so an
+        // MxN topology (N inverters → 1 bus → M batteries) settles to
+        // the clamped sum of all parent pushes, not last-writer-wins.
+        let healthy: Vec<u64> = self
+            .successors
+            .iter()
+            .copied()
+            .filter(|id| world.runtime_of(*id).health == Health::Ok)
+            .collect();
+        if !healthy.is_empty() {
+            let n = healthy.len() as f32;
             let p_share = commanded_p / n;
             let q_share = commanded_q / n;
-            let mut sum_p = 0.0;
-            let mut sum_q = 0.0;
-            for id in &self.successors {
+            for id in &healthy {
                 if let Some(child) = world.get(*id) {
                     child.set_dc_active_reactive(p_share, q_share);
-                    sum_p += child.aggregate_power_w(world);
-                    sum_q += child.aggregate_reactive_var(world);
                 }
             }
-            (sum_p, sum_q)
-        };
-        *self.measured_w.lock() = measured_p;
-        self.reactive.override_published(measured_q);
+        }
+        // Inverter publishes the *commanded* AC output. Battery
+        // telemetry separately exposes the accepted (clamped) value,
+        // so a SCADA client that wants to see saturation reads both.
+        *self.measured_w.lock() = commanded_p;
+        self.reactive.override_published(commanded_q);
     }
 
     fn telemetry(&self, world: &World) -> Telemetry {

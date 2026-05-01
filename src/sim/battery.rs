@@ -54,15 +54,21 @@ pub struct Battery {
 
 #[derive(Debug, Clone)]
 struct BatteryState {
-    /// Active DC power in W. Drives SoC integration — net energy
-    /// transferred is set by P only, even when the inverter is also
-    /// pushing reactive load through the DC bus.
+    /// Settled active DC power in W (last-tick's clamped accumulator).
+    /// Drives SoC integration — reactive doesn't move net energy.
     power_w: f32,
-    /// Reactive component the inverter pushed onto the DC bus this
-    /// tick. Doesn't change SoC, but inflates dc_current and
-    /// apparent dc_power in telemetry to reflect the conductor /
-    /// capacitor / IGBT loading a real DC ammeter would read.
+    /// Settled reactive component (last-tick's accumulated Q).
+    /// Doesn't change SoC, but inflates dc_current / dc_power in
+    /// telemetry to reflect the conductor / IGBT loading a real DC
+    /// ammeter would read.
     reactive_var: f32,
+    /// Per-tick accumulator for inverter pushes. `set_dc_*` adds
+    /// here; `tick()` drains it, clamps the active sum, and sets
+    /// `power_w` / `reactive_var`. This is what makes N inverters
+    /// pushing the same battery sum correctly instead of having the
+    /// last writer win.
+    pending_p: f32,
+    pending_q: f32,
     /// State of charge in % [0, 100]. Updated each tick from
     /// `power_w * dt`. Clamped at the boundaries — without this,
     /// configs that disable the SoC-protect taper (margin = 0)
@@ -87,6 +93,8 @@ impl Battery {
             state: Mutex::new(BatteryState {
                 power_w: 0.0,
                 reactive_var: 0.0,
+                pending_p: 0.0,
+                pending_q: 0.0,
                 soc_pct: init_soc,
                 effective_lower_w: l,
                 effective_upper_w: u,
@@ -138,28 +146,30 @@ impl SimulatedComponent for Battery {
     fn tick(&self, _world: &World, _now: DateTime<Utc>, dt: Duration) {
         let mut s = self.state.lock();
 
-        // SoC update from current P. ΔSoC = P · dt / capacity, in %.
-        // Clamping happens at the boundary so unphysical "extra" charge
-        // can't accumulate when the protective taper is disabled.
-        if self.cfg.capacity_wh > 0.0 {
-            let delta_soc =
-                s.power_w * dt.as_secs_f32() / 3600.0 / self.cfg.capacity_wh * 100.0;
-            s.soc_pct = (s.soc_pct + delta_soc).clamp(0.0, 100.0);
-        }
-
-        // Refresh SoC-derated bounds.
+        // 1. Refresh SoC-derated bounds from current SoC.
         let (l, u) = soc_protected_bounds(&self.cfg, s.soc_pct);
         s.effective_lower_w = l;
         s.effective_upper_w = u;
 
-        // Self-clamp: if the inverter just pushed power that's above
-        // the new derated ceiling, pull it back. The inverter will
-        // re-aggregate next tick and stop overshooting.
-        if s.power_w > s.effective_upper_w {
-            s.power_w = s.effective_upper_w;
-        }
-        if s.power_w < s.effective_lower_w {
-            s.power_w = s.effective_lower_w;
+        // 2. Drain the per-tick accumulator and clamp the active sum
+        //    against the freshly-computed envelope. With one inverter
+        //    this is identical to "store-then-clamp"; with N inverters
+        //    sharing the bus, the clamp applies to the *total* push,
+        //    not just the last writer.
+        let total_p = s.pending_p;
+        let total_q = s.pending_q;
+        s.pending_p = 0.0;
+        s.pending_q = 0.0;
+        s.power_w = total_p.clamp(s.effective_lower_w, s.effective_upper_w);
+        s.reactive_var = total_q;
+
+        // 3. SoC update from settled P. ΔSoC = P · dt / capacity, in %.
+        //    Clamp at boundaries so unphysical "extra" charge can't
+        //    accumulate when the protective taper is disabled.
+        if self.cfg.capacity_wh > 0.0 {
+            let delta_soc =
+                s.power_w * dt.as_secs_f32() / 3600.0 / self.cfg.capacity_wh * 100.0;
+            s.soc_pct = (s.soc_pct + delta_soc).clamp(0.0, 100.0);
         }
     }
 
@@ -197,24 +207,22 @@ impl SimulatedComponent for Battery {
         self.state.lock().power_w
     }
 
-    /// Accept whatever the inverter pushed onto the DC bus, clipped to
-    /// the SoC-protective effective bounds. The inverter has no data
-    /// link that lets it know our limits — it sends a setpoint and
-    /// reads back what was actually accepted.
+    /// Add an inverter's active push to this tick's accumulator.
+    /// The actual `power_w` value is the *total* across all parents
+    /// after `tick()` clamps the accumulated sum to the SoC envelope.
     fn set_dc_power(&self, p: f32) {
-        let mut s = self.state.lock();
-        s.power_w = p.clamp(s.effective_lower_w, s.effective_upper_w);
-        s.reactive_var = 0.0;
+        self.state.lock().pending_p += p;
     }
 
-    /// Active+reactive variant. Active is clamped to the SoC envelope
-    /// like in `set_dc_power`; reactive is stored verbatim — the
-    /// battery itself doesn't refuse Q, the inverter is what
-    /// terminates reactive energy on the AC side.
+    /// Active+reactive variant. Both are accumulated additively so an
+    /// MxN topology (multiple inverters sharing a battery) settles to
+    /// the *total* push, not last-writer-wins. The active sum is
+    /// clamped to the SoC envelope at `tick()` time; reactive flows
+    /// through unchanged (the battery doesn't refuse Q).
     fn set_dc_active_reactive(&self, p: f32, q: f32) {
         let mut s = self.state.lock();
-        s.power_w = p.clamp(s.effective_lower_w, s.effective_upper_w);
-        s.reactive_var = q;
+        s.pending_p += p;
+        s.pending_q += q;
     }
 
     fn aggregate_reactive_var(&self, _world: &World) -> f32 {
