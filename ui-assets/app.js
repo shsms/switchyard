@@ -703,39 +703,29 @@ function setupPersistControls() {
   return refresh;
 }
 
-// Defaults editor — toggled from the chrome button. Replaces the
-// inspect+add-form view of the side panel while open; toggling off
-// (or selecting a node) restores the inspect view.
-function setupDefaultsToggle() {
-  const btn = document.getElementById("defaults-btn");
+/// Generic side-panel toggle: a chrome button that swaps the
+/// inspect+add-form view for some custom render. Clicking the
+/// button while open restores the default inspect view (and
+/// re-shows the add-form, which got hidden during render).
+function makeSidePanelToggle(btnId, render) {
+  const btn = document.getElementById(btnId);
   let open = false;
   btn.addEventListener("click", async () => {
     open = !open;
     btn.classList.toggle("primary", open);
     if (open) {
-      await renderDefaults();
+      await render();
     } else {
       clearSide();
       document.getElementById("add-form").style.display = "";
     }
   });
-  return () => (open = false);
 }
 
-function setupScenariosToggle() {
-  const btn = document.getElementById("scenarios-btn");
-  let open = false;
-  btn.addEventListener("click", async () => {
-    open = !open;
-    btn.classList.toggle("primary", open);
-    if (open) {
-      await renderScenarios();
-    } else {
-      clearSide();
-      document.getElementById("add-form").style.display = "";
-    }
-  });
-}
+// Both side-panel toggles use the same chrome-button + swap-side-
+// panel pattern. The render functions below own the actual content.
+const setupDefaultsToggle = () => makeSidePanelToggle("defaults-btn", renderDefaults);
+const setupScenariosToggle = () => makeSidePanelToggle("scenarios-btn", renderScenarios);
 
 async function renderScenarios() {
   const res = await fetch("/api/scenarios");
