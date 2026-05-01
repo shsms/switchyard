@@ -472,12 +472,26 @@ struct DiscardResponse {
     discarded: usize,
 }
 
-async fn discard(State(config): State<Config>) -> Json<DiscardResponse> {
-    let count = config.pending().len();
-    tokio::task::spawn_blocking(move || config.discard_pending())
-        .await
-        .ok();
-    Json(DiscardResponse { discarded: count })
+async fn discard(
+    State(config): State<Config>,
+) -> Result<Json<DiscardResponse>, (StatusCode, String)> {
+    // Take the count and the discard inside the same spawn_blocking
+    // so a concurrent push between them can't race the response, and
+    // so the JoinError from a panicking discard task surfaces as 5xx
+    // instead of being silently swallowed.
+    let count = tokio::task::spawn_blocking(move || {
+        let n = config.pending().len();
+        config.discard_pending();
+        n
+    })
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("discard task panicked: {e}"),
+        )
+    })?;
+    Ok(Json(DiscardResponse { discarded: count }))
 }
 
 #[derive(Serialize)]
