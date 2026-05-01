@@ -336,11 +336,22 @@ async fn defaults(State(config): State<Config>) -> Json<DefaultsResponse> {
         for cat in DEFAULT_CATEGORIES {
             let var = format!("{cat}-defaults");
             match config.eval_silent(&var) {
-                Ok(value) => out.push(DefaultsEntry {
-                    category: cat,
-                    var_name: var,
-                    value,
-                }),
+                Ok(value) => {
+                    // Pretty-print via tulisp-fmt so the textarea
+                    // shows one (key . value) pair per line at a
+                    // narrow width — fits the side panel without
+                    // horizontal scroll. Falls back to the raw
+                    // Display form if the printed value isn't
+                    // parseable (shouldn't happen for an alist read
+                    // back from the interpreter).
+                    let formatted = tulisp_fmt::format_with_width(&value, 50)
+                        .unwrap_or(value);
+                    out.push(DefaultsEntry {
+                        category: cat,
+                        var_name: var,
+                        value: formatted,
+                    });
+                }
                 Err(_) => {} // variable unset — skip
             }
         }
