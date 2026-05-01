@@ -14,11 +14,14 @@ pub mod value;
 
 use std::{
     collections::HashSet,
+    fs,
+    io::Write,
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
 };
 
+use chrono::Utc;
 use notify::{RecommendedWatcher, Watcher};
 use parking_lot::{Mutex, RwLock};
 use tulisp::{Error, SharedMut, TulispContext};
@@ -64,6 +67,18 @@ pub struct Config {
     /// the entry-point config. Set semantics — duplicate registrations
     /// (from re-runs of the config during reload) are no-ops.
     extra_watches: Arc<Mutex<HashSet<PathBuf>>>,
+    /// In-memory log of successful UI evals since the last persist.
+    /// On `/api/persist` this gets appended to the per-microgrid
+    /// override file (`config.ui-overrides.<id>.lisp`) and cleared.
+    /// On `/api/discard` it's cleared without writing — discard also
+    /// triggers a reload so World state matches what's on disk.
+    pending_log: Arc<Mutex<Vec<String>>>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct PersistResult {
+    pub persisted: usize,
+    pub path: String,
 }
 
 impl Config {
@@ -106,6 +121,7 @@ impl Config {
             world,
             metadata,
             extra_watches,
+            pending_log: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -130,10 +146,11 @@ impl Config {
     /// duration of the eval. Callers in async contexts must wrap in
     /// `tokio::task::spawn_blocking` to keep the executor free.
     ///
-    /// Bumps the World version on both success and error so UI
-    /// subscribers refetch /api/topology either way (a partial
-    /// mutation that errored mid-flight may still have left state
-    /// changed, and the cost of a wasted refetch is small).
+    /// On success the source is appended to the pending log so the
+    /// UI's Persist button can flush it to the per-microgrid override
+    /// file. Errored evals are skipped — a half-applied topology
+    /// change shouldn't leave a re-erroring expression on disk.
+    /// Either way the World version bumps so UI subscribers refetch.
     pub fn eval(&self, src: &str) -> Result<String, String> {
         let result = {
             let mut ctx = self.ctx.borrow_mut();
@@ -142,8 +159,63 @@ impl Config {
                 Err(e) => Err(e.format(&ctx)),
             }
         };
+        if result.is_ok() {
+            self.pending_log.lock().push(src.to_string());
+        }
         self.world.bump_version();
         result
+    }
+
+    /// Snapshot of the in-memory pending log. Each entry is one
+    /// successfully-evaluated UI expression, oldest first.
+    pub fn pending(&self) -> Vec<String> {
+        self.pending_log.lock().clone()
+    }
+
+    /// Append the pending log to `config.ui-overrides.<microgrid-id>
+    /// .lisp` (creating the file if needed) and clear the in-memory
+    /// log. Each persist batch is preceded by an ISO-8601 timestamp
+    /// comment. No-op when the log is empty.
+    pub fn persist_pending(&self) -> std::io::Result<PersistResult> {
+        let entries = std::mem::take(&mut *self.pending_log.lock());
+        let path = self.overrides_path();
+        if entries.is_empty() {
+            return Ok(PersistResult {
+                persisted: 0,
+                path: path.to_string_lossy().into_owned(),
+            });
+        }
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)?;
+        writeln!(file, "\n;; ── {} ──", Utc::now().to_rfc3339())?;
+        for entry in &entries {
+            writeln!(file, "{entry}")?;
+        }
+        Ok(PersistResult {
+            persisted: entries.len(),
+            path: path.to_string_lossy().into_owned(),
+        })
+    }
+
+    /// Drop the pending log and trigger a reload — World state goes
+    /// back to whatever the on-disk config + override file describe.
+    pub fn discard_pending(&self) {
+        self.pending_log.lock().clear();
+        self.reload();
+    }
+
+    fn overrides_path(&self) -> PathBuf {
+        let load_dir = Path::new(&self.filename)
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."));
+        load_dir.join(format!(
+            "config.ui-overrides.{}.lisp",
+            self.metadata.read().microgrid_id
+        ))
     }
 
     pub fn reload(&self) {

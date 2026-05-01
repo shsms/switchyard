@@ -56,6 +56,9 @@ fn router(config: Config) -> Router {
         .route("/api/topology", get(topology))
         .route("/api/eval", post(eval))
         .route("/api/history", get(history))
+        .route("/api/pending", get(pending))
+        .route("/api/persist", post(persist))
+        .route("/api/discard", post(discard))
         .route("/ws/events", get(events_ws))
         .with_state(config)
 }
@@ -253,6 +256,59 @@ fn parse_metric(s: &str) -> Option<Metric> {
         "reactive_power_upper_bound_var" => Some(Metric::ReactivePowerUpperBoundVar),
         _ => None,
     }
+}
+
+#[derive(Serialize)]
+struct PendingResponse {
+    /// Successful eval expressions accumulated since the last persist
+    /// (or process start). Oldest first.
+    entries: Vec<String>,
+}
+
+async fn pending(State(config): State<Config>) -> Json<PendingResponse> {
+    Json(PendingResponse {
+        entries: config.pending(),
+    })
+}
+
+#[derive(Serialize)]
+struct PersistResponse {
+    persisted: usize,
+    path: String,
+}
+
+async fn persist(State(config): State<Config>) -> Result<Json<PersistResponse>, (StatusCode, String)> {
+    // File I/O on the executor thread isn't quite as bad as a long
+    // eval, but spawn_blocking here keeps us consistent with the
+    // policy /api/eval already follows.
+    tokio::task::spawn_blocking(move || config.persist_pending())
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("persist task panicked: {e}"),
+            )
+        })?
+        .map(|r| {
+            Json(PersistResponse {
+                persisted: r.persisted,
+                path: r.path,
+            })
+        })
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("write failed: {e}")))
+}
+
+#[derive(Serialize)]
+struct DiscardResponse {
+    discarded: usize,
+}
+
+async fn discard(State(config): State<Config>) -> Json<DiscardResponse> {
+    let count = config.pending().len();
+    tokio::task::spawn_blocking(move || config.discard_pending())
+        .await
+        .ok();
+    Json(DiscardResponse { discarded: count })
 }
 
 /// WebSocket event push. Subscribers receive WorldEvent JSON for
@@ -487,6 +543,72 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(parsed["samples"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn pending_endpoint_lists_logged_evals() {
+        let cfg = config_with("(set-microgrid-id 7)").await;
+        // Two successful evals + one error. Errors don't log.
+        call(cfg.clone(), post("/api/eval", "(+ 1 2)")).await;
+        call(cfg.clone(), post("/api/eval", "(undefined-fn 1)")).await;
+        call(cfg.clone(), post("/api/eval", "(set-microgrid-name \"foo\")")).await;
+        let (status, body) = call(cfg, get("/api/pending")).await;
+        assert_eq!(status, StatusCode::OK);
+        let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let entries = parsed["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0], "(+ 1 2)");
+        assert_eq!(entries[1], "(set-microgrid-name \"foo\")");
+    }
+
+    #[tokio::test]
+    async fn persist_writes_overrides_file_and_clears_log() {
+        let cfg = config_with("(set-microgrid-id 7)").await;
+        call(cfg.clone(), post("/api/eval", "(+ 1 2)")).await;
+        call(cfg.clone(), post("/api/eval", "(set-microgrid-name \"foo\")")).await;
+
+        let (status, body) = call(cfg.clone(), post("/api/persist", "")).await;
+        assert_eq!(status, StatusCode::OK);
+        let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(parsed["persisted"], 2);
+        let path = parsed["path"].as_str().unwrap();
+        let written = std::fs::read_to_string(path).unwrap();
+        // Both expressions present + a header timestamp comment.
+        assert!(written.contains("(+ 1 2)"));
+        assert!(written.contains("(set-microgrid-name \"foo\")"));
+        assert!(written.contains(";; ──"));
+        // Filename parameterised by microgrid-id.
+        assert!(path.ends_with("config.ui-overrides.7.lisp"));
+
+        // Pending log cleared after persist.
+        let (_, body) = call(cfg, get("/api/pending")).await;
+        let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(parsed["entries"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn discard_clears_log_and_reloads() {
+        // Config that boots with one component; eval adds another;
+        // discard reloads → only the original survives.
+        let cfg = config_with("(set-microgrid-id 7) (%make-grid :id 1)").await;
+        call(cfg.clone(), post("/api/eval", "(%make-meter :id 99)")).await;
+        // Verify the meter is live before discard.
+        let (_, body) = call(cfg.clone(), get("/api/topology")).await;
+        let pre: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(pre["components"].as_array().unwrap().len(), 2);
+
+        let (status, body) = call(cfg.clone(), post("/api/discard", "")).await;
+        assert_eq!(status, StatusCode::OK);
+        let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(parsed["discarded"], 1);
+
+        // Post-discard: pending empty + topology back to one component.
+        let (_, body) = call(cfg.clone(), get("/api/pending")).await;
+        let p: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(p["entries"].as_array().unwrap().is_empty());
+        let (_, body) = call(cfg, get("/api/topology")).await;
+        let post_t: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(post_t["components"].as_array().unwrap().len(), 1);
     }
 
     #[tokio::test]

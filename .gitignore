@@ -1,2 +1,4 @@
 /target
 Cargo.lock
+# UI-driven persisted edits — per microgrid, written by /api/persist.
+config.ui-overrides.*.lisp
