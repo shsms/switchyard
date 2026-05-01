@@ -412,6 +412,35 @@ scripting; config-driven topology assembly.
 
 ## Backlog
 
+### Parallel-paths share semantic — does this match real installs?
+
+We currently model "child shared by N parents" as "each parent sees
+1/N of the child's flow" (parallel-conductor semantic). It's
+physically real for high-current buses split into N cables for
+ampacity, each with its own CT and meter, summed by an upstream
+aggregator. But that's an unusual SCADA-level topology.
+
+The more common multi-parent setup in real microgrids is **redundant
+observers** — two meters on the *same* wire (Class A + Class B,
+primary + backup) both reporting the full flow, with the SCADA layer
+deduping or selecting one. Under our current semantic, those two
+meters would each read half, which isn't what the user expects.
+
+Searched online for confirmation; couldn't find a clear answer
+either way (the public CT-paralleling literature is about a
+different pattern — N CTs feeding one meter). So we're guessing.
+
+If user feedback pushes us either way, options are:
+
+- **Keep parallel-share as default**, document the
+  redundant-observer use case as "express it via `:hidden t` on the
+  backup meter so it doesn't appear in the connections graph".
+- **Flip default to count-fully-per-parent**, and add an explicit
+  `:share <fraction>` plist arg for the parallel-conductor case.
+- **Add a topology-level kind annotation** (`:redundant-with <id>`,
+  `:parallel-with <id>`) so the connection graph itself encodes
+  intent. Most expressive, most invasive.
+
 ### Per-phase reactive setpoints
 
 The proto's `SetElectricalComponentPower` takes a single scalar
