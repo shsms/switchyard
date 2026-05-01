@@ -818,37 +818,42 @@ async function renderDefaults() {
   }
 }
 
-/// Drag the splitter between the topology canvas and the side panel.
-/// Updates main's grid-template-columns live; on each frame, also
-/// nudges any open uPlot charts (uPlot doesn't auto-resize) to the
-/// new container width. vis-network handles its own resize via
-/// ResizeObserver on the topology container.
-function setupSplitter() {
-  const splitter = document.getElementById("splitter");
-  const main = document.getElementById("app");
-  const sideEl = document.getElementById("side");
-  const SIDE_MIN = 300; // anything narrower and the inspect form wraps badly
-  const SIDE_MAX_FRAC = 0.7; // don't let the canvas drop below 30% of width
+/// Generic drag-to-resize handler. Both splitters in the chrome
+/// (vertical between topology + side panel, horizontal between
+/// topology row + drawer) follow the same pattern: capture the
+/// starting state on mousedown, compute a delta on mousemove,
+/// hand it back to the caller as a clamped px value, refit any
+/// open uPlot charts on every frame so they keep up with the
+/// container width.
+///
+///   axis: "x" | "y"             which mouse coord to track
+///   splitter: HTMLElement       drag handle
+///   getStart(): number          current size we're modifying
+///   apply(value: number): void  write the new size somewhere
+///   clamp(value, viewportSize): clamp to a sensible range
+function makeSplitter({ axis, splitter, getStart, apply, clamp }) {
+  const isHoriz = axis === "y";
+  const cursor = isHoriz ? "row-resize" : "col-resize";
 
   let dragging = false;
-  let startX = 0;
-  let startWidth = 0;
+  let start = 0;
+  let startSize = 0;
 
   splitter.addEventListener("mousedown", (e) => {
     dragging = true;
-    startX = e.clientX;
-    startWidth = sideEl.getBoundingClientRect().width;
+    start = isHoriz ? e.clientY : e.clientX;
+    startSize = getStart();
     splitter.classList.add("dragging");
-    document.body.style.cursor = "col-resize";
+    document.body.style.cursor = cursor;
     document.body.style.userSelect = "none";
     e.preventDefault();
   });
   document.addEventListener("mousemove", (e) => {
     if (!dragging) return;
-    const dx = startX - e.clientX;
-    const sideMax = window.innerWidth * SIDE_MAX_FRAC;
-    const newWidth = Math.min(sideMax, Math.max(SIDE_MIN, startWidth + dx));
-    main.style.gridTemplateColumns = `1fr 5px ${newWidth}px`;
+    const here = isHoriz ? e.clientY : e.clientX;
+    const delta = start - here; // positive = drag toward the start
+    const viewport = isHoriz ? window.innerHeight : window.innerWidth;
+    apply(clamp(startSize + delta, viewport));
     refitCharts();
   });
   document.addEventListener("mouseup", () => {
@@ -860,46 +865,47 @@ function setupSplitter() {
   });
 }
 
-/// Horizontal splitter between the topology row and the bottom
-/// drawer. Drag to trade height between the canvas + side panel
-/// (top) and the log panel + REPL output + form (bottom). Updates
-/// main's grid-template-rows live; vis-network and any open uPlots
-/// re-fit via their own ResizeObservers.
+/// Vertical splitter between topology canvas and side panel.
+/// Updates main's grid-template-columns to resize the third (side)
+/// column.
+function setupSplitter() {
+  const main = document.getElementById("app");
+  const sideEl = document.getElementById("side");
+  const SIDE_MIN = 300; // anything narrower and the inspect form wraps badly
+  const SIDE_MAX_FRAC = 0.7; // don't let the canvas drop below 30% of width
+  makeSplitter({
+    axis: "x",
+    splitter: document.getElementById("splitter"),
+    getStart: () => sideEl.getBoundingClientRect().width,
+    apply: (w) => {
+      main.style.gridTemplateColumns = `1fr 5px ${w}px`;
+    },
+    clamp: (w, vw) => Math.min(vw * SIDE_MAX_FRAC, Math.max(SIDE_MIN, w)),
+  });
+}
+
+/// Horizontal splitter between topology row and bottom drawer.
+/// Updates main's grid-template-rows to resize the drawer.
 function setupDrawerSplitter() {
-  const splitter = document.getElementById("drawer-splitter");
   const main = document.getElementById("app");
   const drawer = document.getElementById("repl");
   const MIN_DRAWER = 120;
   const MIN_TOP_FRAC = 0.2; // keep at least 20% of main for the canvas
-
-  let dragging = false;
-  let startY = 0;
-  let startHeight = 0;
-
-  splitter.addEventListener("mousedown", (e) => {
-    dragging = true;
-    startY = e.clientY;
-    startHeight = drawer.getBoundingClientRect().height;
-    splitter.classList.add("dragging");
-    document.body.style.cursor = "row-resize";
-    document.body.style.userSelect = "none";
-    e.preventDefault();
-  });
-  document.addEventListener("mousemove", (e) => {
-    if (!dragging) return;
-    const dy = startY - e.clientY;
-    const mainH = main.getBoundingClientRect().height;
-    const max = mainH * (1 - MIN_TOP_FRAC);
-    const newH = Math.max(MIN_DRAWER, Math.min(max, startHeight + dy));
-    main.style.gridTemplateRows = `1fr 5px ${newH}px`;
-    refitCharts();
-  });
-  document.addEventListener("mouseup", () => {
-    if (!dragging) return;
-    dragging = false;
-    splitter.classList.remove("dragging");
-    document.body.style.cursor = "";
-    document.body.style.userSelect = "";
+  makeSplitter({
+    axis: "y",
+    splitter: document.getElementById("drawer-splitter"),
+    getStart: () => drawer.getBoundingClientRect().height,
+    apply: (h) => {
+      main.style.gridTemplateRows = `1fr 5px ${h}px`;
+    },
+    clamp: (h, vh) => {
+      const mainH = main.getBoundingClientRect().height;
+      // mainH excludes the header; we use it (not vh) for the upper
+      // clamp so the canvas stays at MIN_TOP_FRAC of the drawer's
+      // own container.
+      void vh;
+      return Math.max(MIN_DRAWER, Math.min(mainH * (1 - MIN_TOP_FRAC), h));
+    },
   });
 }
 
