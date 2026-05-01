@@ -400,11 +400,19 @@ impl Config {
                 .write(true)
                 .open(&tmp)?;
             writeln!(file, ";; ── {} ──", Utc::now().to_rfc3339())?;
+            // Hand each form to tulisp-fmt before writing so the file
+            // stays readable to a human eyeballing it. format_with_width
+            // returns the same source on failure; we fall back to the
+            // raw text rather than dropping a form.
             for src in &kept {
-                writeln!(file, "{src}")?;
+                let fmt = tulisp_fmt::format_with_width(src, 80)
+                    .unwrap_or_else(|_| format!("{}\n", src));
+                file.write_all(fmt.as_bytes())?;
             }
             for entry in &entries {
-                writeln!(file, "{}", entry.source)?;
+                let fmt = tulisp_fmt::format_with_width(&entry.source, 80)
+                    .unwrap_or_else(|_| format!("{}\n", entry.source));
+                file.write_all(fmt.as_bytes())?;
             }
             file.flush()?;
         }
@@ -496,7 +504,9 @@ impl Config {
             .open(&path)?;
         writeln!(file, "\n;; ── {} ──", Utc::now().to_rfc3339())?;
         for entry in &entries {
-            writeln!(file, "{}", entry.source)?;
+            let fmt = tulisp_fmt::format_with_width(&entry.source, 80)
+                .unwrap_or_else(|_| format!("{}\n", entry.source));
+            file.write_all(fmt.as_bytes())?;
         }
         file.flush()?;
         let persisted_ids: HashSet<u64> = entries.iter().map(|e| e.id).collect();
@@ -1097,6 +1107,55 @@ mod tests {
         let after: Vec<u64> = cfg.pending().iter().map(|e| e.id).collect();
         assert_eq!(after.len(), 2);
         assert_eq!(after, vec![before[0], before[2]]);
+    }
+
+    /// Regression: deleting a setpoint pending entry (eg. a
+    /// `(set-active-power …)` call from the REPL) shouldn't take
+    /// out the unrelated component the user created right before
+    /// it. Replay re-evals the surviving `(make-…)` entry, so the
+    /// new component should reappear with its id intact.
+    #[test]
+    fn remove_pending_setpoint_does_not_drop_make_entry() {
+        let (cfg, _dir) = config_with(
+            "(set-microgrid-id 9)
+             (setq b1 (%make-battery :id 1 :rated-lower -5000.0 :rated-upper 5000.0))
+             (%make-battery-inverter :id 2 :rated-lower -5000.0 :rated-upper 5000.0
+                                       :successors (list b1))",
+        );
+        // Add a battery via /api/eval-style flow, then arm a setpoint
+        // on the inverter that already exists.
+        cfg.eval("(%make-battery)").unwrap();
+        let new_battery_ids: Vec<u64> = cfg
+            .world()
+            .components()
+            .iter()
+            .map(|c| c.id())
+            .filter(|id| *id >= 1000)
+            .collect();
+        assert_eq!(new_battery_ids.len(), 1, "expected one new battery");
+        let new_id = new_battery_ids[0];
+        cfg.eval("(set-active-power 2 1500.0 30000)").unwrap();
+
+        // Pull the setpoint pending-entry id and × it.
+        let pending = cfg.pending();
+        assert_eq!(pending.len(), 2);
+        let setpoint_id = pending
+            .iter()
+            .find(|e| e.source.contains("set-active-power"))
+            .unwrap()
+            .id;
+        assert!(cfg.remove_pending(setpoint_id));
+
+        // The pending log should now hold just the make-battery
+        // entry; the new battery should still be in the world with
+        // the same id (deterministic id allocation across reload).
+        let pending = cfg.pending();
+        assert_eq!(pending.len(), 1);
+        assert!(pending[0].source.contains("%make-battery"));
+        assert!(
+            cfg.world().get(new_id).is_some(),
+            "new battery (id {new_id}) should have survived setpoint removal",
+        );
     }
 
     /// load_scenario must propagate Lisp errors. The previous
