@@ -253,6 +253,48 @@ async function showComponent(node) {
     charts.set(metric, { plot, xs, ys });
   }
   activeCharts = { id: d.id, charts };
+
+  // Setpoint events: list recent control-app requests + outcome
+  // below the charts. Live-overlay markers on the chart are a
+  // follow-up; this is the inspector's MVP.
+  await renderSetpoints(d.id, container);
+}
+
+async function renderSetpoints(id, container) {
+  const wrap = document.createElement("div");
+  wrap.className = "setpoints";
+  wrap.innerHTML = "<h3>Recent setpoints</h3>";
+  container.appendChild(wrap);
+  try {
+    const res = await fetch(`/api/setpoints?id=${id}&window_s=600`);
+    const data = await res.json();
+    if (!data.events.length) {
+      wrap.insertAdjacentHTML("beforeend", '<p class="hint">none in the last 10 min</p>');
+      return;
+    }
+    const list = document.createElement("ol");
+    list.className = "sp-list";
+    // Newest first reads better in a chronological log.
+    for (const e of data.events.slice().reverse()) {
+      const li = document.createElement("li");
+      const accepted = e.outcome.kind === "accepted";
+      li.className = "sp-event " + (accepted ? "accepted" : "rejected");
+      const ts = new Date(e.ts).toLocaleTimeString();
+      const tag = e.kind.replace("_", " ");
+      const head = `<span class="sp-ts">${ts}</span> <span class="sp-tag">${tag}</span> <span class="sp-val">${e.value}</span>`;
+      const body = accepted
+        ? '<span class="sp-ok">✓ accepted</span>'
+        : `<span class="sp-bad">✕ ${escapeHtml(e.outcome.reason)}</span>`;
+      li.innerHTML = `${head}<br/>${body}`;
+      list.appendChild(li);
+    }
+    wrap.appendChild(list);
+  } catch (err) {
+    wrap.insertAdjacentHTML(
+      "beforeend",
+      `<p class="hint">setpoints unavailable: ${escapeHtml(err.message)}</p>`,
+    );
+  }
 }
 
 function makePlot(container, metric, xs, ys) {

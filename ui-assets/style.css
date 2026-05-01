@@ -308,6 +308,34 @@ main {
   padding: 3px 10px;
 }
 
+.setpoints {
+  margin-top: 0.75rem;
+}
+.sp-list {
+  list-style: none;
+  padding: 0;
+  margin: 0.25rem 0 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+.sp-event {
+  padding: 4px 6px;
+  border-left: 2px solid var(--border);
+  margin-bottom: 2px;
+  background: var(--bg);
+  border-radius: 0 3px 3px 0;
+  word-break: break-word;
+}
+.sp-event.accepted { border-left-color: var(--good); }
+.sp-event.rejected { border-left-color: var(--bad); }
+.sp-ts { color: var(--muted); }
+.sp-tag { color: var(--accent); margin-left: 4px; }
+.sp-val { font-weight: bold; margin-left: 4px; }
+.sp-ok  { color: var(--good); }
+.sp-bad { color: var(--bad); }
+
 #side dl {
   font-family: var(--font-mono);
   font-size: 12px;
