@@ -555,6 +555,10 @@ async function showPendingDialog() {
   const content = document.getElementById("pending-dialog-content");
   content.innerHTML = '<p class="hint">loading…</p>';
   dlg.showModal();
+  await renderPendingDialog(content);
+}
+
+async function renderPendingDialog(content) {
   try {
     const data = await (await fetch("/api/pending")).json();
     if (!data.entries.length) {
@@ -566,10 +570,24 @@ async function showPendingDialog() {
         (e, i) =>
           `<div class="pending-entry">
             <div class="pending-num">#${i + 1}</div>
-            <pre>${escapeHtml(e)}</pre>
+            <pre>${escapeHtml(e.source)}</pre>
+            <button class="link-btn pending-del" data-id="${e.id}" title="Remove this edit">✕</button>
           </div>`,
       )
       .join("");
+    for (const btn of content.querySelectorAll(".pending-del")) {
+      btn.addEventListener("click", async () => {
+        const id = btn.dataset.id;
+        const res = await fetch(`/api/pending/${id}`, { method: "DELETE" });
+        if (res.ok) {
+          // Refresh in-place; the WS topology event from the reload
+          // also fires and re-renders the canvas + pill count.
+          await renderPendingDialog(content);
+        } else {
+          alert(`Remove failed: ${res.status} ${await res.text()}`);
+        }
+      });
+    }
   } catch (err) {
     content.innerHTML = `<p class="hint">failed to load: ${escapeHtml(err.message)}</p>`;
   }

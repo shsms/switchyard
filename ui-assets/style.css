@@ -127,19 +127,25 @@ dialog#pending-dialog header button:hover { color: var(--fg); }
 }
 .pending-entry {
   display: grid;
-  grid-template-columns: 28px 1fr;
+  grid-template-columns: 28px 1fr 24px;
   gap: 0.5rem;
   margin-bottom: 0.75rem;
+  align-items: start;
 }
 .pending-num {
   font-family: var(--font-mono);
   font-size: 12px;
   color: var(--muted);
   text-align: right;
+  padding-top: 0.4rem;
 }
 .pending-entry pre {
   margin: 0;
   font-size: 13px;
+}
+.pending-del {
+  font-size: 14px;
+  padding: 2px 6px;
 }
 
 .hdr-btn {
