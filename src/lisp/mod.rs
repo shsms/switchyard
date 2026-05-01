@@ -245,28 +245,42 @@ impl Config {
     /// physics state (SoC integration, ramp positions) reset on
     /// reload — same trade-off `Discard` has. Returns true if an
     /// entry with that id was found and removed.
+    ///
+    /// Surviving entries keep their original ids and timestamps.
+    /// Earlier passes re-used `eval_with_affects` and got fresh ids
+    /// each time, which broke "user opens modal → sees ids → clicks
+    /// × on id N" because by the time a click landed, id N had been
+    /// recycled to a different entry.
     pub fn remove_pending(&self, id: u64) -> bool {
-        let removed = {
+        let surviving: Vec<PendingEntry> = {
             let mut log = self.pending_log.lock();
-            let before = log.len();
-            log.retain(|e| e.id != id);
-            log.len() < before
+            let len_before = log.len();
+            let kept: Vec<PendingEntry> = log.drain(..).filter(|e| e.id != id).collect();
+            if kept.len() == len_before {
+                // Nothing matched — restore the log untouched.
+                *log = kept;
+                return false;
+            }
+            kept
         };
-        if !removed {
-            return false;
-        }
-        // Clone the surviving entries before reload — reload triggers
-        // any timers + config evaluation that could touch the log,
-        // and we want to control re-application explicitly.
-        let surviving: Vec<PendingEntry> = std::mem::take(&mut *self.pending_log.lock());
+        // Reload re-runs config.lisp + the override file from scratch
+        // — that's how we "remove" the deleted entry's effect.
         self.reload();
-        for e in surviving {
-            // Re-eval, preserving original affects/id semantics. We
-            // re-use `eval_with_affects` so the entries land in the
-            // log again — but with fresh ids (the old id pointed to
-            // the now-removed entry).
-            let _ = self.eval_with_affects(&e.source, e.affects);
+        // Re-apply each surviving entry directly: eval the source on
+        // the interpreter (no eval_with_affects so the ids don't get
+        // bumped), then push the original PendingEntry back into the
+        // log. This preserves both id and timestamp.
+        for entry in &surviving {
+            let _ = {
+                let mut ctx = self.ctx.borrow_mut();
+                ctx.eval_string(&entry.source)
+            };
         }
+        *self.pending_log.lock() = surviving;
+        // reload() already bumped the version, but the pending log
+        // changed shape on top — bump again so subscribers refetch
+        // /api/pending and see the new (smaller) list.
+        self.world.bump_version();
         true
     }
 
@@ -841,6 +855,26 @@ mod tests {
         // tulisp-async spawned during init.
         std::mem::forget(rt);
         (cfg, dir)
+    }
+
+    /// remove_pending must keep the surviving entries' ids stable.
+    /// Earlier code re-evalled survivors via eval_with_affects which
+    /// assigned fresh ids — the UI tracks entries by id, so a stale
+    /// click on a recycled id would error or hit the wrong row.
+    #[test]
+    fn remove_pending_preserves_surviving_ids() {
+        let (cfg, _dir) = config_with("(set-microgrid-id 9) (%make-grid :id 1)");
+        cfg.eval("(world-rename-component 1 \"a\")").unwrap();
+        cfg.eval("(world-rename-component 1 \"b\")").unwrap();
+        cfg.eval("(world-rename-component 1 \"c\")").unwrap();
+        let before: Vec<u64> = cfg.pending().iter().map(|e| e.id).collect();
+        assert_eq!(before.len(), 3);
+
+        // Remove the middle entry.
+        assert!(cfg.remove_pending(before[1]));
+        let after: Vec<u64> = cfg.pending().iter().map(|e| e.id).collect();
+        assert_eq!(after.len(), 2);
+        assert_eq!(after, vec![before[0], before[2]]);
     }
 
     /// load_scenario must propagate Lisp errors. The previous
