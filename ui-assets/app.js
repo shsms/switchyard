@@ -1422,6 +1422,8 @@ const COMPLETIONS = [
   "random",
   "csv-load",
   "csv-lookup",
+  "csv-fields",
+  "component-id",
   // Per-category defaults variables
   "grid-defaults",
   "meter-defaults",
