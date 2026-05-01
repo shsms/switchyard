@@ -13,6 +13,15 @@
   --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial,
     sans-serif;
+
+  /* Per-category palette — applied in JS via cytoscape selectors and
+     also here for legend / sidebar consistency. */
+  --cat-grid: #f1c40f;
+  --cat-meter: #58a6ff;
+  --cat-inverter: #3fb950;
+  --cat-battery: #ff7b3d;
+  --cat-ev-charger: #c678dd;
+  --cat-chp: #e06c75;
 }
 
 html,
@@ -49,8 +58,47 @@ header strong {
 .status.error     { color: var(--bad); }
 
 main {
-  padding: 1rem;
+  display: grid;
+  grid-template-columns: 1fr 320px;
+  gap: 0;
+  height: calc(100vh - 41px); /* viewport minus header */
 }
+
+#topology {
+  background: var(--bg);
+  border-right: 1px solid var(--border);
+  position: relative;
+}
+
+#side {
+  padding: 1rem;
+  overflow-y: auto;
+  background: var(--bg-elev);
+}
+
+#side h2 {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  margin: 0 0 0.5rem;
+  color: var(--accent);
+}
+
+#side .hint {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+#side dl {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.25rem 0.75rem;
+  margin: 0;
+}
+
+#side dt { color: var(--muted); }
+#side dd { margin: 0; word-break: break-all; }
 
 pre {
   font-family: var(--font-mono);

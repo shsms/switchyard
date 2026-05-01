@@ -380,9 +380,18 @@ mod tests {
         let cfg = config_with("").await;
         let (status, body) = call(cfg, get("/assets/app.js")).await;
         assert_eq!(status, StatusCode::OK);
-        // app.js's first line is a comment we wrote — anchors the
-        // test against actually serving the right file.
-        assert!(String::from_utf8_lossy(&body).contains("Phase-1 SPA entry point"));
+        // Phrase from app.js — anchors the test against actually
+        // serving the right file rather than just any 200.
+        assert!(String::from_utf8_lossy(&body).contains("cytoscape"));
+    }
+
+    #[tokio::test]
+    async fn asset_route_serves_vendored_lib() {
+        let cfg = config_with("").await;
+        let (status, body) = call(cfg, get("/assets/vendor/cytoscape.min.js")).await;
+        assert_eq!(status, StatusCode::OK);
+        // Cytoscape's bundled file starts with its copyright header.
+        assert!(String::from_utf8_lossy(&body).contains("Cytoscape Consortium"));
     }
 
     #[tokio::test]
