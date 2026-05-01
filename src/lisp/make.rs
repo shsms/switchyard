@@ -160,6 +160,29 @@ AsPlist! {
         /// Reactive slew rate (VAR/s). Default 2000 ≈ IEEE 1547-2018
         /// Cat B 5 s OLRT for a 10 kVAR window.
         reactive_ramp_rate<":reactive-ramp-rate">: Option<f64> {= None},
+        config<":config">: Option<LispValue> {= None},
+    }
+}
+
+AsAlist! {
+    /// Per-category defaults for `(make-battery-inverter)`. Mirrors
+    /// `BatteryInverterArgs` minus per-component identity / topology
+    /// (`id`, `successors`).
+    #[derive(Default)]
+    pub struct BatteryInverterDefaults {
+        interval: Option<i64> {= None},
+        rated_lower<"rated-lower">: Option<f64> {= None},
+        rated_upper<"rated-upper">: Option<f64> {= None},
+        command_delay_ms<"command-delay-ms">: Option<i64> {= None},
+        ramp_rate<"ramp-rate">: Option<f64> {= None},
+        stream_jitter_pct<"stream-jitter-pct">: Option<f64> {= None},
+        health: Option<LispLabel> {= None},
+        telemetry_mode<"telemetry-mode">: Option<LispLabel> {= None},
+        command_mode<"command-mode">: Option<LispLabel> {= None},
+        reactive_pf_limit<"reactive-pf-limit">: Option<f64> {= None},
+        reactive_apparent_va<"reactive-apparent-va">: Option<f64> {= None},
+        reactive_command_delay_ms<"reactive-command-delay-ms">: Option<i64> {= None},
+        reactive_ramp_rate<"reactive-ramp-rate">: Option<f64> {= None},
     }
 }
 
@@ -366,24 +389,25 @@ pub fn register(ctx: &mut TulispContext, world: World) {
     let w = world.clone();
     ctx.defun(
         "make-battery-inverter",
-        move |args: Plist<BatteryInverterArgs>| {
+        move |ctx: &mut TulispContext, args: Plist<BatteryInverterArgs>| {
             let a = args.into_inner();
+            let d = parse_defaults::<BatteryInverterDefaults>(ctx, a.config.as_ref())?;
             let id = id_or_next(&w, a.id);
-            let interval = ms_to_duration(a.interval, 1000);
+            let interval = ms_to_duration(a.interval.or(d.interval), 1000);
             let mut cfg = BatteryInverterConfig::default();
-            if let Some(v) = a.rated_lower {
+            if let Some(v) = a.rated_lower.or(d.rated_lower) {
                 cfg.rated_lower_w = v as f32;
             }
-            if let Some(v) = a.rated_upper {
+            if let Some(v) = a.rated_upper.or(d.rated_upper) {
                 cfg.rated_upper_w = v as f32;
             }
-            if let Some(v) = a.command_delay_ms {
+            if let Some(v) = a.command_delay_ms.or(d.command_delay_ms) {
                 cfg.command_delay = Duration::from_millis(v.max(0) as u64);
             }
-            if let Some(v) = a.ramp_rate {
+            if let Some(v) = a.ramp_rate.or(d.ramp_rate) {
                 cfg.ramp_rate_w_per_s = v as f32;
             }
-            if let Some(v) = a.stream_jitter_pct {
+            if let Some(v) = a.stream_jitter_pct.or(d.stream_jitter_pct) {
                 cfg.stream_jitter_pct = v as f32;
             }
             // Reactive capability semantics:
@@ -395,21 +419,22 @@ pub fn register(ctx: &mut TulispContext, world: World) {
             //   :reactive-apparent-va 32000.0     ;; kVA only
             //   :reactive-pf-limit 0.0 :reactive-apparent-va 0.0 ;; unrestricted
             //   :reactive-pf-limit 0.5            ;; tighter PF, no kVA
-            // without needing a third "mode" symbol.
-            if a.reactive_pf_limit.is_some() || a.reactive_apparent_va.is_some() {
+            // without needing a third "mode" symbol. Each reactive arg
+            // pulls from the per-component plist first, then the
+            // category alist.
+            let reactive_pf = a.reactive_pf_limit.or(d.reactive_pf_limit);
+            let reactive_va = a.reactive_apparent_va.or(d.reactive_apparent_va);
+            if reactive_pf.is_some() || reactive_va.is_some() {
                 cfg.reactive = crate::sim::reactive::ReactiveCapability {
-                    pf_limit: a
-                        .reactive_pf_limit
-                        .and_then(|v| if v > 0.0 { Some(v as f32) } else { None }),
-                    apparent_va: a
-                        .reactive_apparent_va
+                    pf_limit: reactive_pf.and_then(|v| if v > 0.0 { Some(v as f32) } else { None }),
+                    apparent_va: reactive_va
                         .and_then(|v| if v > 0.0 { Some(v as f32) } else { None }),
                 };
             }
-            if let Some(v) = a.reactive_command_delay_ms {
+            if let Some(v) = a.reactive_command_delay_ms.or(d.reactive_command_delay_ms) {
                 cfg.reactive_command_delay = Duration::from_millis(v.max(0) as u64);
             }
-            if let Some(v) = a.reactive_ramp_rate {
+            if let Some(v) = a.reactive_ramp_rate.or(d.reactive_ramp_rate) {
                 cfg.reactive_ramp_rate_var_per_s = v as f32;
             }
             let succ_ids: Vec<u64> = a
@@ -420,9 +445,9 @@ pub fn register(ctx: &mut TulispContext, world: World) {
             let h = register_with_modes(
                 &w,
                 BatteryInverter::new(id, interval, cfg, succ_ids),
-                a.health.as_ref(),
-                a.telemetry_mode.as_ref(),
-                a.command_mode.as_ref(),
+                a.health.as_ref().or(d.health.as_ref()),
+                a.telemetry_mode.as_ref().or(d.telemetry_mode.as_ref()),
+                a.command_mode.as_ref().or(d.command_mode.as_ref()),
             )?;
             connect_successors(&w, id, &a.successors);
             Ok::<_, Error>(h)
