@@ -1,8 +1,8 @@
 //! Solar (PV) inverter. Active-side: produces a negative power
 //! proportional to `sunlight_pct`, slewed by the ramp + command-delay
-//! pair. Reactive-side: same `ReactiveCapability` envelope as the
-//! battery inverter — a real PV smart inverter (IEEE 1547-2018) does
-//! Volt/VAR control alongside its real-power output.
+//! pair. Reactive-side: shares [`ReactivePath`] with the battery
+//! inverter — a real PV smart inverter (IEEE 1547-2018) does Volt/VAR
+//! control alongside its real-power output.
 
 use std::{fmt, time::Duration};
 

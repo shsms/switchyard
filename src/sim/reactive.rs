@@ -195,6 +195,123 @@ mod tests {
     use super::*;
 
     #[test]
+    fn reactive_path_accept_then_step_drives_to_target() {
+        // No PF cap, ±10 kVA envelope. 100 ms delay, 1000 VAR/s slew.
+        let p = ReactivePath::new(
+            ReactiveCapability {
+                pf_limit: None,
+                apparent_va: Some(10_000.0),
+            },
+            Duration::from_millis(100),
+            1000.0,
+        );
+        let now = Utc::now();
+        // P = 0; envelope is ±10 kVA. Q=5000 is in-range.
+        assert!(p.accept_setpoint(0.0, 5000.0).is_ok());
+
+        // Before the 100 ms delay elapses, no movement.
+        let q = p.step(0.0, now + chrono::Duration::milliseconds(50), Duration::from_millis(50));
+        assert!(q.abs() < 1.0, "expected ~0 before delay, got {q}");
+
+        // After 1 s past the delay, ramp at 1000 VAR/s reaches 1 kVAR.
+        let q = p.step(
+            0.0,
+            now + chrono::Duration::milliseconds(1100),
+            Duration::from_millis(1000),
+        );
+        assert!((q - 1000.0).abs() < 1.0, "expected ~1000, got {q}");
+
+        // 6 s past the delay: ramp settled at 5000.
+        let q = p.step(
+            0.0,
+            now + chrono::Duration::milliseconds(6100),
+            Duration::from_millis(5000),
+        );
+        assert!((q - 5000.0).abs() < 1.0, "expected 5000, got {q}");
+        assert_eq!(p.published(), q);
+    }
+
+    #[test]
+    fn reactive_path_rejects_out_of_envelope() {
+        let p = ReactivePath::new(
+            ReactiveCapability {
+                pf_limit: Some(0.5),
+                apparent_va: None,
+            },
+            Duration::ZERO,
+            f32::INFINITY,
+        );
+        // PF=0.5 at P=10k → ±5000 envelope. 6000 is out.
+        match p.accept_setpoint(10_000.0, 6000.0) {
+            Err(SetpointError::OutOfBounds {
+                value,
+                lower,
+                upper,
+            }) => {
+                assert_eq!(value, 6000.0);
+                assert!((lower + 5000.0).abs() < 1.0);
+                assert!((upper - 5000.0).abs() < 1.0);
+            }
+            other => panic!("expected OutOfBounds, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reactive_path_re_clamps_at_promotion() {
+        // Cap = ±10 kVA. No delay, no slew. Accept at P=0 (full
+        // envelope), then have P drift to 9 kW before tick — the
+        // command should be re-clamped to √(100-81)*1000 ≈ ±4359.
+        let p = ReactivePath::new(
+            ReactiveCapability {
+                pf_limit: None,
+                apparent_va: Some(10_000.0),
+            },
+            Duration::ZERO,
+            f32::INFINITY,
+        );
+        assert!(p.accept_setpoint(0.0, 8000.0).is_ok());
+        let q = p.step(9000.0, Utc::now(), Duration::from_millis(100));
+        assert!(q < 4400.0 && q > 4350.0, "expected ~4359, got {q}");
+    }
+
+    #[test]
+    fn reactive_path_override_published_wins() {
+        // step() publishes ramp's value; override_published overwrites
+        // it. Mirrors the BatteryInverter's "measured = sum of
+        // children's accepted" path.
+        let p = ReactivePath::new(
+            ReactiveCapability::microsim_default(),
+            Duration::ZERO,
+            f32::INFINITY,
+        );
+        let _ = p.accept_setpoint(10_000.0, 3000.0);
+        let q = p.step(10_000.0, Utc::now(), Duration::from_millis(100));
+        assert!((q - 3000.0).abs() < 1.0);
+        p.override_published(2500.0);
+        assert_eq!(p.published(), 2500.0);
+    }
+
+    #[test]
+    fn reactive_path_runtime_caps() {
+        let p = ReactivePath::new(
+            ReactiveCapability {
+                pf_limit: None,
+                apparent_va: Some(10_000.0),
+            },
+            Duration::ZERO,
+            f32::INFINITY,
+        );
+        // Initial: at P=0, Q can be ±10k.
+        assert!((p.bounds_at(0.0).1 - 10_000.0).abs() < 1.0);
+        // Drop kVA cap, add tight PF cap: at P=2k, Q ≤ 0.2×2k = ±400.
+        p.set_apparent_va(None);
+        p.set_pf_limit(Some(0.2));
+        let (lo, hi) = p.bounds_at(2000.0);
+        assert!((hi - 400.0).abs() < 1.0);
+        assert!((lo + 400.0).abs() < 1.0);
+    }
+
+    #[test]
     fn pf_limit_scales_with_p() {
         let cap = ReactiveCapability {
             pf_limit: Some(0.35),
