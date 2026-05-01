@@ -8,6 +8,7 @@
 
 pub mod csv_profile;
 pub mod handle;
+pub mod label;
 pub mod make;
 
 use std::{path::Path, sync::Arc, time::Duration};
