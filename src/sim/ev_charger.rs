@@ -77,18 +77,20 @@ impl EvCharger {
                 margin_pct: cfg.soc_protect_margin_pct,
             },
         );
+        let delay = CommandDelay::new(cfg.command_delay);
+        let ramp = Ramp::new(cfg.ramp_rate_w_per_s, 0.0);
         Self {
             id,
             name: format!("ev-charger-{id}"),
             interval,
-            cfg: cfg.clone(),
+            cfg,
             state: Mutex::new(EvState {
                 soc_pct: init_soc,
                 effective_lower_w: l,
                 effective_upper_w: u,
             }),
-            delay: CommandDelay::new(cfg.command_delay),
-            ramp: Ramp::new(cfg.ramp_rate_w_per_s, 0.0),
+            delay,
+            ramp,
         }
     }
 
