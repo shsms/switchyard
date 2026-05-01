@@ -119,6 +119,13 @@ struct ComponentSummary {
     /// component categories that don't subdivide further.
     subtype: Option<&'static str>,
     hidden: bool,
+    /// Current runtime knob settings — Display impls on the enums map
+    /// to the same lowercase tokens the corresponding setter defuns
+    /// accept, so the UI's dropdowns can round-trip via /api/eval
+    /// without a string table.
+    health: String,
+    telemetry_mode: String,
+    command_mode: String,
 }
 
 async fn topology(State(config): State<Config>) -> Json<TopologySnapshot> {
@@ -126,16 +133,22 @@ async fn topology(State(config): State<Config>) -> Json<TopologySnapshot> {
     let components = world
         .components()
         .iter()
-        .map(|c| ComponentSummary {
-            id: c.id(),
-            // Display-name override (set by world-rename-component)
-            // wins over the component's intrinsic name.
-            name: world
-                .display_name(c.id())
-                .unwrap_or_else(|| c.name().to_string()),
-            category: category_label(c.category()),
-            subtype: c.subtype(),
-            hidden: c.is_hidden(),
+        .map(|c| {
+            let runtime = world.runtime_of(c.id());
+            ComponentSummary {
+                id: c.id(),
+                // Display-name override (set by world-rename-component)
+                // wins over the component's intrinsic name.
+                name: world
+                    .display_name(c.id())
+                    .unwrap_or_else(|| c.name().to_string()),
+                category: category_label(c.category()),
+                subtype: c.subtype(),
+                hidden: c.is_hidden(),
+                health: runtime.health.to_string(),
+                telemetry_mode: runtime.telemetry.to_string(),
+                command_mode: runtime.command.to_string(),
+            }
         })
         .collect();
     Json(TopologySnapshot {

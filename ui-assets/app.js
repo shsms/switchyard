@@ -122,19 +122,100 @@ function clearCharts() {
   activeCharts = null;
 }
 
-async function showComponent(node) {
-  const d = node.data();
-  clearCharts();
+function renderInspect(d, parentIds, childIds) {
+  const renderEdgeRow = (id, dataAttr) => {
+    const node = cy.getElementById(id);
+    const label = node.nonempty() ? node.data("name") : `id ${id}`;
+    return `<li>${escapeHtml(label)} <button class="link-btn" ${dataAttr}="${id}">✕</button></li>`;
+  };
+  const parentList = parentIds.length
+    ? parentIds.map((id) => renderEdgeRow(id, "data-disconnect-from")).join("")
+    : '<li class="hint">none</li>';
+  const childList = childIds.length
+    ? childIds.map((id) => renderEdgeRow(id, "data-disconnect-to")).join("")
+    : '<li class="hint">none</li>';
 
   inspectEl.innerHTML = `
-    <h2>${d.name}</h2>
+    <h2><input id="rename" class="name-input" value="${escapeHtml(d.name)}" /></h2>
     <dl>
       <dt>id</dt><dd>${d.id}</dd>
       <dt>category</dt><dd>${d.category}</dd>
       <dt>subtype</dt><dd>${d.subtype || "—"}</dd>
     </dl>
+    <h3>Runtime</h3>
+    <dl>
+      <dt>health</dt><dd>${selectField("health", d.health, ["ok", "error", "standby"])}</dd>
+      <dt>telemetry</dt><dd>${selectField("telemetry-mode", d.telemetry_mode, ["normal", "silent", "closed"])}</dd>
+      <dt>commands</dt><dd>${selectField("command-mode", d.command_mode, ["normal", "timeout", "error"])}</dd>
+    </dl>
+    <h3>Connections</h3>
+    <div class="conns">
+      <div><strong>parents</strong><ul>${parentList}</ul></div>
+      <div><strong>children</strong><ul>${childList}</ul></div>
+    </div>
     <div id="charts"></div>
   `;
+
+  // Wire form callbacks. Every action POSTs to /api/eval; the WS
+  // TopologyChanged refresh re-reads the form state from the server
+  // and re-renders this panel automatically.
+  document.getElementById("rename").addEventListener("change", (e) => {
+    const name = e.target.value.trim();
+    if (!name) return;
+    evalQuoted(`(world-rename-component ${d.id} "${jsToLispString(name)}")`);
+  });
+  for (const [key, defun] of [
+    ["health", "set-component-health"],
+    ["telemetry-mode", "set-component-telemetry-mode"],
+    ["command-mode", "set-component-command-mode"],
+  ]) {
+    const sel = inspectEl.querySelector(`select[data-knob="${key}"]`);
+    sel.addEventListener("change", (e) => {
+      evalQuoted(`(${defun} ${d.id} '${e.target.value})`);
+    });
+  }
+  for (const btn of inspectEl.querySelectorAll("[data-disconnect-from]")) {
+    btn.addEventListener("click", () =>
+      evalQuoted(`(world-disconnect ${btn.dataset.disconnectFrom} ${d.id})`),
+    );
+  }
+  for (const btn of inspectEl.querySelectorAll("[data-disconnect-to]")) {
+    btn.addEventListener("click", () =>
+      evalQuoted(`(world-disconnect ${d.id} ${btn.dataset.disconnectTo})`),
+    );
+  }
+}
+
+function selectField(knob, current, options) {
+  const opts = options
+    .map(
+      (o) => `<option value="${o}"${o === current ? " selected" : ""}>${o}</option>`,
+    )
+    .join("");
+  return `<select data-knob="${knob}">${opts}</select>`;
+}
+
+function jsToLispString(s) {
+  return s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+async function evalQuoted(expr) {
+  const res = await fetch("/api/eval", { method: "POST", body: expr });
+  const data = await res.json();
+  if (!data.ok) alert(`${expr}\n\nfailed:\n${data.error}`);
+}
+
+async function showComponent(node) {
+  const d = node.data();
+  clearCharts();
+
+  // Walk the live cytoscape graph for parent/child ids. Cheaper than
+  // re-fetching /api/topology, and good enough for the disconnect
+  // buttons. Display strings get computed inside renderInspect via
+  // cy.getElementById(id).data('name').
+  const parentIds = node.incomers("node").map((n) => n.id());
+  const childIds = node.outgoers("node").map((n) => n.id());
+  renderInspect(d, parentIds, childIds);
 
   const metrics = CHARTS_BY_CATEGORY[d.category] || [];
   const container = document.getElementById("charts");

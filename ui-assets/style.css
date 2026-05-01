@@ -213,6 +213,72 @@ main {
 }
 .add-row select:focus { outline: 1px solid var(--accent); }
 
+.name-input {
+  width: 100%;
+  background: transparent;
+  color: var(--accent);
+  border: none;
+  border-bottom: 1px dashed transparent;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: bold;
+  padding: 2px 0;
+}
+.name-input:hover, .name-input:focus {
+  border-bottom-color: var(--accent);
+  outline: none;
+}
+
+#side h3 {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--muted);
+  margin: 1rem 0 0.4rem;
+}
+
+#side select[data-knob] {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 4px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+#side select[data-knob]:focus { outline: 1px solid var(--accent); }
+
+.conns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+}
+.conns ul {
+  list-style: none;
+  padding: 0;
+  margin: 0.25rem 0 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.conns li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1px 0;
+  word-break: break-all;
+}
+
+.link-btn {
+  background: none;
+  border: none;
+  color: var(--bad);
+  cursor: pointer;
+  padding: 0 4px;
+  font-size: 11px;
+}
+.link-btn:hover { background: var(--bg); border-radius: 3px; }
+
 #side dl {
   font-family: var(--font-mono);
   font-size: 12px;
