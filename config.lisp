@@ -1,5 +1,5 @@
 ;; Switchyard sample configuration. Reload-safe: (reset-state) cancels
-;; outstanding timers and wipes the World, then make-* rebuilds it.
+;; outstanding timers and wipes the World, then the topology rebuilds.
 
 ;; Load runtime helpers (every, reset-state) once. Avoids re-defining
 ;; defuns on every reload — they don't change between saves and the
@@ -7,6 +7,13 @@
 (unless (boundp 'switchyard-loaded)
   (setq switchyard-loaded t)
   (load "sim/common.lisp"))
+
+;; Per-category defaults + bare-name DSL (`grid`, `meter`, `battery`,
+;; …). Loaded outside the boundp guard so edits to defaults.lisp are
+;; visible after reload, and registered with the notify watcher so
+;; saving defaults.lisp itself triggers the reload.
+(load "sim/defaults.lisp")
+(watch-file "sim/defaults.lisp")
 
 (reset-state)
 
@@ -83,101 +90,51 @@
          (set-solar-sunlight 200 (cloud-curve (window-elapsed 600.0)))))
 
 ;; -----------------------------------------------------------------------------
-;; Per-category defaults. Each (make-*) accepts `:config <alist>`;
-;; precedence is per-component plist > :config alist > Rust default.
-;; Label-shaped values (`:health`, `:telemetry-mode`, `:command-mode`)
-;; take a quoted symbol: `(health . ok)`, not the string form.
-;; -----------------------------------------------------------------------------
-
-(setq grid-defaults
-      '((rated-fuse-current . 100)
-        (stream-jitter-pct  . 1.0)))
-
-(setq meter-defaults
-      '((interval          . 200)
-        (stream-jitter-pct . 4.0)))
-
-(setq battery-defaults
-      '((soc-protect-margin . 10.0)
-        (stream-jitter-pct  . 8.0)
-        (health             . ok)))
-
-(setq battery-inverter-defaults
-      '((command-delay-ms     . 1500)
-        (ramp-rate            . 5000.0)
-        (stream-jitter-pct    . 8.0)
-        (reactive-pf-limit    . 0.0)        ;; 0 = disabled
-        (reactive-apparent-va . 32000.0)))  ;; kVA-circle envelope
-
-(setq solar-inverter-defaults
-      '((ramp-rate         . 2000.0)
-        (stream-jitter-pct . 5.0)))
-
-(setq ev-charger-defaults
-      '((soc-protect-margin . 10.0)
-        (command-delay-ms   .   500)
-        (ramp-rate          . 3000.0)
-        (stream-jitter-pct  .   10.0)))
-
-(setq chp-defaults
-      '((stream-jitter-pct . 0.0)))
-
-;; -----------------------------------------------------------------------------
 ;; Topology — nested for visual clarity. The whole graph is one
 ;; expression; reading top-to-bottom traces the grid → main meter →
-;; per-branch meters → underlying device chain. Each (make-*) consumes
-;; the matching :config defaults; per-component plist args override.
+;; per-branch meters → underlying device chain. Each bare name (`grid`,
+;; `meter`, `battery`, …) is a defun in sim/defaults.lisp that pulls
+;; in the matching `*-defaults` alist; per-component plist args still
+;; override. To opt out of defaults for a single component, call the
+;; `make-*` Rust primitive directly.
 ;; -----------------------------------------------------------------------------
 
-(make-grid
+(grid
  :id 1
- :config grid-defaults
  :successors
  (list
-  (make-meter
+  (meter
    :id 2
-   :config meter-defaults
    :successors
    (list
-    ;; Battery branch: SCADA delay + slew-rate-limited ramp,
-    ;; kVA-circle reactive envelope, slight per-stream jitter on both
-    ;; the inverter and the battery underneath it. All from defaults.
-    (make-meter
-     :config meter-defaults
+    ;; Battery branch — every knob (SCADA delay, ramp, jitter,
+    ;; kVA-circle reactive envelope) comes from battery-inverter-
+    ;; defaults / battery-defaults.
+    (meter
      :successors
-     (list (make-battery-inverter
-            :config battery-inverter-defaults
+     (list (battery-inverter
             :successors
-            (list (make-battery
-                   :config      battery-defaults
-                   :initial-soc 85.0)))))   ; per-component override
+            (list (battery :initial-soc 85.0)))))   ; per-component override
 
     ;; Solar branch — id 200 so the cloud-curve timer above can reach it.
-    (make-meter
-     :config meter-defaults
+    (meter
      :successors
-     (list (make-solar-inverter
-            :id        200
-            :config    solar-inverter-defaults
-            :sunlight% 80.0)))               ; scenario starting point
+     (list (solar-inverter :id 200 :sunlight% 80.0)))    ; scenario starting point
 
     ;; EV branch — near-full so the SoC-protect taper is observable.
-    (make-meter
-     :config meter-defaults
+    (meter
      :successors
-     (list (make-ev-charger
-            :config       ev-charger-defaults
+     (list (ev-charger
             :initial-soc  92.0
             :soc-upper   100.0
             :rated-upper 22000.0)))
 
     ;; CHP modeled as a constant -2 kW generator on its meter.
-    (make-meter
-     :config meter-defaults
-     :power  -2000.0
-     :successors (list (make-chp :config chp-defaults)))
+    (meter :power -2000.0 :successors (list (chp)))
 
     ;; Hidden consumer meter — invisible in ListComponents / tree but
     ;; aggregated into the main meter. Driven dynamically by the
-    ;; consumer-curve timer above via id 100.
+    ;; consumer-curve timer above via id 100. `make-meter` (the Rust
+    ;; primitive) bypasses meter-defaults so the explicit :power isn't
+    ;; combined with a default :stream-jitter-pct on a hidden component.
     (make-meter :id 100 :hidden t :power 1000.0)))))
