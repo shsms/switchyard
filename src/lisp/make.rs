@@ -7,9 +7,10 @@
 use std::str::FromStr;
 use std::time::Duration;
 
-use tulisp::{AsPlist, Error, Plist, TulispContext};
+use tulisp::{Alistable, AsAlist, AsPlist, Error, Plist, TulispContext};
 
 use crate::lisp::label::LispLabel;
+use crate::lisp::value::LispValue;
 use crate::sim::{
     Battery, BatteryInverter, Chp, ComponentHandle, EvCharger, Grid, Meter, SolarInverter, World,
     battery::BatteryConfig,
@@ -74,6 +75,30 @@ AsPlist! {
         health<":health">: Option<LispLabel> {= None},
         telemetry_mode<":telemetry-mode">: Option<LispLabel> {= None},
         command_mode<":command-mode">: Option<LispLabel> {= None},
+        config<":config">: Option<LispValue> {= None},
+    }
+}
+
+AsAlist! {
+    /// Per-category defaults for `(make-battery)`. Mirrors `BatteryArgs`
+    /// minus the per-component identity / topology args (`id`,
+    /// `successors`). Three-layer precedence in the make-battery defun:
+    /// per-component plist > this alist > Rust struct default.
+    #[derive(Default)]
+    pub struct BatteryDefaults {
+        interval: Option<i64> {= None},
+        capacity_wh<"capacity">: Option<f64> {= None},
+        initial_soc<"initial-soc">: Option<f64> {= None},
+        soc_lower<"soc-lower">: Option<f64> {= None},
+        soc_upper<"soc-upper">: Option<f64> {= None},
+        voltage: Option<f64> {= None},
+        rated_lower<"rated-lower">: Option<f64> {= None},
+        rated_upper<"rated-upper">: Option<f64> {= None},
+        soc_protect_margin<"soc-protect-margin">: Option<f64> {= None},
+        stream_jitter_pct<"stream-jitter-pct">: Option<f64> {= None},
+        health: Option<LispLabel> {= None},
+        telemetry_mode<"telemetry-mode">: Option<LispLabel> {= None},
+        command_mode<"command-mode">: Option<LispLabel> {= None},
     }
 }
 
@@ -237,46 +262,50 @@ pub fn register(ctx: &mut TulispContext, world: World) {
     });
 
     let w = world.clone();
-    ctx.defun("make-battery", move |args: Plist<BatteryArgs>| {
-        let a = args.into_inner();
-        let id = id_or_next(&w, a.id);
-        let interval = ms_to_duration(a.interval, 1000);
-        let mut cfg = BatteryConfig::default();
-        if let Some(v) = a.capacity_wh {
-            cfg.capacity_wh = v as f32;
-        }
-        if let Some(v) = a.initial_soc {
-            cfg.initial_soc_pct = v as f32;
-        }
-        if let Some(v) = a.soc_lower {
-            cfg.soc_lower_pct = v as f32;
-        }
-        if let Some(v) = a.soc_upper {
-            cfg.soc_upper_pct = v as f32;
-        }
-        if let Some(v) = a.voltage {
-            cfg.voltage_v = v as f32;
-        }
-        if let Some(v) = a.rated_lower {
-            cfg.rated_lower_w = v as f32;
-        }
-        if let Some(v) = a.rated_upper {
-            cfg.rated_upper_w = v as f32;
-        }
-        if let Some(v) = a.soc_protect_margin {
-            cfg.soc_protect_margin_pct = v as f32;
-        }
-        if let Some(v) = a.stream_jitter_pct {
-            cfg.stream_jitter_pct = v as f32;
-        }
-        register_with_modes(
-            &w,
-            Battery::new(id, interval, cfg),
-            a.health.as_ref(),
-            a.telemetry_mode.as_ref(),
-            a.command_mode.as_ref(),
-        )
-    });
+    ctx.defun(
+        "make-battery",
+        move |ctx: &mut TulispContext, args: Plist<BatteryArgs>| {
+            let a = args.into_inner();
+            let d = parse_defaults::<BatteryDefaults>(ctx, a.config.as_ref())?;
+            let id = id_or_next(&w, a.id);
+            let interval = ms_to_duration(a.interval.or(d.interval), 1000);
+            let mut cfg = BatteryConfig::default();
+            if let Some(v) = a.capacity_wh.or(d.capacity_wh) {
+                cfg.capacity_wh = v as f32;
+            }
+            if let Some(v) = a.initial_soc.or(d.initial_soc) {
+                cfg.initial_soc_pct = v as f32;
+            }
+            if let Some(v) = a.soc_lower.or(d.soc_lower) {
+                cfg.soc_lower_pct = v as f32;
+            }
+            if let Some(v) = a.soc_upper.or(d.soc_upper) {
+                cfg.soc_upper_pct = v as f32;
+            }
+            if let Some(v) = a.voltage.or(d.voltage) {
+                cfg.voltage_v = v as f32;
+            }
+            if let Some(v) = a.rated_lower.or(d.rated_lower) {
+                cfg.rated_lower_w = v as f32;
+            }
+            if let Some(v) = a.rated_upper.or(d.rated_upper) {
+                cfg.rated_upper_w = v as f32;
+            }
+            if let Some(v) = a.soc_protect_margin.or(d.soc_protect_margin) {
+                cfg.soc_protect_margin_pct = v as f32;
+            }
+            if let Some(v) = a.stream_jitter_pct.or(d.stream_jitter_pct) {
+                cfg.stream_jitter_pct = v as f32;
+            }
+            register_with_modes(
+                &w,
+                Battery::new(id, interval, cfg),
+                a.health.as_ref().or(d.health.as_ref()),
+                a.telemetry_mode.as_ref().or(d.telemetry_mode.as_ref()),
+                a.command_mode.as_ref().or(d.command_mode.as_ref()),
+            )
+        },
+    );
 
     let w = world.clone();
     ctx.defun(
@@ -479,6 +508,23 @@ fn ms_to_duration(ms: Option<i64>, default_ms: u64) -> Duration {
     Duration::from_millis(ms.map(|x| x.max(0) as u64).unwrap_or(default_ms))
 }
 
+/// Decode the optional `:config` plist arg into a per-category
+/// defaults struct. Returns the struct's `Default` when no `:config`
+/// was given, so callers can always do `a.field.or(d.field)`.
+///
+/// `D` must be a struct deriving `Alistable` + `Default`. Microsim's
+/// `battery-defaults` / `inverter-defaults` etc. each get one such
+/// struct in the `AsAlist!` blocks above.
+fn parse_defaults<D: Alistable + Default>(
+    ctx: &mut TulispContext,
+    config: Option<&LispValue>,
+) -> Result<D, Error> {
+    match config {
+        Some(v) => D::from_alist(ctx, v.as_inner()),
+        None => Ok(D::default()),
+    }
+}
+
 /// Resolve the component id from an `:id` plist value, falling back to
 /// `World::next_id()` when omitted. Centralized so casts stay one
 /// place — each make-* used to inline the same `as u64 / next_id()`
@@ -543,4 +589,72 @@ fn apply_initial_modes(
         world.set_command_mode(id, parsed);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Builds a context wired to a fresh World, evaluates `src`, and
+    /// returns the World so the test can introspect what got registered.
+    fn run(src: &str) -> World {
+        let world = World::new();
+        let mut ctx = TulispContext::new();
+        crate::lisp::handle::register(&mut ctx);
+        register(&mut ctx, world.clone());
+        ctx.eval_string(src).expect("eval lisp source");
+        world
+    }
+
+    #[test]
+    fn battery_defaults_alone_apply() {
+        let world = run(
+            r#"(setq d '((capacity . 50000.0)
+                         (initial-soc . 20.0)
+                         (rated-lower . -8000.0)
+                         (rated-upper . 8000.0)))
+               (make-battery :id 100 :config d)"#,
+        );
+        let t = world.get(100).unwrap().telemetry(&world);
+        assert_eq!(t.capacity_wh, Some(50_000.0));
+        assert!((t.soc_pct.unwrap() - 20.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn battery_per_component_overrides_defaults() {
+        // :capacity in the plist wins over (capacity . X) in the alist;
+        // initial-soc only in defaults still applies.
+        let world = run(
+            r#"(setq d '((capacity . 50000.0) (initial-soc . 20.0)))
+               (make-battery :id 101 :config d :capacity 25000.0)"#,
+        );
+        let t = world.get(101).unwrap().telemetry(&world);
+        assert_eq!(t.capacity_wh, Some(25_000.0));
+        assert!((t.soc_pct.unwrap() - 20.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn battery_defaults_accept_symbol_for_health() {
+        // :health in the alist as a bare symbol, no plist override.
+        // Component starts in `error` health; gRPC layer would reject
+        // setpoints, but we just verify the runtime knob landed.
+        let world = run(
+            r#"(setq d '((health . error)))
+               (make-battery :id 102 :config d)"#,
+        );
+        assert_eq!(
+            world.runtime_of(102).health,
+            crate::sim::runtime::Health::Error
+        );
+    }
+
+    #[test]
+    fn battery_no_config_is_unchanged() {
+        // Sanity: with no :config the defaults struct is empty, so
+        // the BatteryConfig::default values stand.
+        let world = run("(make-battery :id 103)");
+        let t = world.get(103).unwrap().telemetry(&world);
+        // Default capacity from BatteryConfig::default in battery.rs.
+        assert_eq!(t.capacity_wh, Some(92_000.0));
+    }
 }
