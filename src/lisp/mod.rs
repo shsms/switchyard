@@ -10,6 +10,7 @@ pub mod csv_profile;
 pub mod handle;
 pub mod label;
 pub mod make;
+pub mod value;
 
 use std::{path::Path, sync::Arc, time::Duration};
 
