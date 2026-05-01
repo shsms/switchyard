@@ -12,10 +12,15 @@ pub mod make;
 pub mod runtime_modes;
 pub mod value;
 
-use std::{path::Path, sync::Arc, time::Duration};
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
 use notify::{RecommendedWatcher, Watcher};
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use tulisp::{Error, SharedMut, TulispContext};
 
 use crate::sim::World;
@@ -53,6 +58,12 @@ pub struct Config {
     pub(crate) ctx: SharedMut<TulispContext>,
     pub(crate) world: World,
     pub(crate) metadata: Arc<RwLock<Metadata>>,
+    /// Additional files the config has registered via `(watch-file …)`.
+    /// `Config::watch` adds each to the live notify watcher so edits to
+    /// e.g. `sim/defaults.lisp` trigger the same reload as edits to
+    /// the entry-point config. Set semantics — duplicate registrations
+    /// (from re-runs of the config during reload) are no-ops.
+    extra_watches: Arc<Mutex<HashSet<PathBuf>>>,
 }
 
 impl Config {
@@ -60,19 +71,21 @@ impl Config {
         let mut ctx = TulispContext::new();
         let world = World::new();
         let metadata = Arc::new(RwLock::new(Metadata::default()));
+        let extra_watches = Arc::new(Mutex::new(HashSet::new()));
 
         // `Path::parent()` returns `Some("")` for bare filenames like
         // "config.lisp" — tulisp rejects empty paths, so fall back to
         // the current directory in that case.
         let config_path = Path::new(filename);
-        let load_dir: &Path = match config_path.parent() {
-            Some(p) if !p.as_os_str().is_empty() => p,
-            _ => Path::new("."),
+        let load_dir: PathBuf = match config_path.parent() {
+            Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+            _ => PathBuf::from("."),
         };
-        ctx.set_load_path(Some(load_dir))
+        ctx.set_load_path(Some(&load_dir))
             .unwrap_or_else(|e| panic!("set_load_path({}): {:?}", load_dir.display(), e));
 
         register_runtime(&mut ctx, &world, metadata.clone());
+        register_watches(&mut ctx, load_dir.clone(), extra_watches.clone());
 
         // tulisp-async gives the config DSL access to run-with-timer,
         // cancel-timer, sleep-for and friends, used to drive
@@ -92,6 +105,7 @@ impl Config {
             ctx: SharedMut::new(ctx),
             world,
             metadata,
+            extra_watches,
         }
     }
 
@@ -138,6 +152,17 @@ impl Config {
                 notify::RecursiveMode::NonRecursive,
             )
             .unwrap();
+        // Add every path the config registered via `(watch-file …)`.
+        // Snapshotted now; reload-time additions take effect on the
+        // next process restart (the live notify watcher isn't held
+        // across reloads, by design — keeps the watch lifecycle simple).
+        for path in self.extra_watches.lock().iter() {
+            if let Err(e) =
+                watcher.watch(path, notify::RecursiveMode::NonRecursive)
+            {
+                log::warn!("watch-file {}: {}", path.display(), e);
+            }
+        }
 
         while let Some(res) = rx.recv().await {
             match res {
@@ -204,6 +229,47 @@ fn register_reactive_setters(ctx: &mut TulispContext, world: World) {
                     "set-reactive-apparent-va: component {id} not found"
                 ))),
             }
+        },
+    );
+}
+
+/// Register `(watch-file PATH)`. Adds PATH (resolved relative to
+/// the entry-point config's directory) to the set of files notify
+/// watches; edits to any of them trigger the same reload as edits to
+/// the entry-point config.
+///
+/// One-shot semantics: paths are collected during the initial config
+/// eval and handed to the notify watcher in `Config::watch`. New
+/// `(watch-file …)` calls during a hot-reload accumulate but won't
+/// be honoured until the process restarts.
+fn register_watches(
+    ctx: &mut TulispContext,
+    load_dir: PathBuf,
+    extra_watches: Arc<Mutex<HashSet<PathBuf>>>,
+) {
+    ctx.defun(
+        "watch-file",
+        move |path: String| -> Result<bool, Error> {
+            let p = Path::new(&path);
+            let resolved = if p.is_absolute() {
+                p.to_path_buf()
+            } else {
+                load_dir.join(p)
+            };
+            // Canonicalize so dedup works regardless of how the user
+            // wrote the path. Failing canonicalize == file doesn't
+            // exist; surface that as an error so a typo doesn't
+            // silently no-op.
+            let canonical = resolved.canonicalize().map_err(|e| {
+                Error::invalid_argument(format!(
+                    "watch-file {}: {} ({})",
+                    resolved.display(),
+                    e,
+                    "file does not exist or is unreadable"
+                ))
+            })?;
+            extra_watches.lock().insert(canonical);
+            Ok(true)
         },
     );
 }
