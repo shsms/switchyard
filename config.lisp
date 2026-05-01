@@ -69,72 +69,96 @@
 ;; -----------------------------------------------------------------------------
 ;; Per-category defaults. Each (make-*) accepts `:config <alist>`;
 ;; precedence is per-component plist > :config alist > Rust default.
-;; Symbols and strings are interchangeable for label-shaped values
-;; (`(health . ok)` ≡ `(health . "ok")`).
+;; Label-shaped values (`:health`, `:telemetry-mode`, `:command-mode`)
+;; take a quoted symbol: `(health . ok)`, not the string form.
 ;; -----------------------------------------------------------------------------
+
+(setq grid-defaults
+      '((rated-fuse-current . 100)
+        (stream-jitter-pct  . 1.0)))
+
+(setq meter-defaults
+      '((interval          . 200)
+        (stream-jitter-pct . 4.0)))
 
 (setq battery-defaults
       '((soc-protect-margin . 10.0)
         (stream-jitter-pct  . 8.0)
         (health             . ok)))
 
+(setq battery-inverter-defaults
+      '((command-delay-ms     . 1500)
+        (ramp-rate            . 5000.0)
+        (stream-jitter-pct    . 8.0)
+        (reactive-pf-limit    . 0.0)        ;; 0 = disabled
+        (reactive-apparent-va . 32000.0)))  ;; kVA-circle envelope
+
+(setq solar-inverter-defaults
+      '((ramp-rate         . 2000.0)
+        (stream-jitter-pct . 5.0)))
+
+(setq ev-charger-defaults
+      '((soc-protect-margin . 10.0)
+        (command-delay-ms   .   500)
+        (ramp-rate          . 3000.0)
+        (stream-jitter-pct  .   10.0)))
+
+(setq chp-defaults
+      '((stream-jitter-pct . 0.0)))
+
 ;; -----------------------------------------------------------------------------
 ;; Topology — nested for visual clarity. The whole graph is one
 ;; expression; reading top-to-bottom traces the grid → main meter →
-;; per-branch meters → underlying device chain.
+;; per-branch meters → underlying device chain. Each (make-*) consumes
+;; the matching :config defaults; per-component plist args override.
 ;; -----------------------------------------------------------------------------
 
 (make-grid
  :id 1
- :rated-fuse-current 100
+ :config grid-defaults
  :successors
  (list
   (make-meter
    :id 2
-   :interval 200
+   :config meter-defaults
    :successors
    (list
     ;; Battery branch: SCADA delay + slew-rate-limited ramp,
     ;; kVA-circle reactive envelope, slight per-stream jitter on both
-    ;; the inverter and the battery underneath it.
+    ;; the inverter and the battery underneath it. All from defaults.
     (make-meter
+     :config meter-defaults
      :successors
      (list (make-battery-inverter
-            :command-delay-ms     1500
-            :ramp-rate            5000.0
-            :stream-jitter-pct    8.0
-            :reactive-pf-limit    0.0      ;; 0 = disabled
-            :reactive-apparent-va 32000.0  ;; kVA-circle envelope
+            :config battery-inverter-defaults
             :successors
             (list (make-battery
                    :config      battery-defaults
-                   :initial-soc 85.0)))))
+                   :initial-soc 85.0)))))   ; per-component override
 
     ;; Solar branch.
     (make-meter
+     :config meter-defaults
      :successors
      (list (make-solar-inverter
-            :sunlight%         80.0
-            :ramp-rate         2000.0
-            :stream-jitter-pct 5.0)))
+            :config    solar-inverter-defaults
+            :sunlight% 80.0)))               ; scenario knob
 
     ;; EV branch — near-full so the SoC-protect taper is observable.
     (make-meter
-     :stream-jitter-pct 4.0
+     :config meter-defaults
      :successors
      (list (make-ev-charger
-            :initial-soc        92.0
-            :soc-upper          100.0
-            :soc-protect-margin 10.0
-            :rated-upper        22000.0
-            :command-delay-ms   500
-            :ramp-rate          3000.0
-            :stream-jitter-pct  10.0)))
+            :config       ev-charger-defaults
+            :initial-soc  92.0
+            :soc-upper   100.0
+            :rated-upper 22000.0)))
 
     ;; CHP modeled as a constant -2 kW generator on its meter.
     (make-meter
-     :power -2000.0
-     :successors (list (make-chp)))
+     :config meter-defaults
+     :power  -2000.0
+     :successors (list (make-chp :config chp-defaults)))
 
     ;; Hidden consumer meter — invisible in ListComponents / tree but
     ;; aggregated into the main meter. Driven dynamically by the
