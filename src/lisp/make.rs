@@ -59,7 +59,6 @@ AsPlist! {
         power: Option<f64> {= None},
         successors: Option<Vec<ComponentHandle>> {= None},
         hidden: Option<bool> {= None},
-        reactive_power<":reactive-power">: Option<f64> {= None},
         stream_jitter_pct<":stream-jitter-pct">: Option<f64> {= None},
         health<":health">: Option<Health> {= None},
         telemetry_mode<":telemetry-mode">: Option<TelemetryMode> {= None},
@@ -76,7 +75,6 @@ AsAlist! {
     pub struct MeterDefaults {
         interval: Option<i64> {= None},
         power: Option<f64> {= None},
-        reactive_power<"reactive-power">: Option<f64> {= None},
         stream_jitter_pct<"stream-jitter-pct">: Option<f64> {= None},
         health: Option<Health> {= None},
         telemetry_mode<"telemetry-mode">: Option<TelemetryMode> {= None},
