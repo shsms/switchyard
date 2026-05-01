@@ -49,6 +49,10 @@ function getCss(name) {
 // get destroyed in clearCharts.
 let activeCharts = null;
 
+// Cytoscape instance — module-scoped so the WS topology-changed
+// handler can refresh it without tearing the whole panel down.
+let cy = null;
+
 function buildElements(topology) {
   const visible = topology.components.filter((c) => !c.hidden);
   const nodes = visible.map((c) => ({
@@ -257,45 +261,71 @@ function openWebSocket(onTopologyChanged) {
   return ws;
 }
 
-async function init() {
-  let topology;
-  try {
-    const res = await fetch("/api/topology");
-    if (!res.ok) throw new Error("HTTP " + res.status);
-    topology = await res.json();
-  } catch (err) {
-    setStatus("error: " + err.message, "error");
-    return;
-  }
-
+function applyTopology(topology) {
   const visibleCount = topology.components.filter((c) => !c.hidden).length;
   setStatus(
     `${visibleCount} components, ${topology.connections.length} connections`,
     "connected",
   );
-
-  const cy = cytoscape({
-    container: document.getElementById("topology"),
-    elements: buildElements(topology),
-    style: cytoscapeStylesheet(),
-    layout: {
+  const elements = buildElements(topology);
+  if (!cy) {
+    cy = cytoscape({
+      container: document.getElementById("topology"),
+      elements,
+      style: cytoscapeStylesheet(),
+      layout: {
+        name: "breadthfirst",
+        directed: true,
+        padding: 30,
+        spacingFactor: 1.4,
+      },
+      wheelSensitivity: 0.2,
+    });
+    cy.on("tap", "node", (evt) => showComponent(evt.target));
+    cy.on("tap", (evt) => {
+      if (evt.target === cy) clearSide();
+    });
+  } else {
+    // Remember what the user had selected so we can re-highlight it
+    // after the rebuild — or clear the side panel if the component
+    // got removed.
+    const prevSelected = cy.$("node:selected").map((n) => n.id());
+    cy.elements().remove();
+    cy.add(elements);
+    cy.layout({
       name: "breadthfirst",
       directed: true,
       padding: 30,
       spacingFactor: 1.4,
-    },
-    wheelSensitivity: 0.2,
-  });
+    }).run();
+    if (prevSelected.length) {
+      const stillThere = prevSelected.filter((id) => cy.getElementById(id).nonempty());
+      if (stillThere.length) {
+        const node = cy.getElementById(stillThere[0]);
+        node.select();
+        showComponent(node);
+      } else {
+        clearSide();
+      }
+    }
+  }
+}
 
-  cy.on("tap", "node", (evt) => showComponent(evt.target));
-  cy.on("tap", (evt) => {
-    if (evt.target === cy) clearSide();
-  });
+async function refreshTopology() {
+  try {
+    const res = await fetch("/api/topology");
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    applyTopology(await res.json());
+  } catch (err) {
+    setStatus("error: " + err.message, "error");
+  }
+}
 
-  // For now just log topology-changed; reload-on-mutation lands when
-  // the visual editor does.
-  openWebSocket((v) => console.log("topology v" + v));
-
+async function init() {
+  await refreshTopology();
+  // WS push: refresh the topology on every TopologyChanged. Sample
+  // events go straight into the live-charts router.
+  openWebSocket((_v) => refreshTopology());
   setupRepl();
 }
 
