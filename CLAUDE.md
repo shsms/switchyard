@@ -89,10 +89,10 @@ in config.lisp). swctl points there by default; override with `--addr`.
 
 ## Lisp value adapters
 
-- `LispLabel` (`src/lisp/label.rs`) — plist / alist value that's either
-  a quoted symbol or a string. Used for `:health`, `:telemetry-mode`,
-  `:command-mode` and the `set-component-*-mode` defuns. Both forms
-  resolve to the same `&str` for `from_str` parsing.
+- Runtime mode enums (`Health`, `TelemetryMode`, `CommandMode`) take
+  their lisp-side `TryFrom<TulispObject>` + `TulispConvertible` impls
+  in `src/lisp/runtime_modes.rs`. **Symbols only** — `:health 'error`
+  works, `:health "error"` errors with a type mismatch.
 - `LispValue` (`src/lisp/value.rs`) — passthrough wrapper that lets a
   raw `TulispObject` ride through `AsPlist!` (works around the
   blanket-`From<T> for T` `Infallible` mismatch). Used for the

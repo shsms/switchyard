@@ -8,7 +8,6 @@
 
 pub mod csv_profile;
 pub mod handle;
-pub mod label;
 pub mod make;
 pub mod runtime_modes;
 pub mod value;

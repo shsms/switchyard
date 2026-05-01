@@ -8,10 +8,8 @@
 //!   4. `From<T> for TulispObject`     — required by the macros' into-lisp direction
 //!
 //! Strings are explicitly rejected — `:health 'error` works,
-//! `:health "error"` errors with a type mismatch. This is a deliberate
-//! tightening from the earlier symbol-or-string `LispLabel` pass: the
-//! enum-of-symbols form is the idiomatic Lisp shape and we prefer one
-//! correct way over two.
+//! `:health "error"` errors with a type mismatch. The symbol form is
+//! the idiomatic Lisp shape, so we prefer one correct way over two.
 
 use std::str::FromStr;
 
