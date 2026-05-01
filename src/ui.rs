@@ -9,14 +9,18 @@ use std::net::SocketAddr;
 
 use axum::{
     Json, Router,
-    extract::State,
+    extract::{Query, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
 };
-use serde::Serialize;
+use chrono::{DateTime, Duration as ChronoDuration, Utc};
+use serde::{Deserialize, Serialize};
 
-use crate::{lisp::Config, sim::Category};
+use crate::{
+    lisp::Config,
+    sim::{Category, history::Metric},
+};
 
 /// Spawn the UI HTTP server on `addr`. Returns once the listener is
 /// bound and accepting connections; the server itself runs to
@@ -36,6 +40,7 @@ fn router(config: Config) -> Router {
         .route("/", get(placeholder_index))
         .route("/api/topology", get(topology))
         .route("/api/eval", post(eval))
+        .route("/api/history", get(history))
         .with_state(config)
 }
 
@@ -138,6 +143,65 @@ async fn eval(State(config): State<Config>, body: String) -> impl IntoResponse {
                 error: Some(msg),
             }),
         ),
+    }
+}
+
+#[derive(Deserialize)]
+struct HistoryQuery {
+    /// Component id to fetch history for. Required.
+    id: u64,
+    /// Metric name (one of `History::Metric::as_str` strings).
+    /// Required.
+    metric: String,
+    /// Window length in seconds. Optional; defaults to the full
+    /// 10-minute capacity of the ring buffer.
+    window_s: Option<i64>,
+}
+
+#[derive(Serialize)]
+struct HistoryResponse {
+    id: u64,
+    metric: String,
+    /// Pairs of (timestamp_ms_since_epoch, value). The time format is
+    /// JS-ready (Date.now() shape) so chart libs can plot directly.
+    samples: Vec<(i64, f32)>,
+}
+
+async fn history(
+    State(config): State<Config>,
+    Query(q): Query<HistoryQuery>,
+) -> Result<Json<HistoryResponse>, (StatusCode, String)> {
+    let metric = parse_metric(&q.metric)
+        .ok_or_else(|| (StatusCode::BAD_REQUEST, format!("unknown metric '{}'", q.metric)))?;
+    let window = ChronoDuration::seconds(q.window_s.unwrap_or(600));
+    let since: DateTime<Utc> = Utc::now() - window;
+
+    let samples = config
+        .world()
+        .history_window(q.id, metric, since)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|s| (s.ts.timestamp_millis(), s.value))
+        .collect();
+
+    Ok(Json(HistoryResponse {
+        id: q.id,
+        metric: q.metric,
+        samples,
+    }))
+}
+
+fn parse_metric(s: &str) -> Option<Metric> {
+    match s {
+        "active_power_w" => Some(Metric::ActivePowerW),
+        "reactive_power_var" => Some(Metric::ReactivePowerVar),
+        "frequency_hz" => Some(Metric::FrequencyHz),
+        "soc_pct" => Some(Metric::SocPct),
+        "active_power_lower_bound_w" => Some(Metric::ActivePowerLowerBoundW),
+        "active_power_upper_bound_w" => Some(Metric::ActivePowerUpperBoundW),
+        "reactive_power_lower_bound_var" => Some(Metric::ReactivePowerLowerBoundVar),
+        "reactive_power_upper_bound_var" => Some(Metric::ReactivePowerUpperBoundVar),
+        _ => None,
     }
 }
 
@@ -255,6 +319,49 @@ mod tests {
         assert_eq!(parsed["ok"], false);
         assert!(parsed["value"].is_null());
         assert!(parsed["error"].as_str().unwrap().len() > 0);
+    }
+
+    #[tokio::test]
+    async fn history_endpoint_returns_recent_samples() {
+        // Build a world with a battery, then drive the sampler twice
+        // synchronously so the rings have content to query. Battery
+        // publishes soc_pct in its telemetry; that's what we query.
+        let cfg = config_with("(%make-battery :id 1000)").await;
+        let world = cfg.world();
+        let now = chrono::Utc::now();
+        world.record_history_snapshot(now - chrono::Duration::seconds(2));
+        world.record_history_snapshot(now - chrono::Duration::seconds(1));
+
+        let (status, body) = call(
+            cfg,
+            get("/api/history?id=1000&metric=soc_pct&window_s=10"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(parsed["id"], 1000);
+        assert_eq!(parsed["metric"], "soc_pct");
+        let samples = parsed["samples"].as_array().unwrap();
+        assert_eq!(samples.len(), 2);
+        // Each sample is [ts_ms, value]
+        assert!(samples[0][0].as_i64().unwrap() < samples[1][0].as_i64().unwrap());
+    }
+
+    #[tokio::test]
+    async fn history_endpoint_rejects_unknown_metric() {
+        let cfg = config_with("").await;
+        let (status, body) = call(cfg, get("/api/history?id=1&metric=foo")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(String::from_utf8_lossy(&body).contains("unknown metric"));
+    }
+
+    #[tokio::test]
+    async fn history_endpoint_returns_empty_for_unknown_component() {
+        let cfg = config_with("").await;
+        let (status, body) = call(cfg, get("/api/history?id=999&metric=active_power_w")).await;
+        assert_eq!(status, StatusCode::OK);
+        let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(parsed["samples"].as_array().unwrap().is_empty());
     }
 
     #[tokio::test]
