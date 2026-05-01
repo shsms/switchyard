@@ -36,4 +36,21 @@ pub enum WorldEvent {
         ts_ms: i64,
         value: f32,
     },
+    /// Control-app setpoint event — fires for every gRPC SetActive /
+    /// SetReactive / AugmentBounds the server processed (regardless
+    /// of accept / reject). UI inspector appends to the live list.
+    /// Field is `setpoint_kind` (not `kind`) to avoid colliding with
+    /// the parent enum's serde `tag = "kind"` discriminator.
+    Setpoint {
+        id: u64,
+        ts_ms: i64,
+        /// Lowercase token: "active_power" / "reactive_power" /
+        /// "augment_bounds".
+        setpoint_kind: &'static str,
+        value: f32,
+        accepted: bool,
+        /// Only set when `accepted == false` — the gRPC error message
+        /// the client received.
+        reason: Option<String>,
+    },
 }

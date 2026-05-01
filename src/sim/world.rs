@@ -27,7 +27,7 @@ use crate::sim::component::{ComponentHandle, FIRST_AUTO_ID, SimulatedComponent};
 use crate::sim::events::{EVENT_BUS_CAPACITY, WorldEvent};
 use crate::sim::history::{ComponentHistory, History, Metric, Sample};
 use crate::sim::runtime::{CommandMode, ComponentRuntime, Health, TelemetryMode};
-use crate::sim::setpoints::{SetpointEvent, SetpointLog};
+use crate::sim::setpoints::{SetpointEvent, SetpointKind, SetpointLog, SetpointOutcome};
 
 /// Hard cap on per-component-per-metric ring buffer length. At the
 /// fixed 1 Hz history sampling cadence (see `spawn_history_sampler`)
@@ -40,6 +40,17 @@ const HISTORY_CAPACITY: usize = 600;
 /// 10/sec on one component. 1000 entries ≈ 100 s of dense traffic
 /// or several minutes of typical use; older events evict.
 const SETPOINT_LOG_CAPACITY: usize = 1000;
+
+/// Stable lowercase tokens for the setpoint-event broadcast — same
+/// strings the JSON tag wire-format uses, so the UI doesn't need a
+/// translation table.
+fn setpoint_kind_label(k: SetpointKind) -> &'static str {
+    match k {
+        SetpointKind::ActivePower => "active_power",
+        SetpointKind::ReactivePower => "reactive_power",
+        SetpointKind::AugmentBounds => "augment_bounds",
+    }
+}
 
 /// External AC environment shared by all AC components. Mirrors
 /// microsim's `voltage-per-phase` / `ac-frequency` globals.
@@ -446,16 +457,32 @@ impl World {
             .unwrap_or_default()
     }
 
-    /// Append a setpoint event to the per-component log. Auto-creates
-    /// the ring on first push for that id; bounded to
+    /// Append a setpoint event to the per-component log + broadcast
+    /// it on the world event bus so live UI inspectors update without
+    /// a refetch. Auto-creates the ring on first push; bounded to
     /// `SETPOINT_LOG_CAPACITY` entries (oldest evict).
     pub fn log_setpoint(&self, id: u64, event: SetpointEvent) {
+        let ts_ms = event.ts.timestamp_millis();
+        let kind = setpoint_kind_label(event.kind);
+        let value = event.value;
+        let (accepted, reason) = match &event.outcome {
+            SetpointOutcome::Accepted { .. } => (true, None),
+            SetpointOutcome::Rejected { reason } => (false, Some(reason.clone())),
+        };
         self.inner
             .setpoint_logs
             .write()
             .entry(id)
             .or_insert_with(|| SetpointLog::new(SETPOINT_LOG_CAPACITY))
             .push(event);
+        let _ = self.inner.events.send(WorldEvent::Setpoint {
+            id,
+            ts_ms,
+            setpoint_kind: kind,
+            value,
+            accepted,
+            reason,
+        });
     }
 
     /// Read the recent setpoint events for one component.  Returns

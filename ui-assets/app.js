@@ -268,12 +268,18 @@ async function renderSetpoints(id, container) {
   try {
     const res = await fetch(`/api/setpoints?id=${id}&window_s=600`);
     const data = await res.json();
-    if (!data.events.length) {
-      wrap.insertAdjacentHTML("beforeend", '<p class="hint">none in the last 10 min</p>');
-      return;
-    }
+    // Always create the list element, even when empty — pushSetpoint
+    // appends to it on incoming WS events. A no-events placeholder
+    // hint sits inside the list and gets dropped once the first
+    // event lands.
     const list = document.createElement("ol");
     list.className = "sp-list";
+    if (!data.events.length) {
+      const empty = document.createElement("li");
+      empty.className = "hint sp-empty";
+      empty.textContent = "none in the last 10 min";
+      list.appendChild(empty);
+    }
     // Newest first reads better in a chronological log.
     for (const e of data.events.slice().reverse()) {
       const li = document.createElement("li");
@@ -315,6 +321,35 @@ function makePlot(container, metric, xs, ys) {
     ],
   };
   return new uPlot(opts, [xs, ys], container);
+}
+
+function pushSetpoint(ev) {
+  // Only render if the event is for the currently-inspected
+  // component; otherwise it'll be picked up next time the user
+  // selects that node (the server's per-component log is the source
+  // of truth).
+  if (!activeCharts || activeCharts.id !== Number(ev.id)) return;
+  const list = inspectEl.querySelector(".sp-list");
+  if (!list) return;
+  // Drop the "none" placeholder if it's still showing.
+  const empty = list.querySelector(".sp-empty");
+  if (empty) empty.remove();
+  const li = document.createElement("li");
+  li.className = "sp-event " + (ev.accepted ? "accepted" : "rejected");
+  const ts = new Date(ev.ts_ms).toLocaleTimeString();
+  // The WS event carries the setpoint kind on `setpoint_kind` to
+  // dodge collision with the WorldEvent discriminator (also called
+  // `kind`).
+  const tag = ev.setpoint_kind.replace("_", " ");
+  const head = `<span class="sp-ts">${ts}</span> <span class="sp-tag">${tag}</span> <span class="sp-val">${ev.value}</span>`;
+  const body = ev.accepted
+    ? '<span class="sp-ok">✓ accepted</span>'
+    : `<span class="sp-bad">✕ ${escapeHtml(ev.reason || "")}</span>`;
+  li.innerHTML = `${head}<br/>${body}`;
+  list.prepend(li);
+  // Trim if the list is getting long — match the 600s window used
+  // by the initial fetch.
+  while (list.children.length > 100) list.removeChild(list.lastChild);
 }
 
 function pushSample(id, metric, ts_ms, value) {
@@ -515,6 +550,8 @@ function openWebSocket(onTopologyChanged) {
       pushSample(ev.id, ev.metric, ev.ts_ms, ev.value);
     } else if (ev.kind === "topology_changed") {
       onTopologyChanged(ev.version);
+    } else if (ev.kind === "setpoint") {
+      pushSetpoint(ev);
     }
   };
   ws.onclose = () => setStatus("disconnected", "error");
