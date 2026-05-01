@@ -227,21 +227,39 @@ use tulisp::{AsPlist, Plist, TulispContext};
 AsPlist! {
     pub struct BatteryInverterArgs {
         id: Option<i64> {= None},
-        interval_ms<":interval">: Option<i64> {= None},
-        config: Option<TulispObject> {= None},
-        successors: Vec<ComponentHandle> {= Vec::new()},
+        interval: Option<i64> {= None},
+        successors: Option<Vec<ComponentHandle>> {= None},
         command_delay_ms<":command-delay-ms">: Option<i64> {= None},
-        ramp_rate_w_per_s<":ramp-rate">: Option<f64> {= None},
+        ramp_rate<":ramp-rate">: Option<f64> {= None},
+        // …
+        config<":config">: Option<LispValue> {= None},
+    }
+}
+
+AsAlist! {
+    /// Per-category defaults for `(make-battery-inverter)`.
+    #[derive(Default)]
+    pub struct BatteryInverterDefaults {
+        interval: Option<i64> {= None},
+        command_delay_ms<"command-delay-ms">: Option<i64> {= None},
+        ramp_rate<"ramp-rate">: Option<f64> {= None},
+        // …
     }
 }
 
 pub fn register(ctx: &mut TulispContext, world: World) {
     let w = world.clone();
-    ctx.defun("make-battery-inverter", move |args: Plist<BatteryInverterArgs>| {
-        let inv = BatteryInverter::new(&w, args.into_inner())?;
-        Ok::<_, Error>(ComponentHandle::new(inv))   // → Shared<dyn TulispAny>
-    });
-    // …
+    ctx.defun(
+        "make-battery-inverter",
+        move |ctx: &mut TulispContext, args: Plist<BatteryInverterArgs>| {
+            let a = args.into_inner();
+            let d = parse_defaults::<BatteryInverterDefaults>(ctx, a.config.as_ref())?;
+            // a.field.or(d.field).unwrap_or(rust_default) for every config field
+            let interval = ms_to_duration(a.interval.or(d.interval), 1000);
+            // …
+            Ok::<_, Error>(ComponentHandle::new(/* … */))
+        },
+    );
 }
 ```
 
@@ -408,7 +426,11 @@ Both have: hot-reload via `notify`; gRPC `Microgrid` v1alpha18 surface
 (Get / List / Stream / SetPower / AugmentBounds); `TimeoutTracker`
 resetting stale set-points; anchored telemetry timestamps with no
 per-iteration drift; `(every)` / `(run-with-timer)` for environment
-scripting; config-driven topology assembly.
+scripting; config-driven topology assembly; per-category defaults
+via `:config '((key . value) …)` with three-layer precedence
+(per-component plist > category alist > Rust struct default), label
+args (`:health`, `:telemetry-mode`, `:command-mode`) accepting either
+a quoted symbol or a string.
 
 ## Backlog
 

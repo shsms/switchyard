@@ -81,7 +81,22 @@ in config.lisp). swctl points there by default; override with `--addr`.
 2. Add to `src/sim/mod.rs` re-exports.
 3. Add a `make-foo` defun in `src/lisp/make.rs` with `AsPlist!`-derived args,
    calling `world.register(...)`.
-4. (Optional) Override `subtype()` if proto needs `InverterType::Foo` / etc.
+4. Mirror the args struct as a sibling `AsAlist!`-derived `FooDefaults`
+   (without `id` / `successors` / other per-component fields). Take the
+   alist via `:config<Option<LispValue>>` on the args struct and merge
+   in the defun with `a.field.or(d.field)` (helper: `parse_defaults`).
+5. (Optional) Override `subtype()` if proto needs `InverterType::Foo` / etc.
+
+## Lisp value adapters
+
+- `LispLabel` (`src/lisp/label.rs`) — plist / alist value that's either
+  a quoted symbol or a string. Used for `:health`, `:telemetry-mode`,
+  `:command-mode` and the `set-component-*-mode` defuns. Both forms
+  resolve to the same `&str` for `from_str` parsing.
+- `LispValue` (`src/lisp/value.rs`) — passthrough wrapper that lets a
+  raw `TulispObject` ride through `AsPlist!` (works around the
+  blanket-`From<T> for T` `Infallible` mismatch). Used for the
+  `:config <alist>` per-category defaults plumbing.
 
 ## Lisp gotchas (current tulisp-vm)
 
