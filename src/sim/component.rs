@@ -79,32 +79,98 @@ pub struct Telemetry {
     pub cable_state: Option<&'static str>,
 }
 
-/// The single trait every simulated component implements. See PLAN.md
-/// for the rationale; the short version is "everything you need to
-/// schedule, control, and observe a component".
+/// The single trait every simulated component implements.
+///
+/// Reading order:
+///   - **Identity**: id, category, name, subtype, is_hidden.
+///   - **Lifecycle**: stream_interval, stream_jitter_pct, tick, telemetry.
+///   - **Setpoints**: set_active_setpoint, set_reactive_setpoint,
+///     reset_setpoint, augment_active_bounds, set_active_power_override.
+///   - **Bounds**: rated_active_bounds, effective_active_bounds,
+///     reactive_bounds, rated_fuse_current.
+///   - **Aggregation** (parent → child): aggregate_power_w,
+///     aggregate_reactive_var.
+///   - **Inverter ↔ child wiring**: set_dc_power, set_dc_active_reactive.
+///   - **Runtime knobs**: set_reactive_pf_limit, set_reactive_apparent_va.
+///
+/// Every method except the four required ones (`id`, `category`,
+/// `name`, `stream_interval`, `tick`, `telemetry`) has a sane default
+/// — components implement only the surface they need.
 pub trait SimulatedComponent: Send + Sync + fmt::Display {
+    // ── identity ─────────────────────────────────────────────────────
+
     fn id(&self) -> u64;
     fn category(&self) -> Category;
     fn name(&self) -> &str;
 
-    /// Telemetry stream interval requested by the component. The world
-    /// scheduler may sample more often, but gRPC streams use this.
+    /// Free-form subtype label (e.g. `"solar"`, `"li-ion"`, `"ac"`).
+    /// Drives the `InverterType` / `BatteryType` / `EvChargerType`
+    /// proto enums in `make_component_proto`. Free-form so the trait
+    /// doesn't depend on proto types — `proto_conv` matches on known
+    /// strings and falls back to "unspecified".
+    fn subtype(&self) -> Option<&'static str> {
+        None
+    }
+
+    /// Hidden components are still registered (so a parent meter can
+    /// look them up and aggregate their power) but excluded from the
+    /// gRPC `ListElectricalComponents` / `ListConnections` responses
+    /// and from `swctl tree`. Used for synthetic load / generator
+    /// meters that should appear as a power flow without being a
+    /// discrete addressable component.
+    fn is_hidden(&self) -> bool {
+        false
+    }
+
+    // ── lifecycle ────────────────────────────────────────────────────
+
+    /// Telemetry stream interval requested by the component. The
+    /// physics tick may run more often; gRPC streams sample at this
+    /// cadence (subject to `stream_jitter_pct`).
     fn stream_interval(&self) -> Duration;
 
-    /// Advance internal state by `dt`. Called from `World::tick`.
+    /// Per-emit jitter applied to the stream interval, in percent
+    /// (0..100). Each subscriber's task picks a uniform random
+    /// multiplier in `1.0 ± pct/100` for every sleep so multi-stream
+    /// clients see streams drifting independently. Default 0.
+    fn stream_jitter_pct(&self) -> f32 {
+        0.0
+    }
+
+    /// Advance internal state by `dt`. Called once per physics tick
+    /// from `World::tick_once` in registration order (children before
+    /// parents). Components that aggregate from successors read them
+    /// here via `world.get(child_id)`.
     fn tick(&self, world: &World, now: DateTime<Utc>, dt: Duration);
 
-    /// Snapshot current observable state.
+    /// Snapshot the component's observable state for streaming. Pure
+    /// — should not mutate. `world` is for components that read AC
+    /// environment (per-phase voltage, frequency) at sample time.
     fn telemetry(&self, world: &World) -> Telemetry;
 
+    // ── setpoints (control surface) ──────────────────────────────────
+
+    /// Apply an active-power setpoint. Default returns `Unsupported`
+    /// for components that don't accept commands (Battery, Meter,
+    /// Grid, …).
     fn set_active_setpoint(&self, _power_w: f32) -> Result<(), SetpointError> {
         Err(SetpointError::Unsupported)
     }
+
+    /// Apply a reactive-power setpoint. Default returns `Unsupported`.
     fn set_reactive_setpoint(&self, _vars: f32) -> Result<(), SetpointError> {
         Err(SetpointError::Unsupported)
     }
+
+    /// Clear any pending / armed setpoint and snap back to the
+    /// component's idle value (0 for inverters, sunlight-driven
+    /// power for solar). Called by the `TimeoutTracker` when a
+    /// SetPower request lifetime elapses without a refresh.
     fn reset_setpoint(&self) {}
 
+    /// Add a time-limited active-power bounds augmentation, narrowing
+    /// the rated envelope. Backs the `AugmentElectricalComponentBounds`
+    /// gRPC method.
     fn augment_active_bounds(
         &self,
         _create_ts: DateTime<Utc>,
@@ -113,52 +179,23 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
     ) {
     }
 
-    /// Total real power flowing at this component, used by parents
-    /// (meters, inverters) to aggregate their successors. The `world`
-    /// argument is for components that need to recurse into their own
-    /// children (a nested meter sums its inverter, which sums its
-    /// batteries). Pure-leaf components ignore it.
-    fn aggregate_power_w(&self, _world: &World) -> f32 {
-        0.0
-    }
-
-    /// Push DC power onto a child component (used by inverters to
-    /// drive their batteries). Default no-op so non-DC components
-    /// silently ignore the call.
-    fn set_dc_power(&self, _p: f32) {}
-
-    /// Override the AC-side active power this component reports.
-    /// Used by `(set-meter-power id W)` to drive a Lisp- or CSV-
-    /// computed consumer load curve into a Meter from a timer
-    /// callback. Default no-op — components that don't model
-    /// consumer-style loads silently ignore the call.
+    /// Override the active-power value a meter publishes. Used by
+    /// `(set-meter-power id W)` to drive a Lisp- or CSV-computed
+    /// consumer load curve from a timer callback. Default no-op.
     fn set_active_power_override(&self, _p: f32) {}
 
-    /// Like `set_dc_power`, but conveys both active and reactive so
-    /// the child can report apparent-power loading on its DC side.
-    /// Default forwards the active component to `set_dc_power` and
-    /// drops Q — keeps non-battery components working unchanged.
-    fn set_dc_active_reactive(&self, p: f32, _q: f32) {
-        self.set_dc_power(p);
-    }
+    // ── bounds telemetry ─────────────────────────────────────────────
 
-    /// Aggregate reactive power flowing through this component
-    /// (used by parent inverters to read back what their children
-    /// accepted, and by meters to sum their successors). Default 0 for
-    /// components that don't carry Q.
-    fn aggregate_reactive_var(&self, _world: &World) -> f32 {
-        0.0
-    }
-
-    /// Static rated active-power bounds (W), if applicable. Used by
+    /// Static rated active-power bounds (W). Used by
     /// `ListElectricalComponents` to populate `metric_config_bounds`.
+    /// Doesn't change at runtime.
     fn rated_active_bounds(&self) -> Option<(f32, f32)> {
         None
     }
 
-    /// Current effective active-power bounds (W) — for batteries this
-    /// is DC, for inverters AC. Differs from `rated_active_bounds` when
-    /// the component derates dynamically (SoC-protective ramp on a
+    /// Current effective active-power envelope (W) — for batteries
+    /// this is DC, for inverters AC. Differs from rated when the
+    /// component derates dynamically (SoC-protective ramp on a
     /// battery, augmentations on an inverter). Default falls through
     /// to `rated_active_bounds` so simple components get the obvious
     /// behaviour for free.
@@ -167,54 +204,56 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
             .map(|(l, u)| VecBounds::single(l, u))
     }
 
+    /// Current `(lower, upper)` reactive-power envelope at the
+    /// component's current P. `None` for components that don't model
+    /// reactive power.
+    fn reactive_bounds(&self) -> Option<(f32, f32)> {
+        None
+    }
+
     /// Rated fuse current at the grid connection point.
     fn rated_fuse_current(&self) -> Option<u32> {
         None
     }
 
-    /// Subtype label, used by `make_component_proto` to drive the
-    /// proto-level enums (e.g. `InverterType`, `BatteryType`,
-    /// `EvChargerType`). Free-form so the trait doesn't depend on
-    /// proto types — `proto_conv` matches on known strings and falls
-    /// back to "unspecified".
-    fn subtype(&self) -> Option<&'static str> {
-        None
-    }
+    // ── aggregation (parent reads from child) ────────────────────────
 
-    /// Hidden components are still registered (so a parent meter can
-    /// look them up and aggregate their power) but excluded from the
-    /// gRPC `ListElectricalComponents` / `ListConnections` responses
-    /// and from any topology display. Used for synthetic load /
-    /// generator meters that should appear as a "consumer" power flow
-    /// to clients without showing up as discrete components.
-    fn is_hidden(&self) -> bool {
-        false
-    }
-
-    /// Per-emit jitter applied to the stream interval, in percent
-    /// (0..100). The server picks a uniform random multiplier in
-    /// `1.0 ± pct/100` for every sleep so multi-component streams do
-    /// not lock-step. Default 0 keeps behaviour deterministic.
-    fn stream_jitter_pct(&self) -> f32 {
+    /// Total real power flowing at this component. Parents (meters,
+    /// inverters) sum this across their successors. `world` lets
+    /// nesting components recurse — a nested meter calls into its
+    /// inverter, which reads from its batteries.
+    fn aggregate_power_w(&self, _world: &World) -> f32 {
         0.0
     }
 
-    /// Current `(lower, upper)` reactive-power envelope, derived from
-    /// the component's reactive capability and its current active P.
-    /// `None` for components that don't model reactive power.
-    fn reactive_bounds(&self) -> Option<(f32, f32)> {
-        None
+    /// Total reactive power flowing at this component.
+    fn aggregate_reactive_var(&self, _world: &World) -> f32 {
+        0.0
     }
 
+    // ── inverter → child push (DC bus) ───────────────────────────────
+
+    /// Push DC active power onto a child. Inverters call this on each
+    /// of their batteries every tick. Default no-op.
+    fn set_dc_power(&self, _p: f32) {}
+
+    /// Like `set_dc_power`, but conveys both active and reactive so
+    /// the child can model apparent-power loading on its DC side.
+    /// Default forwards `p` to `set_dc_power` and drops `q`.
+    fn set_dc_active_reactive(&self, p: f32, _q: f32) {
+        self.set_dc_power(p);
+    }
+
+    // ── runtime reactive-capability knobs ────────────────────────────
+
     /// Replace the PF cap on the reactive envelope at runtime.
-    /// `None` disables the PF constraint (kVA cap or unrestricted
-    /// take over). Mirrors the SunSpec / IEEE 1547-2018 PF setpoint
-    /// surface a real EMS pushes via Modbus. Default no-op for
-    /// components that don't model reactive power.
+    /// `None` disables the PF constraint. Mirrors the SunSpec /
+    /// IEEE 1547-2018 PF setpoint surface a real EMS pushes via
+    /// Modbus.
     fn set_reactive_pf_limit(&self, _pf: Option<f32>) {}
 
     /// Replace the apparent-power (kVA) cap on the reactive envelope
-    /// at runtime. `None` disables the kVA constraint. Default no-op.
+    /// at runtime. `None` disables the kVA constraint.
     fn set_reactive_apparent_va(&self, _va: Option<f32>) {}
 }
 
