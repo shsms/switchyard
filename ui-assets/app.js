@@ -605,20 +605,43 @@ async function showPendingDialog() {
 async function renderPendingDialog(content) {
   try {
     const data = await (await fetch("/api/pending")).json();
-    if (!data.entries.length) {
-      content.innerHTML = '<p class="hint">no pending changes</p>';
+    const sections = [];
+    if (data.persisted && data.persisted.length) {
+      const rows = data.persisted
+        .map((o) => {
+          const cls = o.marked_removal
+            ? "pending-entry persisted marked-removal"
+            : "pending-entry persisted";
+          const action = o.marked_removal
+            ? `<button class="link-btn persisted-restore" data-idx="${o.idx}" title="Undo removal">⟲</button>`
+            : `<button class="link-btn persisted-del" data-idx="${o.idx}" title="Mark for removal on next persist">✕</button>`;
+          return `<div class="${cls}">
+            <div class="pending-num">#${o.idx + 1}</div>
+            <pre>${escapeHtml(o.source)}</pre>
+            ${action}
+          </div>`;
+        })
+        .join("");
+      sections.push(`<h3>On disk</h3>${rows}`);
+    }
+    if (data.entries.length) {
+      const rows = data.entries
+        .map(
+          (e, i) =>
+            `<div class="pending-entry">
+              <div class="pending-num">#${i + 1}</div>
+              <pre>${escapeHtml(e.source)}</pre>
+              <button class="link-btn pending-del" data-id="${e.id}" title="Remove this edit">✕</button>
+            </div>`,
+        )
+        .join("");
+      sections.push(`<h3>Unsaved</h3>${rows}`);
+    }
+    if (!sections.length) {
+      content.innerHTML = '<p class="hint">no active overrides</p>';
       return;
     }
-    content.innerHTML = data.entries
-      .map(
-        (e, i) =>
-          `<div class="pending-entry">
-            <div class="pending-num">#${i + 1}</div>
-            <pre>${escapeHtml(e.source)}</pre>
-            <button class="link-btn pending-del" data-id="${e.id}" title="Remove this edit">✕</button>
-          </div>`,
-      )
-      .join("");
+    content.innerHTML = sections.join("");
     for (const btn of content.querySelectorAll(".pending-del")) {
       btn.addEventListener("click", async () => {
         const id = btn.dataset.id;
@@ -629,6 +652,28 @@ async function renderPendingDialog(content) {
           await renderPendingDialog(content);
         } else {
           alert(`Remove failed: ${res.status} ${await res.text()}`);
+        }
+      });
+    }
+    for (const btn of content.querySelectorAll(".persisted-del")) {
+      btn.addEventListener("click", async () => {
+        const idx = btn.dataset.idx;
+        const res = await fetch(`/api/persisted/${idx}`, { method: "DELETE" });
+        if (res.ok) {
+          await renderPendingDialog(content);
+        } else {
+          alert(`Mark failed: ${res.status} ${await res.text()}`);
+        }
+      });
+    }
+    for (const btn of content.querySelectorAll(".persisted-restore")) {
+      btn.addEventListener("click", async () => {
+        const idx = btn.dataset.idx;
+        const res = await fetch(`/api/persisted/${idx}`, { method: "POST" });
+        if (res.ok) {
+          await renderPendingDialog(content);
+        } else {
+          alert(`Restore failed: ${res.status} ${await res.text()}`);
         }
       });
     }
@@ -662,15 +707,17 @@ function setupPersistControls() {
       const res = await fetch("/api/pending");
       const data = await res.json();
       const pending = data.entries.length;
-      const persisted = data.persisted_count || 0;
-      const total = pending + persisted;
+      const persisted = data.persisted || [];
+      const removals = persisted.filter((o) => o.marked_removal).length;
+      const total = pending + persisted.length;
+      const unsaved = pending > 0 || removals > 0;
       // Pill shows total override count + a `*` (editor-style
       // modified marker) when any are unsaved. Hidden when neither.
       count.textContent = total;
-      dirty.textContent = pending > 0 ? "*" : "";
+      dirty.textContent = unsaved ? "*" : "";
       pill.hidden = total === 0;
-      persistBtn.disabled = pending === 0;
-      discardBtn.disabled = pending === 0;
+      persistBtn.disabled = !unsaved;
+      discardBtn.disabled = !unsaved;
     } catch (_) {
       // Best-effort — server unreachable just leaves last known state.
     }
