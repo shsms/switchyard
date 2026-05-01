@@ -67,6 +67,18 @@
 ;;                                (csv-lookup csv-data "office" rel))))))
 
 ;; -----------------------------------------------------------------------------
+;; Per-category defaults. Each (make-*) accepts `:config <alist>`;
+;; precedence is per-component plist > :config alist > Rust default.
+;; Symbols and strings are interchangeable for label-shaped values
+;; (`(health . ok)` ≡ `(health . "ok")`).
+;; -----------------------------------------------------------------------------
+
+(setq battery-defaults
+      '((soc-protect-margin . 10.0)
+        (stream-jitter-pct  . 8.0)
+        (health             . ok)))
+
+;; -----------------------------------------------------------------------------
 ;; Topology — nested for visual clarity. The whole graph is one
 ;; expression; reading top-to-bottom traces the grid → main meter →
 ;; per-branch meters → underlying device chain.
@@ -95,9 +107,8 @@
             :reactive-apparent-va 32000.0  ;; kVA-circle envelope
             :successors
             (list (make-battery
-                   :initial-soc        85.0
-                   :soc-protect-margin 10.0
-                   :stream-jitter-pct  8.0)))))
+                   :config      battery-defaults
+                   :initial-soc 85.0)))))
 
     ;; Solar branch.
     (make-meter
