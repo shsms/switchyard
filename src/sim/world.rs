@@ -28,6 +28,7 @@ use crate::sim::events::{EVENT_BUS_CAPACITY, WorldEvent};
 use crate::sim::history::{ComponentHistory, History, Metric, Sample};
 use crate::sim::runtime::{CommandMode, ComponentRuntime, Health, TelemetryMode};
 use crate::sim::setpoints::{SetpointEvent, SetpointKind, SetpointLog, SetpointOutcome};
+use crate::timeout_tracker::TimeoutTracker;
 
 /// Hard cap on per-component-per-metric ring buffer length. At the
 /// fixed 1 Hz history sampling cadence (see `spawn_history_sampler`)
@@ -109,6 +110,13 @@ struct WorldInner {
     /// Broadcast bus for live UI subscribers. Senders are cheap to
     /// clone; receivers are obtained via `subscribe_events`.
     events: broadcast::Sender<WorldEvent>,
+    /// Per-component setpoint expiry deadlines. Both the gRPC
+    /// `SetElectricalComponentPower` handler and the `(set-power …)`
+    /// Lisp defun add to this; a single tokio task in
+    /// `Config::start_timeout_loop` polls for expirations and calls
+    /// `reset_setpoint` on each. Living on World means the loop runs
+    /// once per process regardless of which call sites schedule.
+    timeout_tracker: TimeoutTracker,
 }
 
 impl World {
@@ -127,8 +135,23 @@ impl World {
                 setpoint_logs: RwLock::new(HashMap::new()),
                 version: AtomicU64::new(0),
                 events: broadcast::channel(EVENT_BUS_CAPACITY).0,
+                timeout_tracker: TimeoutTracker::new(),
             }),
         }
+    }
+
+    /// Schedule a setpoint expiry for `id` at `now + lifetime`.
+    /// Replaces any previously-scheduled deadline for that id —
+    /// "latest set wins" semantics, matching microsim's behavior.
+    pub fn add_timeout(&self, id: u64, lifetime: Duration) {
+        self.inner.timeout_tracker.add(id, lifetime);
+    }
+
+    /// Drain any deadlines that have elapsed and return their ids.
+    /// Called by `Config`'s timeout loop, which then calls
+    /// `reset_setpoint` on each.
+    pub fn drain_expired_timeouts(&self) -> Vec<u64> {
+        self.inner.timeout_tracker.remove_expired()
     }
 
     pub fn version(&self) -> u64 {

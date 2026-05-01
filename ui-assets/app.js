@@ -1385,6 +1385,7 @@ const COMPLETIONS = [
   "set-component-health",
   "set-component-telemetry-mode",
   "set-component-command-mode",
+  "set-active-power",
   "set-meter-power",
   "set-solar-sunlight",
   "set-reactive-pf-limit",

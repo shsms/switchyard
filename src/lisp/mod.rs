@@ -148,6 +148,13 @@ impl Config {
         // TokioExecutor::new captures Handle::current().
         tulisp_async::register(&mut ctx, Arc::new(tulisp_async::TokioExecutor::new()));
 
+        // One-per-process loop that walks World's TimeoutTracker and
+        // calls reset_setpoint on each elapsed entry. Both gRPC's
+        // SetElectricalComponentPower and the Lisp `(set-active-power …)`
+        // defun add to the tracker; this loop is what makes their
+        // request-lifetime semantics visible.
+        Self::start_timeout_loop(world.clone());
+
         if let Err(e) = ctx.eval_file(filename) {
             log::error!("Tulisp error:\n{}", e.format(&ctx));
         }
@@ -162,6 +169,20 @@ impl Config {
             next_pending_id: Arc::new(std::sync::atomic::AtomicU64::new(1)),
             pending_removals: Arc::new(Mutex::new(HashSet::new())),
         }
+    }
+
+    fn start_timeout_loop(world: World) {
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                for id in world.drain_expired_timeouts() {
+                    log::info!("Request timeout for component {id} — resetting setpoint");
+                    if let Some(c) = world.get(id) {
+                        c.reset_setpoint();
+                    }
+                }
+            }
+        });
     }
 
     pub fn metadata(&self) -> Metadata {
@@ -624,14 +645,48 @@ fn register_runtime(ctx: &mut TulispContext, world: &World, metadata: Arc<RwLock
     make::register(ctx, world.clone());
     register_reset(ctx, world.clone());
     register_grid_state(ctx, world.clone());
-    register_metadata(ctx, metadata);
+    register_metadata(ctx, metadata.clone());
     register_runtime_modes(ctx, world.clone());
     register_load_drivers(ctx, world.clone());
     register_time_helpers(ctx);
     register_reactive_setters(ctx, world.clone());
+    register_setpoints(ctx, world.clone(), metadata);
     register_world_ops(ctx, world.clone());
     register_fs_helpers(ctx);
     csv_profile::register(ctx);
+}
+
+/// `(set-active-power ID WATTS &OPTIONAL LIFETIME-MS)` — apply an
+/// active-power setpoint and arm a request-lifetime timeout, mirroring
+/// what gRPC's `SetElectricalComponentPower` does. Returns `t` on
+/// success; signals an error if the component doesn't exist or
+/// rejects the setpoint (e.g. out-of-bounds, unsupported kind).
+///
+/// `LIFETIME-MS` is the duration after which the setpoint snaps back
+/// to idle. Omitting it falls back to `default-request-lifetime-ms`,
+/// matching the gRPC behaviour. The reset fires from the loop in
+/// `Config::start_timeout_loop`.
+fn register_setpoints(
+    ctx: &mut TulispContext,
+    world: World,
+    metadata: Arc<RwLock<Metadata>>,
+) {
+    ctx.defun(
+        "set-active-power",
+        move |id: i64, watts: f64, lifetime_ms: Option<i64>| -> Result<bool, Error> {
+            let component = world.get(id as u64).ok_or_else(|| {
+                Error::invalid_argument(format!("set-active-power: component {id} not found"))
+            })?;
+            component
+                .set_active_setpoint(watts as f32)
+                .map_err(|e| Error::invalid_argument(format!("set-active-power: {e}")))?;
+            let lifetime = lifetime_ms
+                .map(|ms| Duration::from_millis(ms.max(0) as u64))
+                .unwrap_or_else(|| metadata.read().default_request_lifetime);
+            world.add_timeout(id as u64, lifetime);
+            Ok(true)
+        },
+    );
 }
 
 /// Mutation defuns the UI editor (and power-user REPL) call to
@@ -983,6 +1038,45 @@ mod tests {
         // tulisp-async spawned during init.
         std::mem::forget(rt);
         (cfg, dir)
+    }
+
+    /// set-active-power applies a setpoint and arms the timeout tracker.
+    /// We can verify both by checking that World registers a deadline
+    /// for the targeted component after the call.
+    #[test]
+    fn set_active_power_applies_setpoint_and_arms_timeout() {
+        let (cfg, _dir) = config_with(
+            "(set-microgrid-id 9)
+             (setq b1 (%make-battery :id 1 :rated-lower -5000.0 :rated-upper 5000.0))
+             (%make-battery-inverter :id 2 :rated-lower -5000.0 :rated-upper 5000.0
+                                       :successors (list b1))",
+        );
+        // 30-second lifetime — applies the setpoint and arms the
+        // tracker; nothing should be expired yet.
+        cfg.eval("(set-active-power 2 1500.0 30000)").unwrap();
+        assert_eq!(cfg.world().drain_expired_timeouts(), Vec::<u64>::new());
+        // Lifetime 0 → instantly elapses; the next drain returns id.
+        cfg.eval("(set-active-power 2 1500.0 0)").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        assert_eq!(cfg.world().drain_expired_timeouts(), vec![2]);
+    }
+
+    /// set-active-power on an unknown id surfaces an error, and a setpoint
+    /// rejected by the component (e.g. unsupported kind on a meter)
+    /// also propagates rather than silently no-op'ing.
+    #[test]
+    fn set_active_power_rejects_unknown_or_unsupported() {
+        let (cfg, _dir) = config_with(
+            "(set-microgrid-id 9)
+             (%make-meter :id 1)",
+        );
+        let res = cfg.eval("(set-active-power 999 1500.0)");
+        assert!(res.is_err(), "expected error, got {res:?}");
+        assert!(res.unwrap_err().contains("999"));
+        // Meter doesn't support active setpoints — set_active_setpoint
+        // returns Unsupported, which we surface as a Lisp error.
+        let res = cfg.eval("(set-active-power 1 1500.0)");
+        assert!(res.is_err(), "expected error, got {res:?}");
     }
 
     /// remove_pending must keep the surviving entries' ids stable.

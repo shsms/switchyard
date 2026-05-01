@@ -32,37 +32,14 @@ use crate::proto_conv::{make_component_proto, telemetry_to_proto};
 use crate::sim::runtime::{CommandMode, Health, TelemetryMode};
 use crate::sim::setpoints::{SetpointEvent, SetpointKind, SetpointOutcome};
 use crate::sim::{SetpointError, bounds::VecBounds};
-use crate::timeout_tracker::TimeoutTracker;
 
 pub struct MicrogridServer {
     pub config: Config,
-    timeout_tracker: TimeoutTracker,
 }
 
 impl MicrogridServer {
     pub fn new(config: Config) -> Self {
-        let me = Self {
-            config,
-            timeout_tracker: TimeoutTracker::new(),
-        };
-        me.start_timeout_tracker();
-        me
-    }
-
-    fn start_timeout_tracker(&self) {
-        let tt = self.timeout_tracker.clone();
-        let world = self.config.world();
-        tokio::spawn(async move {
-            loop {
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                for id in tt.remove_expired() {
-                    log::info!("Request timeout for component {id} — resetting setpoint");
-                    if let Some(c) = world.get(id) {
-                        c.reset_setpoint();
-                    }
-                }
-            }
-        });
+        Self { config }
     }
 
     /// The body of `set_electrical_component_power` minus the
@@ -149,8 +126,7 @@ impl MicrogridServer {
         } else {
             self.config.metadata().default_request_lifetime
         };
-        self.timeout_tracker
-            .add(req.electrical_component_id, duration);
+        world.add_timeout(req.electrical_component_id, duration);
 
         let (tx, rx) = tokio::sync::mpsc::channel(1);
         tokio::spawn(async move {
