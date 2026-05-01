@@ -77,6 +77,12 @@ pub struct Config {
     /// the UI can use the id as a stable handle for "delete entry N"
     /// without worrying about reuse.
     next_pending_id: Arc<std::sync::atomic::AtomicU64>,
+    /// Indices into the on-disk override file that the user has
+    /// marked × on but hasn't persisted yet. On the next persist
+    /// the file is rewritten without those forms; on discard the
+    /// set is cleared. Indices are file-position-stable until the
+    /// next persist (which renumbers everything).
+    pending_removals: Arc<Mutex<HashSet<usize>>>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -154,6 +160,7 @@ impl Config {
             extra_watches,
             pending_log: Arc::new(Mutex::new(Vec::new())),
             next_pending_id: Arc::new(std::sync::atomic::AtomicU64::new(1)),
+            pending_removals: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -266,6 +273,27 @@ impl Config {
         self.persisted_overrides().len()
     }
 
+    /// Snapshot of indices the user has marked × on but hasn't
+    /// persisted yet. Indices match `persisted_overrides()` until
+    /// the next persist rewrites the file.
+    pub fn pending_removals(&self) -> HashSet<usize> {
+        self.pending_removals.lock().clone()
+    }
+
+    /// Mark a persisted-override index for removal on the next
+    /// persist. Idempotent — re-marking the same idx is a no-op.
+    /// Bumps World::version so the chrome's pill/dialog refresh.
+    pub fn mark_persisted_for_removal(&self, idx: usize) {
+        self.pending_removals.lock().insert(idx);
+        self.world.bump_version();
+    }
+
+    /// Undo a pending × on a persisted override. Idempotent.
+    pub fn unmark_persisted_for_removal(&self, idx: usize) {
+        self.pending_removals.lock().remove(&idx);
+        self.world.bump_version();
+    }
+
     /// Drop one pending entry by id and re-derive World state by
     /// reloading config.lisp + the override file, then re-evalling
     /// every remaining pending entry in order. Side effect: per-tick
@@ -311,52 +339,76 @@ impl Config {
         true
     }
 
-    /// Append the pending log to `config.ui-overrides.<microgrid-id>
-    /// .lisp` (creating the file if needed) and clear those entries
-    /// from the in-memory log. Each persist batch is preceded by an
-    /// ISO-8601 timestamp comment. No-op when the log is empty.
+    /// Rewrite `config.ui-overrides.<microgrid-id>.lisp` to reflect
+    /// the desired post-persist state: the on-disk forms minus any
+    /// indices the user × marked, plus the in-memory pending log.
+    /// Both queues clear on success. No-op when both are empty.
     ///
-    /// Snapshots the entries first, writes + flushes the file, and
-    /// only then removes the persisted ids from the log. An IO
-    /// failure (permission denied, disk full, parent dir gone)
-    /// returns the error with the pending entries still in memory —
-    /// the user can retry. A concurrent push during the write
-    /// survives because we remove by id, not by clearing the log.
+    /// Atomicity: writes to a sibling `.tmp` then renames over the
+    /// target. An IO failure (permission denied, disk full, parent
+    /// dir gone) returns the error with the pending log + removal
+    /// markers still intact — the user can retry. A concurrent push
+    /// to the pending log during the write survives because we
+    /// remove by id afterwards rather than clearing.
+    ///
+    /// `persisted` in the result counts the rewritten file's form
+    /// total (kept on-disk + newly-flushed pending), which is what
+    /// the UI's "N overrides" pill wants to land on.
     pub fn persist_pending(&self) -> std::io::Result<PersistResult> {
         let path = self.overrides_path();
         let entries: Vec<PendingEntry> = self.pending_log.lock().clone();
-        if entries.is_empty() {
+        let removals = self.pending_removals.lock().clone();
+        if entries.is_empty() && removals.is_empty() {
             return Ok(PersistResult {
-                persisted: 0,
+                persisted: self.persisted_count(),
                 path: path.to_string_lossy().into_owned(),
             });
         }
-        let mut file = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)?;
-        writeln!(file, "\n;; ── {} ──", Utc::now().to_rfc3339())?;
-        for entry in &entries {
-            writeln!(file, "{}", entry.source)?;
+        let kept: Vec<String> = self
+            .persisted_overrides()
+            .into_iter()
+            .filter(|o| !removals.contains(&o.idx))
+            .map(|o| o.source)
+            .collect();
+        let total = kept.len() + entries.len();
+        let tmp = path.with_extension("lisp.tmp");
+        {
+            let mut file = fs::OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .write(true)
+                .open(&tmp)?;
+            writeln!(file, ";; ── {} ──", Utc::now().to_rfc3339())?;
+            for src in &kept {
+                writeln!(file, "{src}")?;
+            }
+            for entry in &entries {
+                writeln!(file, "{}", entry.source)?;
+            }
+            file.flush()?;
         }
-        file.flush()?;
-        // Only now is it safe to drop these entries — persisted to
-        // disk. Concurrent pushes under different ids are preserved.
+        fs::rename(&tmp, &path)?;
+        // Only now is it safe to drop the pending state — file is
+        // committed. Remove pending entries by id so a concurrent
+        // push under a different id survives.
         let persisted_ids: std::collections::HashSet<u64> =
             entries.iter().map(|e| e.id).collect();
         self.pending_log
             .lock()
             .retain(|e| !persisted_ids.contains(&e.id));
+        self.pending_removals.lock().clear();
         Ok(PersistResult {
-            persisted: entries.len(),
+            persisted: total,
             path: path.to_string_lossy().into_owned(),
         })
     }
 
-    /// Drop the pending log and trigger a reload — World state goes
-    /// back to whatever the on-disk config + override file describe.
+    /// Drop the pending log + any × marks on persisted entries and
+    /// trigger a reload — World state goes back to whatever the
+    /// on-disk config + override file describe.
     pub fn discard_pending(&self) {
         self.pending_log.lock().clear();
+        self.pending_removals.lock().clear();
         self.reload();
     }
 
