@@ -854,6 +854,49 @@ function setupSplitter() {
   });
 }
 
+/// Horizontal splitter between the topology row and the bottom
+/// drawer. Drag to trade height between the canvas + side panel
+/// (top) and the log panel + REPL output + form (bottom). Updates
+/// main's grid-template-rows live; vis-network and any open uPlots
+/// re-fit via their own ResizeObservers.
+function setupDrawerSplitter() {
+  const splitter = document.getElementById("drawer-splitter");
+  const main = document.getElementById("app");
+  const drawer = document.getElementById("repl");
+  const MIN_DRAWER = 120;
+  const MIN_TOP_FRAC = 0.2; // keep at least 20% of main for the canvas
+
+  let dragging = false;
+  let startY = 0;
+  let startHeight = 0;
+
+  splitter.addEventListener("mousedown", (e) => {
+    dragging = true;
+    startY = e.clientY;
+    startHeight = drawer.getBoundingClientRect().height;
+    splitter.classList.add("dragging");
+    document.body.style.cursor = "row-resize";
+    document.body.style.userSelect = "none";
+    e.preventDefault();
+  });
+  document.addEventListener("mousemove", (e) => {
+    if (!dragging) return;
+    const dy = startY - e.clientY;
+    const mainH = main.getBoundingClientRect().height;
+    const max = mainH * (1 - MIN_TOP_FRAC);
+    const newH = Math.max(MIN_DRAWER, Math.min(max, startHeight + dy));
+    main.style.gridTemplateRows = `1fr 5px ${newH}px`;
+    refitCharts();
+  });
+  document.addEventListener("mouseup", () => {
+    if (!dragging) return;
+    dragging = false;
+    splitter.classList.remove("dragging");
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+  });
+}
+
 function refitCharts() {
   if (!activeCharts) return;
   for (const series of activeCharts.charts.values()) {
@@ -1283,6 +1326,7 @@ async function init() {
   setupDefaultsToggle();
   setupScenariosToggle();
   setupSplitter();
+  setupDrawerSplitter();
   setupPendingDialog();
   backfillLogs();
   const refreshPending = setupPersistControls();

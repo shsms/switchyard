@@ -169,13 +169,14 @@ dialog#pending-dialog header button:hover { color: var(--fg); }
 
 main {
   display: grid;
-  /* topology | splitter | side. JS rewrites the third value when the
-     user drags the splitter; clamp lives in JS so we can keep the
-     CSS template rule self-explanatory. */
+  /* topology | splitter | side  (top row, 1fr)
+     drawer-splitter spanning all 3 cols (5px)
+     repl drawer spanning all 3 cols (JS rewrites this row's size). */
   grid-template-columns: 1fr 5px 420px;
-  grid-template-rows: 1fr 200px;
+  grid-template-rows: 1fr 5px 260px;
   grid-template-areas:
     "topology splitter side"
+    "drawer-splitter drawer-splitter drawer-splitter"
     "repl     repl     repl";
   gap: 0;
   height: calc(100vh - 41px); /* viewport minus header */
@@ -206,6 +207,13 @@ main {
 }
 #splitter:hover, #splitter.dragging { background: var(--accent); }
 
+#drawer-splitter {
+  grid-area: drawer-splitter;
+  background: var(--border);
+  cursor: row-resize;
+}
+#drawer-splitter:hover, #drawer-splitter.dragging { background: var(--accent); }
+
 #side {
   grid-area: side;
   padding: 1rem;
@@ -224,16 +232,18 @@ main {
 }
 
 #logs {
-  /* Log panel takes the top half of the REPL drawer; REPL output
-     takes the rest. Both scroll independently so a chatty log
-     doesn't push REPL replies out of view. */
+  /* Log panel claims all space the REPL output isn't using. Default
+     gives logs everything (repl-output collapses to a thin rest-state
+     band when there's no recent eval); the horizontal splitter lets
+     the user trade space between them. */
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 0.4rem 0.75rem;
-  border-bottom: 1px solid var(--border);
   background: var(--bg);
   font-size: 12px;
 }
+
 .log-line {
   display: flex;
   gap: 0.5rem;
@@ -251,9 +261,20 @@ main {
 .log-line .log-msg { flex: 1; }
 
 #repl-output {
-  flex: 1;
+  /* Fixed band at the bottom of the drawer for eval results. The
+     log panel above flex-grows into the rest of the drawer and is
+     resized via the drawer splitter above the drawer instead. */
+  flex: 0 0 80px;
   overflow-y: auto;
   padding: 0.5rem 0.75rem;
+  background: var(--bg-elev);
+  border-top: 1px solid var(--border);
+}
+#repl-output:empty::before {
+  /* Empty rest state hint — disappears the moment a result lands. */
+  content: "REPL output appears here.";
+  color: var(--muted);
+  font-style: italic;
 }
 
 .repl-entry { margin-bottom: 0.5rem; }
