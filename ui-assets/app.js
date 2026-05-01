@@ -210,6 +210,12 @@ function clearCharts() {
   activeCharts = null;
 }
 
+// Categories that the gRPC server actually accepts setpoints on.
+// command-mode (timeout / error fault simulation) only makes sense
+// for these — grids and meters have no setpoint surface, so we hide
+// the dropdown rather than offering a knob that does nothing.
+const ACCEPTS_SETPOINTS = new Set(["battery", "inverter", "ev-charger", "chp"]);
+
 function renderInspect(d, parentIds, childIds) {
   const renderEdgeRow = (id, dataAttr) => {
     const c = componentById.get(id);
@@ -234,7 +240,9 @@ function renderInspect(d, parentIds, childIds) {
     <dl>
       <dt>health</dt><dd>${selectField("health", d.health, ["ok", "error", "standby"])}</dd>
       <dt>telemetry</dt><dd>${selectField("telemetry-mode", d.telemetry_mode, ["normal", "silent", "closed"])}</dd>
-      <dt>commands</dt><dd>${selectField("command-mode", d.command_mode, ["normal", "timeout", "error"])}</dd>
+      ${ACCEPTS_SETPOINTS.has(d.category)
+        ? `<dt>commands</dt><dd>${selectField("command-mode", d.command_mode, ["normal", "timeout", "error"])}</dd>`
+        : ""}
     </dl>
     <h3>Connections</h3>
     <div class="conns">
@@ -258,6 +266,7 @@ function renderInspect(d, parentIds, childIds) {
     ["command-mode", "set-component-command-mode"],
   ]) {
     const sel = inspectEl.querySelector(`select[data-knob="${key}"]`);
+    if (!sel) continue; // dropdown hidden for this category
     sel.addEventListener("change", (e) => {
       evalQuoted(`(${defun} ${d.id} '${e.target.value})`);
     });
