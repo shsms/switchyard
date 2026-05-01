@@ -241,3 +241,28 @@ impl Default for World {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Two meters can list the same inverter as a successor and both
+    /// edges land in the connections graph (a parallel-meter
+    /// redundancy setup). `aggregate_child_bounds` from either parent
+    /// finds its own children independently — no double-counting.
+    #[test]
+    fn shared_child_under_two_parents() {
+        let w = World::new();
+        w.connect(2, 100);
+        w.connect(3, 100);
+        let conns = w.connections();
+        assert_eq!(conns.len(), 2);
+        assert!(conns.contains(&(2, 100)));
+        assert!(conns.contains(&(3, 100)));
+        // No registered component for id 100 in this lightweight
+        // test, so aggregate_child_bounds returns None — we're
+        // checking the connection-graph shape, not the bounds math.
+        assert!(w.aggregate_child_bounds(2).is_none());
+        assert!(w.aggregate_child_bounds(3).is_none());
+    }
+}
