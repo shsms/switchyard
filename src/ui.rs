@@ -543,7 +543,12 @@ async fn scenarios_save(
 
 #[derive(Serialize)]
 struct ScenarioLoadResponse {
-    loaded_lines: usize,
+    /// Pending entries pushed by the load — currently 0 on failure
+    /// or 1 on success (eval pushes one entry per call regardless of
+    /// how many forms the file contains). Renamed from the old
+    /// `loaded_lines` which had nothing to do with how much was
+    /// actually evaluated.
+    entries_added: usize,
 }
 
 async fn scenarios_load(
@@ -554,8 +559,11 @@ async fn scenarios_load(
     tokio::task::spawn_blocking(move || config.load_scenario(&name))
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("load panicked: {e}")))?
-        .map(|loaded_lines| Json(ScenarioLoadResponse { loaded_lines }))
-        .map_err(|e| (StatusCode::NOT_FOUND, format!("read failed: {e}")))
+        // Lisp errors and IO errors both come back as String now, so
+        // we lose the ability to distinguish 404 from 422. Map both
+        // to BAD_REQUEST — the message names the failure kind.
+        .map(|entries_added| Json(ScenarioLoadResponse { entries_added }))
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))
 }
 
 /// Reject path-traversal + obviously-bad characters in scenario

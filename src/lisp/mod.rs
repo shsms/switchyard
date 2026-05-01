@@ -386,19 +386,26 @@ impl Config {
         })
     }
 
-    /// Load `scenarios/<name>.lisp` and eval its contents — every
-    /// expression goes through `eval`, so each one lands in the
-    /// pending log too. The user can then Persist (to apply
-    /// permanently) or Discard.
-    pub fn load_scenario(&self, name: &str) -> std::io::Result<usize> {
+    /// Load `scenarios/<name>.lisp` and eval its contents. The whole
+    /// file lands as one entry in the pending log (tulisp's
+    /// eval_string handles a multi-form file as one progn; the entry
+    /// preserves the raw source so a later replay re-applies cleanly).
+    /// User can then Persist or Discard.
+    ///
+    /// Returns the number of pending entries added (currently 0 on
+    /// failure or 1 on success — eval pushes one entry per call).
+    /// Read errors and Lisp errors both propagate as String — silent
+    /// drops here were leaving the user thinking a broken scenario
+    /// loaded successfully.
+    pub fn load_scenario(&self, name: &str) -> Result<usize, String> {
         let path = self.scenarios_dir().join(format!("{name}.lisp"));
-        let src = fs::read_to_string(&path)?;
-        // tulisp's eval_string handles a multi-form file by treating
-        // them as a progn. We want each form to land in the pending
-        // log individually, so wrap in a (progn ...) — eval logs the
-        // whole string verbatim, which still re-runs cleanly.
-        let _ = self.eval(&src);
-        Ok(src.lines().count())
+        let src = fs::read_to_string(&path)
+            .map_err(|e| format!("read {}: {}", path.display(), e))?;
+        let before = self.pending_log.lock().len();
+        self.eval(&src)
+            .map_err(|e| format!("eval {}: {}", path.display(), e))?;
+        let after = self.pending_log.lock().len();
+        Ok(after - before)
     }
 
     pub fn reload(&self) {
@@ -834,6 +841,24 @@ mod tests {
         // tulisp-async spawned during init.
         std::mem::forget(rt);
         (cfg, dir)
+    }
+
+    /// load_scenario must propagate Lisp errors. The previous
+    /// `let _ = self.eval(&src)` quietly dropped them, so a scenario
+    /// with bad syntax silently no-op'd.
+    #[test]
+    fn load_scenario_propagates_lisp_errors() {
+        let (cfg, dir) = config_with("(set-microgrid-id 9)");
+        let scenarios = dir.join("scenarios");
+        std::fs::create_dir_all(&scenarios).unwrap();
+        std::fs::write(scenarios.join("bad.lisp"), "(this-defun-doesnt-exist 1)").unwrap();
+
+        let res = cfg.load_scenario("bad");
+        assert!(res.is_err(), "expected error, got {res:?}");
+        assert!(
+            res.unwrap_err().contains("this-defun-doesnt-exist"),
+            "error should name the bad symbol",
+        );
     }
 
     /// persist_pending must NOT clear the in-memory log on IO error,
