@@ -21,7 +21,10 @@ use std::{
 use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
 
+use tokio::sync::broadcast;
+
 use crate::sim::component::{ComponentHandle, FIRST_AUTO_ID, SimulatedComponent};
+use crate::sim::events::{EVENT_BUS_CAPACITY, WorldEvent};
 use crate::sim::history::{ComponentHistory, History, Metric, Sample};
 use crate::sim::runtime::{CommandMode, ComponentRuntime, Health, TelemetryMode};
 
@@ -72,6 +75,13 @@ struct WorldInner {
     /// endpoint. Cleared on `reset()` so a hot-reload starts charts
     /// fresh.
     histories: RwLock<HashMap<u64, ComponentHistory>>,
+    /// Monotonic version counter; bumped via `bump_version` on every
+    /// accepted /api/eval (and future programmatic mutations) so UI
+    /// tabs know to refetch /api/topology.
+    version: AtomicU64,
+    /// Broadcast bus for live UI subscribers. Senders are cheap to
+    /// clone; receivers are obtained via `subscribe_events`.
+    events: broadcast::Sender<WorldEvent>,
 }
 
 impl World {
@@ -86,8 +96,28 @@ impl World {
                 next_id: AtomicU64::new(FIRST_AUTO_ID),
                 runtime: RwLock::new(HashMap::new()),
                 histories: RwLock::new(HashMap::new()),
+                version: AtomicU64::new(0),
+                events: broadcast::channel(EVENT_BUS_CAPACITY).0,
             }),
         }
+    }
+
+    pub fn version(&self) -> u64 {
+        self.inner.version.load(Ordering::Relaxed)
+    }
+
+    /// Increment the version counter and broadcast a
+    /// `TopologyChanged` event. Returns the new version. Send errors
+    /// (no live subscribers) are swallowed — the event is fire-and-
+    /// forget by design.
+    pub fn bump_version(&self) -> u64 {
+        let v = self.inner.version.fetch_add(1, Ordering::Relaxed) + 1;
+        let _ = self.inner.events.send(WorldEvent::TopologyChanged { version: v });
+        v
+    }
+
+    pub fn subscribe_events(&self) -> broadcast::Receiver<WorldEvent> {
+        self.inner.events.subscribe()
     }
 
     pub fn next_id(&self) -> u64 {
@@ -435,6 +465,25 @@ mod tests {
         // Windowed read drops samples before `since`.
         let recent = w.history_window(7, Metric::ActivePowerW, t1).unwrap();
         assert_eq!(recent.len(), 1);
+    }
+
+    /// `bump_version` advances the counter and broadcasts a
+    /// `TopologyChanged` event with the new version. Used by
+    /// `Config::eval` after every eval so UI tabs refetch.
+    #[tokio::test]
+    async fn bump_version_broadcasts_event() {
+        let w = World::new();
+        let mut rx = w.subscribe_events();
+        assert_eq!(w.version(), 0);
+        let v = w.bump_version();
+        assert_eq!(v, 1);
+        assert_eq!(w.version(), 1);
+        match rx.recv().await.unwrap() {
+            crate::sim::events::WorldEvent::TopologyChanged { version } => {
+                assert_eq!(version, 1);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
     }
 
     /// `reset()` clears history alongside the rest of the World so a

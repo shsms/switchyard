@@ -129,12 +129,21 @@ impl Config {
     /// Synchronous — acquires the interpreter write lock for the
     /// duration of the eval. Callers in async contexts must wrap in
     /// `tokio::task::spawn_blocking` to keep the executor free.
+    ///
+    /// Bumps the World version on both success and error so UI
+    /// subscribers refetch /api/topology either way (a partial
+    /// mutation that errored mid-flight may still have left state
+    /// changed, and the cost of a wasted refetch is small).
     pub fn eval(&self, src: &str) -> Result<String, String> {
-        let mut ctx = self.ctx.borrow_mut();
-        match ctx.eval_string(src) {
-            Ok(v) => Ok(v.to_string()),
-            Err(e) => Err(e.format(&ctx)),
-        }
+        let result = {
+            let mut ctx = self.ctx.borrow_mut();
+            match ctx.eval_string(src) {
+                Ok(v) => Ok(v.to_string()),
+                Err(e) => Err(e.format(&ctx)),
+            }
+        };
+        self.world.bump_version();
+        result
     }
 
     pub fn reload(&self) {
