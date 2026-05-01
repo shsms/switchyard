@@ -25,7 +25,7 @@ use tokio::sync::broadcast::error::RecvError;
 
 use crate::{
     lisp::Config,
-    sim::{Category, history::Metric},
+    sim::{Category, history::Metric, setpoints::SetpointEvent},
 };
 
 /// Embedded SPA assets. In debug builds rust-embed reads from the
@@ -57,6 +57,7 @@ fn router(config: Config) -> Router {
         .route("/api/eval", post(eval))
         .route("/api/history", get(history))
         .route("/api/defaults", get(defaults))
+        .route("/api/setpoints", get(setpoints))
         .route("/api/pending", get(pending))
         .route("/api/persist", post(persist))
         .route("/api/discard", post(discard))
@@ -270,6 +271,31 @@ fn parse_metric(s: &str) -> Option<Metric> {
         "reactive_power_upper_bound_var" => Some(Metric::ReactivePowerUpperBoundVar),
         _ => None,
     }
+}
+
+#[derive(Deserialize)]
+struct SetpointsQuery {
+    id: u64,
+    /// Window length in seconds. Optional; defaults to the full
+    /// 1000-event capacity of the ring (which at typical control-app
+    /// rates covers several minutes).
+    window_s: Option<i64>,
+}
+
+#[derive(Serialize)]
+struct SetpointsResponse {
+    id: u64,
+    events: Vec<SetpointEvent>,
+}
+
+async fn setpoints(
+    State(config): State<Config>,
+    Query(q): Query<SetpointsQuery>,
+) -> Json<SetpointsResponse> {
+    let window = ChronoDuration::seconds(q.window_s.unwrap_or(600));
+    let since = Utc::now() - window;
+    let events = config.world().setpoints_window(q.id, since);
+    Json(SetpointsResponse { id: q.id, events })
 }
 
 /// One per `*-defaults` alist defined in `sim/defaults.lisp`. The
