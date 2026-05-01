@@ -3,7 +3,9 @@
 // REPL panel + topology editing land in the next commits.
 
 const status = document.getElementById("status");
-const sideEl = document.getElementById("side");
+// `inspect` is the swappable upper half of the side panel; the lower
+// half (`add-form`) stays put across selection changes.
+const inspectEl = document.getElementById("inspect");
 
 function setStatus(text, klass) {
   status.textContent = text;
@@ -124,7 +126,7 @@ async function showComponent(node) {
   const d = node.data();
   clearCharts();
 
-  sideEl.innerHTML = `
+  inspectEl.innerHTML = `
     <h2>${d.name}</h2>
     <dl>
       <dt>id</dt><dd>${d.id}</dd>
@@ -189,7 +191,27 @@ function pushSample(id, metric, ts_ms, value) {
 
 function clearSide() {
   clearCharts();
-  sideEl.innerHTML = '<p class="hint">Click a node to inspect.</p>';
+  inspectEl.innerHTML =
+    '<p class="hint">Click a node to inspect. Right-click to delete.</p>';
+}
+
+function setupAddForm() {
+  const sel = document.getElementById("add-category");
+  const btn = document.getElementById("add-btn");
+  btn.addEventListener("click", async () => {
+    const fn = sel.value;
+    btn.disabled = true;
+    try {
+      const res = await fetch("/api/eval", {
+        method: "POST",
+        body: `(${fn})`,
+      });
+      const data = await res.json();
+      if (!data.ok) alert("Create failed:\n" + data.error);
+    } finally {
+      btn.disabled = false;
+    }
+  });
 }
 
 function escapeHtml(s) {
@@ -382,6 +404,7 @@ async function refreshTopology() {
 }
 
 async function init() {
+  setupAddForm();
   const refreshPending = setupPersistControls();
   await refreshTopology();
   await refreshPending();

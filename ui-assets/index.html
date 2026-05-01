@@ -23,7 +23,28 @@
     <main id="app">
       <div id="topology"></div>
       <aside id="side">
-        <p class="hint">Click a node to inspect.</p>
+        <div id="inspect">
+          <p class="hint">Click a node to inspect. Right-click to delete.</p>
+        </div>
+        <div id="add-form">
+          <h2>Add component</h2>
+          <div class="add-row">
+            <select id="add-category">
+              <option value="make-grid">grid</option>
+              <option value="make-meter" selected>meter</option>
+              <option value="make-battery">battery</option>
+              <option value="make-battery-inverter">battery-inverter</option>
+              <option value="make-solar-inverter">solar-inverter</option>
+              <option value="make-ev-charger">ev-charger</option>
+              <option value="make-chp">chp</option>
+            </select>
+            <button id="add-btn" class="hdr-btn primary">Create</button>
+          </div>
+          <p class="hint">
+            Uses category defaults; auto-assigns id. Wire it up via
+            click-drag (coming soon) or REPL.
+          </p>
+        </div>
       </aside>
       <section id="repl">
         <div id="repl-output"></div>
