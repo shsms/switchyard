@@ -14,6 +14,27 @@ function setStatus(text, klass) {
   status.className = "status " + (klass || "");
 }
 
+// Surface a transient toast in the bottom-right. Auto-dismisses after
+// ~5s. Use this — not alert() — for action-failure feedback so the
+// chrome stays unblocking when the server hiccups during, say, a WS
+// reconnect storm. Three places fall outside this rule:
+//   * `setStatus` for the persistent connection-state pill (top bar).
+//   * `console.error` for diagnostics that only matter in the dev tools.
+//   * confirm() prompts that genuinely need a synchronous yes/no.
+function notify(message, kind = "error") {
+  let host = document.getElementById("toast-host");
+  if (!host) {
+    host = document.createElement("div");
+    host.id = "toast-host";
+    document.body.appendChild(host);
+  }
+  const t = document.createElement("div");
+  t.className = `toast toast-${kind}`;
+  t.textContent = message;
+  host.appendChild(t);
+  setTimeout(() => t.remove(), 5000);
+}
+
 const CATEGORY_COLOR = {
   grid: getCss("--cat-grid"),
   meter: getCss("--cat-meter"),
@@ -195,7 +216,7 @@ const visOptions = {
       })
         .then((r) => r.json())
         .then((res) => {
-          if (!res.ok) alert("Connect failed:\n" + res.error);
+          if (!res.ok) notify("Connect failed: " + res.error);
         });
       // Don't apply locally — the WS topology refresh will redraw
       // with the new edge once the eval lands on the server.
@@ -340,7 +361,8 @@ function renderInspect(d, parentIds, childIds, overrides = []) {
     btn.addEventListener("click", async () => {
       const id = btn.dataset.undo;
       const res = await fetch(`/api/pending/${id}`, { method: "DELETE" });
-      if (!res.ok) alert(`Remove failed: ${res.status} ${await res.text()}`);
+      if (!res.ok)
+        notify(`Remove failed: ${res.status} ${await res.text()}`);
     });
   }
   for (const btn of inspectEl.querySelectorAll("[data-disconnect-from]")) {
@@ -396,10 +418,10 @@ async function evalQuoted(expr, opts = {}) {
       status: res.status,
       body: text,
     });
-    alert(`${expr}\n\nserver returned non-JSON (HTTP ${res.status}):\n${text}`);
+    notify(`${expr}: server returned non-JSON (HTTP ${res.status})`);
     return;
   }
-  if (!data.ok) alert(`${expr}\n\nfailed:\n${data.error}`);
+  if (!data.ok) notify(`${expr}: ${data.error}`);
 }
 
 async function showComponent(d) {
@@ -583,7 +605,7 @@ function setupAddForm() {
         body: `(${fn})`,
       });
       const data = await res.json();
-      if (!data.ok) alert("Create failed:\n" + data.error);
+      if (!data.ok) notify("Create failed: " + data.error);
     } finally {
       btn.disabled = false;
     }
@@ -651,7 +673,7 @@ async function renderPendingDialog(content) {
           // also fires and re-renders the canvas + pill count.
           await renderPendingDialog(content);
         } else {
-          alert(`Remove failed: ${res.status} ${await res.text()}`);
+          notify(`Remove failed: ${res.status} ${await res.text()}`);
         }
       });
     }
@@ -662,7 +684,7 @@ async function renderPendingDialog(content) {
         if (res.ok) {
           await renderPendingDialog(content);
         } else {
-          alert(`Mark failed: ${res.status} ${await res.text()}`);
+          notify(`Mark failed: ${res.status} ${await res.text()}`);
         }
       });
     }
@@ -673,7 +695,7 @@ async function renderPendingDialog(content) {
         if (res.ok) {
           await renderPendingDialog(content);
         } else {
-          alert(`Restore failed: ${res.status} ${await res.text()}`);
+          notify(`Restore failed: ${res.status} ${await res.text()}`);
         }
       });
     }
@@ -728,7 +750,11 @@ function setupPersistControls() {
     try {
       const res = await fetch("/api/persist", { method: "POST" });
       const data = await res.json();
-      console.log(`persisted ${data.persisted} entries to ${data.path}`);
+      if (res.ok) {
+        notify(`Persisted to ${data.path} (${data.persisted} forms)`, "success");
+      } else {
+        notify(`Persist failed: ${data.error || res.status}`);
+      }
     } finally {
       refresh();
     }
@@ -810,7 +836,7 @@ async function renderScenarios() {
     if (r.ok) {
       renderScenarios();
     } else {
-      alert(`Save failed: ${await r.text()}`);
+      notify(`Save failed: ${await r.text()}`);
     }
   });
   for (const btn of inspectEl.querySelectorAll("[data-load]")) {
@@ -820,7 +846,7 @@ async function renderScenarios() {
         `/api/scenarios/load?name=${encodeURIComponent(name)}`,
         { method: "POST" },
       );
-      if (!r.ok) alert(`Load failed: ${await r.text()}`);
+      if (!r.ok) notify(`Load failed: ${await r.text()}`);
     });
   }
 }
@@ -1319,7 +1345,7 @@ function applyTopology(topology) {
       })
         .then((r) => r.json())
         .then((res) => {
-          if (!res.ok) alert("Delete failed: " + res.error);
+          if (!res.ok) notify("Delete failed: " + res.error);
         });
     });
 

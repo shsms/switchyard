@@ -183,6 +183,32 @@ dialog#pending-dialog header button:hover { color: var(--fg); }
 }
 .hdr-btn.primary:hover:not(:disabled) { filter: brightness(1.1); }
 
+#toast-host {
+  position: fixed;
+  bottom: 1rem;
+  right: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  z-index: 1000;
+  pointer-events: none;
+}
+.toast {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 0.5rem 0.75rem;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  max-width: 28rem;
+  white-space: pre-wrap;
+  pointer-events: auto;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+}
+.toast-error { border-color: var(--cat-grid); }
+.toast-success { border-color: var(--accent); }
+
 main {
   display: grid;
   /* topology | splitter | side  (top row, 1fr)
