@@ -85,15 +85,24 @@ function cytoscapeStylesheet() {
     {
       selector: "node",
       style: {
+        shape: "ellipse",
         "background-color": "#888",
         label: "data(name)",
-        color: "#c9d1d9",
-        "text-valign": "bottom",
-        "text-margin-y": 6,
+        // Centered inside the oval. The label drives node sizing —
+        // `width: label` + padding makes every node fit its name
+        // snugly, no truncation.
+        color: "#0d1117",
+        "text-valign": "center",
+        "text-halign": "center",
         "font-size": 11,
         "font-family": "ui-monospace, monospace",
-        width: 30,
-        height: 30,
+        "font-weight": "bold",
+        width: "label",
+        height: "label",
+        "padding-left": "12px",
+        "padding-right": "12px",
+        "padding-top": "8px",
+        "padding-bottom": "8px",
         "border-width": 1,
         "border-color": "#0d1117",
       },
@@ -115,6 +124,17 @@ function cytoscapeStylesheet() {
     },
   ];
 }
+
+// breadthfirst's transform option swaps the (x, y) of every node
+// after layout. Default direction is top → bottom; this flips to
+// left → right, which reads more like a one-line flow chart.
+const layoutOptions = {
+  name: "breadthfirst",
+  directed: true,
+  padding: 30,
+  spacingFactor: 1.4,
+  transform: (_node, pos) => ({ x: pos.y, y: pos.x }),
+};
 
 function clearCharts() {
   if (!activeCharts) return;
@@ -472,12 +492,7 @@ function applyTopology(topology) {
       container: document.getElementById("topology"),
       elements,
       style: cytoscapeStylesheet(),
-      layout: {
-        name: "breadthfirst",
-        directed: true,
-        padding: 30,
-        spacingFactor: 1.4,
-      },
+      layout: layoutOptions,
       wheelSensitivity: 0.2,
     });
     cy.on("tap", "node", (evt) => showComponent(evt.target));
@@ -528,12 +543,7 @@ function applyTopology(topology) {
     const prevSelected = cy.$("node:selected").map((n) => n.id());
     cy.elements().remove();
     cy.add(elements);
-    cy.layout({
-      name: "breadthfirst",
-      directed: true,
-      padding: 30,
-      spacingFactor: 1.4,
-    }).run();
+    cy.layout(layoutOptions).run();
     if (prevSelected.length) {
       const stillThere = prevSelected.filter((id) => cy.getElementById(id).nonempty());
       if (stillThere.length) {
