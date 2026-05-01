@@ -227,6 +227,19 @@ AsPlist! {
         health<":health">: Option<LispLabel> {= None},
         telemetry_mode<":telemetry-mode">: Option<LispLabel> {= None},
         command_mode<":command-mode">: Option<LispLabel> {= None},
+        config<":config">: Option<LispValue> {= None},
+    }
+}
+
+AsAlist! {
+    /// Per-category defaults for `(make-chp)`. Mirrors `ChpArgs` minus
+    /// per-component `id`.
+    #[derive(Default)]
+    pub struct ChpDefaults {
+        stream_jitter_pct<"stream-jitter-pct">: Option<f64> {= None},
+        health: Option<LispLabel> {= None},
+        telemetry_mode<"telemetry-mode">: Option<LispLabel> {= None},
+        command_mode<"command-mode">: Option<LispLabel> {= None},
     }
 }
 
@@ -519,18 +532,25 @@ pub fn register(ctx: &mut TulispContext, world: World) {
     });
 
     let w = world;
-    ctx.defun("make-chp", move |args: Plist<ChpArgs>| {
-        let a = args.into_inner();
-        let id = id_or_next(&w, a.id);
-        let jitter = a.stream_jitter_pct.unwrap_or(0.0) as f32;
-        register_with_modes(
-            &w,
-            Chp::new(id, jitter),
-            a.health.as_ref(),
-            a.telemetry_mode.as_ref(),
-            a.command_mode.as_ref(),
-        )
-    });
+    ctx.defun(
+        "make-chp",
+        move |ctx: &mut TulispContext, args: Plist<ChpArgs>| {
+            let a = args.into_inner();
+            let d = parse_defaults::<ChpDefaults>(ctx, a.config.as_ref())?;
+            let id = id_or_next(&w, a.id);
+            let jitter = a
+                .stream_jitter_pct
+                .or(d.stream_jitter_pct)
+                .unwrap_or(0.0) as f32;
+            register_with_modes(
+                &w,
+                Chp::new(id, jitter),
+                a.health.as_ref().or(d.health.as_ref()),
+                a.telemetry_mode.as_ref().or(d.telemetry_mode.as_ref()),
+                a.command_mode.as_ref().or(d.command_mode.as_ref()),
+            )
+        },
+    );
 }
 
 fn connect_successors(world: &World, parent: u64, successors: &Option<Vec<ComponentHandle>>) {
