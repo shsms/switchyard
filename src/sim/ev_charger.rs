@@ -58,7 +58,6 @@ pub struct EvCharger {
 
 #[derive(Debug, Clone)]
 struct EvState {
-    energy_wh: f32,
     soc_pct: f32,
     /// SoC-protected effective bounds, refreshed every tick.
     effective_lower_w: f32,
@@ -84,7 +83,6 @@ impl EvCharger {
             interval,
             cfg: cfg.clone(),
             state: Mutex::new(EvState {
-                energy_wh: 0.0,
                 soc_pct: init_soc,
                 effective_lower_w: l,
                 effective_upper_w: u,
@@ -156,12 +154,16 @@ impl SimulatedComponent for EvCharger {
             }
         }
 
-        // 3. Slew + integrate energy/SoC.
+        // 3. Slew + integrate SoC. ΔSoC = P · dt / capacity, in %.
+        // Clamping at the SoC boundary prevents unphysical "extra"
+        // charge from accumulating when the protective taper is
+        // disabled — same fix as Battery.
         let p = self.ramp.advance(dt);
         let mut s = self.state.lock();
-        s.energy_wh += p * dt.as_secs_f32() / 3600.0;
-        s.soc_pct = (self.cfg.initial_soc_pct + (s.energy_wh / self.cfg.capacity_wh) * 100.0)
-            .clamp(0.0, 100.0);
+        if self.cfg.capacity_wh > 0.0 {
+            let delta_soc = p * dt.as_secs_f32() / 3600.0 / self.cfg.capacity_wh * 100.0;
+            s.soc_pct = (s.soc_pct + delta_soc).clamp(0.0, 100.0);
+        }
     }
 
     fn telemetry(&self, world: &World) -> Telemetry {
