@@ -8,6 +8,7 @@
 //! request handling) are server-facing concerns the components
 //! shouldn't know about.
 
+use std::fmt;
 use std::str::FromStr;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -106,5 +107,35 @@ impl Health {
             Self::Error => Some("error"),
             Self::Standby => Some("standby"),
         }
+    }
+}
+
+impl fmt::Display for Health {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Ok => "ok",
+            Self::Error => "error",
+            Self::Standby => "standby",
+        })
+    }
+}
+
+impl fmt::Display for TelemetryMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Normal => "normal",
+            Self::Silent => "silent",
+            Self::Closed => "closed",
+        })
+    }
+}
+
+impl fmt::Display for CommandMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Normal => "normal",
+            Self::Timeout => "timeout",
+            Self::Error => "error",
+        })
     }
 }
