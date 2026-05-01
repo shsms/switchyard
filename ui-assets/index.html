@@ -15,6 +15,7 @@
       <strong>switchyard</strong>
       <span id="status" class="status">connecting…</span>
       <span class="spacer"></span>
+      <button id="help-btn" class="hdr-btn" title="Keyboard + mouse shortcuts">?</button>
       <button id="scenarios-btn" class="hdr-btn">Scenarios</button>
       <button id="defaults-btn" class="hdr-btn">Defaults</button>
       <span id="pending-pill" class="pending-pill" hidden>
@@ -28,7 +29,7 @@
       <div id="splitter" title="Drag to resize"></div>
       <aside id="side">
         <div id="inspect">
-          <p class="hint">Click a node to inspect. Right-click to delete.</p>
+          <p class="hint">Click a node to inspect. Right-click for the context menu.</p>
         </div>
         <div id="add-form">
           <h2>Add component</h2>
@@ -45,8 +46,9 @@
             <button id="add-btn" class="hdr-btn primary">Create</button>
           </div>
           <p class="hint">
-            Uses category defaults; auto-assigns id. Wire it up via
-            click-drag (coming soon) or REPL.
+            Uses category defaults; auto-assigns id. Wire it up by
+            holding <kbd>Shift</kbd> and dragging from one node to
+            another, or from the REPL.
           </p>
         </div>
       </aside>
@@ -66,12 +68,44 @@
       </section>
     </main>
     <noscript>This UI requires JavaScript.</noscript>
+    <div id="ctx-menu" hidden></div>
     <dialog id="pending-dialog">
       <header>
         <h3>Active overrides</h3>
         <button id="pending-dialog-close" type="button">×</button>
       </header>
       <div id="pending-dialog-content"></div>
+    </dialog>
+    <dialog id="help-dialog">
+      <header>
+        <h3>Switchyard reference</h3>
+        <button id="help-dialog-close" type="button">×</button>
+      </header>
+      <div id="help-dialog-content">
+        <h4>Topology canvas</h4>
+        <ul class="help-list">
+          <li><kbd>Click</kbd> a node — inspect it (charts + overrides + knobs in the side panel).</li>
+          <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Click</kbd> — toggle a node into the multi-selection. <kbd>Drag</kbd> on empty canvas — rubber-band a multi-selection.</li>
+          <li><kbd>Right-click</kbd> — context menu. With a selection: <em>Copy</em>, <em>Cut</em>, <em>Delete</em>. With nothing selected and a non-empty clipboard: <em>Paste</em>. Right-clicking a node not in the current selection resets the selection to that node first.</li>
+          <li><kbd>Shift</kbd> hold — drag from one node to another to create an edge.</li>
+          <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>C</kbd> — copy selection. <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>V</kbd> — paste. <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>X</kbd> — cut. Each paste re-uses the last copy; clipboard captures structure only (categories + internal edges), so clones use category defaults.</li>
+          <li><kbd>Del</kbd> / <kbd>Backspace</kbd> — delete selection. <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>A</kbd> — select all visible. <kbd>Esc</kbd> — deselect.</li>
+        </ul>
+        <h4>Side panel + chrome</h4>
+        <ul class="help-list">
+          <li><strong>Add component</strong> (lower side panel) — pick a category, click <em>Create</em>; an auto-id'd component appears. Wire it via Shift-drag.</li>
+          <li><strong>Defaults</strong> — per-category defaults (Lisp values); edits ride the pending log.</li>
+          <li><strong>Scenarios</strong> — save the current pending log as a named recipe; load to replay it.</li>
+          <li><strong>Overrides pill</strong> — total active overrides (on disk + unsaved). <code>*</code> means unsaved. Click to inspect / × individual entries.</li>
+          <li><strong>Persist</strong> — flush pending edits + honored × marks to <code>config.ui-overrides.&lt;microgrid-id&gt;.lisp</code>.</li>
+          <li><strong>Discard</strong> — drop the pending log + × marks; reload from disk.</li>
+        </ul>
+        <h4>REPL</h4>
+        <ul class="help-list">
+          <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Enter</kbd> — eval. <kbd>Tab</kbd> — complete.</li>
+          <li>Drag the splitter between the topology row and the drawer to resize.</li>
+        </ul>
+      </div>
     </dialog>
     <script type="module" src="/assets/app.js"></script>
   </body>

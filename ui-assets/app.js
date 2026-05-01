@@ -304,23 +304,24 @@ const topology = (() => {
           onDeselect();
         }
       });
-      // Right-click → delete confirm. vis-network gives the canvas
-      // pointer; getNodeAt translates to a node id.
+      // Right-click → context menu. Selection acts as the target:
+      //   selection non-empty → Copy, Delete (and Cut)
+      //   selection empty + clipboard non-empty → Paste
+      // Right-clicking a node *not* in the current selection resets
+      // the selection to that one node first, matching the standard
+      // editor convention.
       network.on("oncontext", (params) => {
         params.event.preventDefault();
-        const id = network.getNodeAt(params.pointer.DOM);
-        if (id == null) return;
-        const c = componentById.get(id);
-        if (!c) return;
-        if (!confirm(`Delete ${c.name} (id ${c.id})?`)) return;
-        fetch(`/api/eval?affects=${c.id}`, {
-          method: "POST",
-          body: `(world-remove-component ${c.id})`,
-        })
-          .then((r) => r.json())
-          .then((res) => {
-            if (!res.ok) notify("Delete failed: " + res.error);
-          });
+        const nodeAt = network.getNodeAt(params.pointer.DOM);
+        if (nodeAt != null) {
+          const sel = network.getSelectedNodes();
+          if (!sel.includes(nodeAt)) {
+            network.selectNodes([nodeAt]);
+            const c = componentById.get(nodeAt);
+            if (c && onSelect) onSelect(c);
+          }
+        }
+        showContextMenu(params.event.clientX, params.event.clientY);
       });
       // Shift toggles vis-network's addEdge mode. Hold Shift, drag
       // from one node to another to wire them. The addEdge callback
@@ -365,6 +366,21 @@ const topology = (() => {
     has: (id) => componentById.has(id),
     parentsOf: (id) => (network ? network.getConnectedNodes(id, "from") : []),
     childrenOf: (id) => (network ? network.getConnectedNodes(id, "to") : []),
+    selectedIds: () => (network ? network.getSelectedNodes() : []),
+    /// Array of every visible node id, in registration order. Reads
+    /// the inspector's lookup table so hidden nodes (e.g. internal
+    /// load meters) stay out — same filter applied at apply()-time.
+    allIds: () => Array.from(componentById.keys()),
+    select(ids) {
+      if (network) network.selectNodes(ids);
+    },
+    /// Array of [from, to] edges as rendered. Source-of-truth is the
+    /// vis DataSet so this reflects whatever the canvas is actually
+    /// showing (post-diff during incremental refreshes).
+    connections() {
+      if (!edgesDS) return [];
+      return edgesDS.get().map((e) => [e.from, e.to]);
+    },
     setSelectionHandler(select, deselect) {
       onSelect = select;
       onDeselect = deselect;
@@ -392,7 +408,10 @@ const visOptions = {
   interaction: {
     hover: true,
     dragNodes: true,
-    multiselect: false,
+    // Ctrl/Cmd-click toggles a node into the existing selection, and
+    // a drag on empty canvas rubber-bands a multi-selection — both
+    // back the Cmd+D duplicate-selected flow.
+    multiselect: true,
     selectConnectedEdges: false,
     navigationButtons: false,
     keyboard: { enabled: false },
@@ -744,7 +763,187 @@ function makePlot(container, metric, xs, ys) {
 function clearSide() {
   liveCharts.clear();
   inspectEl.innerHTML =
-    '<p class="hint">Click a node to inspect. Right-click to delete.</p>';
+    '<p class="hint">Click a node to inspect. Right-click for the context menu.</p>';
+}
+
+// Map from a topology component to its public Lisp constructor.
+// Inverters split on subtype ("battery" / "solar"); everything else
+// keys off category. Returns null for categories we don't know how
+// to clone (e.g. an unrecognised proto-derived kind).
+function makeFnFor(c) {
+  if (c.category === "inverter") {
+    return c.subtype === "solar" ? "make-solar-inverter" : "make-battery-inverter";
+  }
+  return {
+    grid: "make-grid",
+    meter: "make-meter",
+    battery: "make-battery",
+    "ev-charger": "make-ev-charger",
+    chp: "make-chp",
+  }[c.category] ?? null;
+}
+
+// Editor-style clipboard for copy / paste of node subgraphs. Holds a
+// snapshot of the *structure* (categories, subtypes, edges between
+// the captured nodes) — runtime state (SoC, setpoints) is not part
+// of the snapshot, matching duplicate's structural-only semantics.
+//
+// Clipboard survives until replaced; paste can be repeated to drop
+// multiple copies of the same subgraph. Cleared on hard reload (page
+// refresh) since we don't persist it.
+const clipboard = (() => {
+  let buf = null; // { components: [{id, category, subtype}], edges: [[from,to]] }
+  return {
+    get: () => buf,
+    isEmpty: () => buf == null || buf.components.length === 0,
+    set(snapshot) {
+      buf = snapshot;
+    },
+  };
+})();
+
+function snapshotSelection(selectedIds) {
+  const components = selectedIds
+    .map((id) => topology.get(id))
+    .filter(Boolean)
+    .map(({ id, category, subtype }) => ({ id, category, subtype }));
+  if (!components.length) return null;
+  const selected = new Set(selectedIds);
+  const edges = topology
+    .connections()
+    .filter(([from, to]) => selected.has(from) && selected.has(to));
+  return { components, edges };
+}
+
+function copySelection() {
+  const ids = topology.selectedIds();
+  if (!ids.length) {
+    notify("Nothing selected to copy.");
+    return false;
+  }
+  const snap = snapshotSelection(ids);
+  if (!snap) return false;
+  const unknown = snap.components.find((c) => makeFnFor(c) == null);
+  if (unknown) {
+    notify(`Don't know how to copy a "${unknown.category}".`);
+    return false;
+  }
+  clipboard.set(snap);
+  const n = snap.components.length;
+  notify(`Copied ${n} component${n > 1 ? "s" : ""} to clipboard.`, "success");
+  return true;
+}
+
+// Paste the clipboard subgraph as a fresh set of components + edges
+// via one let*-bound eval. Matches duplicate's old behavior — uses
+// the public make-* wrappers so per-category defaults apply, threads
+// component-id to wire reconnects atomically. One pending log entry.
+async function pasteClipboard() {
+  if (clipboard.isEmpty()) {
+    notify("Clipboard is empty — copy something first.");
+    return;
+  }
+  const snap = clipboard.get();
+  const bindings = snap.components
+    .map((c) => `(m${c.id} (${makeFnFor(c)}))`)
+    .join(" ");
+  const reconnects = snap.edges
+    .map(([from, to]) => `(world-connect (component-id m${from}) (component-id m${to}))`)
+    .join(" ");
+  const src = reconnects
+    ? `(let* (${bindings}) ${reconnects})`
+    : `(let* (${bindings}) t)`;
+  const res = await fetch("/api/eval", { method: "POST", body: src });
+  const data = await res.json();
+  if (!data.ok) notify(`Paste failed: ${data.error}`);
+}
+
+async function deleteSelection() {
+  const ids = topology.selectedIds();
+  if (!ids.length) {
+    notify("Nothing selected to delete.");
+    return;
+  }
+  const removes = ids.map((id) => `(world-remove-component ${id})`).join(" ");
+  const src = `(progn ${removes})`;
+  const res = await fetch("/api/eval", { method: "POST", body: src });
+  const data = await res.json();
+  if (!data.ok) notify(`Delete failed: ${data.error}`);
+}
+
+async function cutSelection() {
+  if (copySelection()) await deleteSelection();
+}
+
+function selectAllVisible() {
+  const ids = topology.allIds();
+  if (!ids.length) return;
+  topology.select(ids);
+  showComponent(topology.get(ids[0]));
+}
+
+// Floating right-click menu. Items are context-dependent: Copy +
+// Delete (and Cut) when something's selected, Paste when nothing's
+// selected and the clipboard has content. Hidden on outside click,
+// Esc, or after running an action.
+function showContextMenu(x, y) {
+  const menu = document.getElementById("ctx-menu");
+  const sel = topology.selectedIds();
+  const items = [];
+  if (sel.length) {
+    items.push({ label: "Copy", shortcut: "Ctrl/Cmd+C", action: copySelection });
+    items.push({ label: "Cut", shortcut: "Ctrl/Cmd+X", action: cutSelection });
+    items.push({ label: "Delete", shortcut: "Del", action: deleteSelection });
+  } else if (!clipboard.isEmpty()) {
+    items.push({ label: "Paste", shortcut: "Ctrl/Cmd+V", action: pasteClipboard });
+  }
+  if (!items.length) return; // nothing relevant; keep menu hidden
+  menu.innerHTML = items
+    .map(
+      (it) =>
+        `<button class="ctx-item" data-idx="${items.indexOf(it)}">
+          <span>${it.label}</span><kbd>${it.shortcut}</kbd>
+        </button>`,
+    )
+    .join("");
+  menu.style.left = `${x}px`;
+  menu.style.top = `${y}px`;
+  menu.hidden = false;
+  // Clamp to viewport — menu has a fixed width so we can compare
+  // after layout settles.
+  requestAnimationFrame(() => {
+    const rect = menu.getBoundingClientRect();
+    if (rect.right > window.innerWidth) {
+      menu.style.left = `${window.innerWidth - rect.width - 4}px`;
+    }
+    if (rect.bottom > window.innerHeight) {
+      menu.style.top = `${window.innerHeight - rect.height - 4}px`;
+    }
+  });
+  for (const btn of menu.querySelectorAll(".ctx-item")) {
+    btn.addEventListener("click", () => {
+      const idx = Number(btn.dataset.idx);
+      hideContextMenu();
+      items[idx].action();
+    });
+  }
+}
+
+function hideContextMenu() {
+  const menu = document.getElementById("ctx-menu");
+  if (menu) menu.hidden = true;
+}
+
+function setupContextMenu() {
+  // Outside-click and Esc dismiss the menu. Capture phase so the
+  // click that picked the menu item runs first.
+  document.addEventListener("mousedown", (e) => {
+    const menu = document.getElementById("ctx-menu");
+    if (!menu.hidden && !menu.contains(e.target)) hideContextMenu();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") hideContextMenu();
+  });
 }
 
 function setupAddForm() {
@@ -857,6 +1056,20 @@ function renderPendingDialog(content, data) {
       }
     });
   }
+}
+
+function setupHelpButton() {
+  const dlg = document.getElementById("help-dialog");
+  document
+    .getElementById("help-btn")
+    .addEventListener("click", () => dlg.showModal());
+  document
+    .getElementById("help-dialog-close")
+    .addEventListener("click", () => dlg.close());
+  // Click-outside-to-dismiss, mirroring the pending dialog.
+  dlg.addEventListener("click", (e) => {
+    if (e.target === dlg) dlg.close();
+  });
 }
 
 function setupPendingDialog() {
@@ -1458,6 +1671,38 @@ async function init() {
   // node click + canvas click (declared further down). Wire it up
   // before the first apply so the listeners are in place.
   topology.setSelectionHandler(showComponent, clearSide);
+  // Editor-style keyboard shortcuts. All check that focus isn't in
+  // a text editor (REPL textarea, dialog inputs) before firing, so
+  // typing remains unaffected.
+  document.addEventListener("keydown", (e) => {
+    const inEditable = e.target.matches?.("input, textarea, [contenteditable]");
+    if (inEditable) return;
+    const meta = e.metaKey || e.ctrlKey;
+    const key = e.key.toLowerCase();
+    if (meta && key === "c") {
+      e.preventDefault();
+      copySelection();
+    } else if (meta && key === "v") {
+      e.preventDefault();
+      pasteClipboard();
+    } else if (meta && key === "x") {
+      e.preventDefault();
+      cutSelection();
+    } else if (meta && key === "a") {
+      e.preventDefault();
+      selectAllVisible();
+    } else if (e.key === "Delete" || e.key === "Backspace") {
+      e.preventDefault();
+      deleteSelection();
+    } else if (e.key === "Escape") {
+      // Topology's own click handler clears the side panel; mirror
+      // that here for keyboard parity.
+      topology.select([]);
+      clearSide();
+    }
+  });
+  setupContextMenu();
+  setupHelpButton();
   await refreshTopology();
   await pendingState.refresh();
   // WS push: refresh both the topology (so the canvas reflects the
