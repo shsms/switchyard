@@ -358,6 +358,82 @@ const topology = (() => {
         }
       }
     }
+    // vis-network's hierarchical layout is level-stable but
+    // within-level it appends new nodes to the bottom of their
+    // level's slot list (DataSet insertion order). Run a barycenter
+    // pass to pull each node toward its neighbours' average y so
+    // the duplicated battery sits next to its inverter rather than
+    // dropping to the bottom of the canvas.
+    rearrangeVerticallyForShortArrows();
+  }
+
+  // Within-level barycenter pass: for each node, the desired y is
+  // the mean y of its connected neighbours (across all levels). We
+  // sort each level by desired y and reassign nodes to the level's
+  // existing y-slots in that order — a permutation, so the level's
+  // overall vertical extent and spacing stay put. A few iterations
+  // are enough for typical switchyard topologies (depth ≤ 5);
+  // bigger / wider graphs would benefit from more.
+  function rearrangeVerticallyForShortArrows() {
+    if (!network || !edgesDS || !nodesDS) return;
+    const positions = network.getPositions();
+    const ids = Object.keys(positions);
+    if (ids.length <= 1) return;
+
+    // Group ids by level. Hierarchical LR puts each level at the
+    // same x; round to absorb floating-point quirks.
+    const levels = new Map();
+    for (const id of ids) {
+      const lvl = Math.round(positions[id].x);
+      if (!levels.has(lvl)) levels.set(lvl, []);
+      levels.get(lvl).push(id);
+    }
+
+    // Undirected adjacency map for the barycenter — both directions
+    // pull. Using strings throughout because vis position keys are
+    // stringified ids.
+    const neighbors = new Map();
+    for (const id of ids) neighbors.set(id, []);
+    for (const e of edgesDS.get()) {
+      const f = String(e.from);
+      const t = String(e.to);
+      if (neighbors.has(f)) neighbors.get(f).push(t);
+      if (neighbors.has(t)) neighbors.get(t).push(f);
+    }
+
+    const ITERATIONS = 24;
+    for (let iter = 0; iter < ITERATIONS; iter++) {
+      let moved = false;
+      for (const levelIds of levels.values()) {
+        if (levelIds.length <= 1) continue;
+        const desired = levelIds.map((id) => {
+          const ns = neighbors.get(id);
+          if (!ns.length) return positions[id].y;
+          let sum = 0;
+          for (const n of ns) sum += positions[n].y;
+          return sum / ns.length;
+        });
+        const slotYs = levelIds
+          .map((id) => positions[id].y)
+          .sort((a, b) => a - b);
+        const order = levelIds
+          .map((_, i) => i)
+          .sort((a, b) => desired[a] - desired[b]);
+        for (let slot = 0; slot < order.length; slot++) {
+          const id = levelIds[order[slot]];
+          const newY = slotYs[slot];
+          if (Math.abs(positions[id].y - newY) > 0.5) {
+            positions[id].y = newY;
+            moved = true;
+          }
+        }
+      }
+      if (!moved) break;
+    }
+
+    for (const id of ids) {
+      network.moveNode(id, positions[id].x, positions[id].y);
+    }
   }
 
   return {
