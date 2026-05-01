@@ -61,6 +61,9 @@ fn router(config: Config) -> Router {
         .route("/api/pending", get(pending))
         .route("/api/persist", post(persist))
         .route("/api/discard", post(discard))
+        .route("/api/scenarios", get(scenarios_list))
+        .route("/api/scenarios/save", post(scenarios_save))
+        .route("/api/scenarios/load", post(scenarios_load))
         .route("/ws/events", get(events_ws))
         .with_state(config)
 }
@@ -399,6 +402,78 @@ async fn discard(State(config): State<Config>) -> Json<DiscardResponse> {
         .await
         .ok();
     Json(DiscardResponse { discarded: count })
+}
+
+#[derive(Serialize)]
+struct ScenariosListResponse {
+    names: Vec<String>,
+}
+
+async fn scenarios_list(
+    State(config): State<Config>,
+) -> Result<Json<ScenariosListResponse>, (StatusCode, String)> {
+    config
+        .list_scenarios()
+        .map(|names| Json(ScenariosListResponse { names }))
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("read failed: {e}")))
+}
+
+#[derive(Deserialize)]
+struct ScenarioName {
+    name: String,
+}
+
+async fn scenarios_save(
+    State(config): State<Config>,
+    Query(q): Query<ScenarioName>,
+) -> Result<Json<PersistResponse>, (StatusCode, String)> {
+    let name = sanitize_scenario_name(&q.name)?;
+    tokio::task::spawn_blocking(move || config.save_scenario(&name))
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("save panicked: {e}")))?
+        .map(|r| {
+            Json(PersistResponse {
+                persisted: r.persisted,
+                path: r.path,
+            })
+        })
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("write failed: {e}")))
+}
+
+#[derive(Serialize)]
+struct ScenarioLoadResponse {
+    loaded_lines: usize,
+}
+
+async fn scenarios_load(
+    State(config): State<Config>,
+    Query(q): Query<ScenarioName>,
+) -> Result<Json<ScenarioLoadResponse>, (StatusCode, String)> {
+    let name = sanitize_scenario_name(&q.name)?;
+    tokio::task::spawn_blocking(move || config.load_scenario(&name))
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("load panicked: {e}")))?
+        .map(|loaded_lines| Json(ScenarioLoadResponse { loaded_lines }))
+        .map_err(|e| (StatusCode::NOT_FOUND, format!("read failed: {e}")))
+}
+
+/// Reject path-traversal + obviously-bad characters in scenario
+/// names. Keep it conservative — local-only single-developer means
+/// anything weird is more likely a typo than an attack, but we still
+/// prefer to fail cleanly than to write to `../etc/passwd.lisp`.
+fn sanitize_scenario_name(name: &str) -> Result<String, (StatusCode, String)> {
+    if name.is_empty()
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains('.')
+        || name.starts_with('-')
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("invalid scenario name: {name:?}"),
+        ));
+    }
+    Ok(name.to_string())
 }
 
 /// WebSocket event push. Subscribers receive WorldEvent JSON for

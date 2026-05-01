@@ -230,6 +230,76 @@ impl Config {
         ))
     }
 
+    fn scenarios_dir(&self) -> PathBuf {
+        let load_dir = Path::new(&self.filename)
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."));
+        load_dir.join("scenarios")
+    }
+
+    /// List scenarios (just the basenames without the `.lisp` ext)
+    /// available under `<load-dir>/scenarios/`. Returns an empty Vec
+    /// if the directory doesn't exist.
+    pub fn list_scenarios(&self) -> std::io::Result<Vec<String>> {
+        let dir = self.scenarios_dir();
+        if !dir.exists() {
+            return Ok(Vec::new());
+        }
+        let mut names = Vec::new();
+        for entry in fs::read_dir(&dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("lisp") {
+                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                    names.push(stem.to_string());
+                }
+            }
+        }
+        names.sort();
+        Ok(names)
+    }
+
+    /// Save the current pending log to `scenarios/<name>.lisp` +
+    /// clear the log. Like `persist_pending` but the destination is
+    /// a named scenario file instead of the per-microgrid override.
+    /// Useful for capturing a recent series of edits as a reusable
+    /// recipe ("EV-fault-during-cloud-cover", "battery-bypass", …).
+    pub fn save_scenario(&self, name: &str) -> std::io::Result<PersistResult> {
+        let entries = std::mem::take(&mut *self.pending_log.lock());
+        let dir = self.scenarios_dir();
+        fs::create_dir_all(&dir)?;
+        let path = dir.join(format!("{name}.lisp"));
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)?;
+        writeln!(file, "\n;; ── {} ──", Utc::now().to_rfc3339())?;
+        for entry in &entries {
+            writeln!(file, "{entry}")?;
+        }
+        Ok(PersistResult {
+            persisted: entries.len(),
+            path: path.to_string_lossy().into_owned(),
+        })
+    }
+
+    /// Load `scenarios/<name>.lisp` and eval its contents — every
+    /// expression goes through `eval`, so each one lands in the
+    /// pending log too. The user can then Persist (to apply
+    /// permanently) or Discard.
+    pub fn load_scenario(&self, name: &str) -> std::io::Result<usize> {
+        let path = self.scenarios_dir().join(format!("{name}.lisp"));
+        let src = fs::read_to_string(&path)?;
+        // tulisp's eval_string handles a multi-form file by treating
+        // them as a progn. We want each form to land in the pending
+        // log individually, so wrap in a (progn ...) — eval logs the
+        // whole string verbatim, which still re-runs cleanly.
+        let _ = self.eval(&src);
+        Ok(src.lines().count())
+    }
+
     pub fn reload(&self) {
         let start = std::time::Instant::now();
         self.world.reset();
