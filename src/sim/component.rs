@@ -205,6 +205,17 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
     fn reactive_bounds(&self) -> Option<(f32, f32)> {
         None
     }
+
+    /// Replace the PF cap on the reactive envelope at runtime.
+    /// `None` disables the PF constraint (kVA cap or unrestricted
+    /// take over). Mirrors the SunSpec / IEEE 1547-2018 PF setpoint
+    /// surface a real EMS pushes via Modbus. Default no-op for
+    /// components that don't model reactive power.
+    fn set_reactive_pf_limit(&self, _pf: Option<f32>) {}
+
+    /// Replace the apparent-power (kVA) cap on the reactive envelope
+    /// at runtime. `None` disables the kVA constraint. Default no-op.
+    fn set_reactive_apparent_va(&self, _va: Option<f32>) {}
 }
 
 /// Cloneable handle that we hand to Lisp via `Shared<dyn TulispAny>`.

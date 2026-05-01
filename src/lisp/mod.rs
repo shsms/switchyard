@@ -151,7 +151,45 @@ fn register_runtime(ctx: &mut TulispContext, world: &World, metadata: Arc<RwLock
     register_runtime_modes(ctx, world.clone());
     register_load_drivers(ctx, world.clone());
     register_time_helpers(ctx);
+    register_reactive_setters(ctx, world.clone());
     csv_profile::register(ctx);
+}
+
+fn register_reactive_setters(ctx: &mut TulispContext, world: World) {
+    // Same opt-in convention as the make-* plist args:
+    //   value > 0  → that constraint is active with this magnitude
+    //   value ≤ 0  → that constraint is disabled
+    // Mirrors what a SunSpec / IEEE 1547-2018 EMS pushes via Modbus.
+    let w = world.clone();
+    ctx.defun(
+        "set-reactive-pf-limit",
+        move |id: i64, k: f64| -> Result<bool, Error> {
+            match w.get(id as u64) {
+                Some(c) => {
+                    c.set_reactive_pf_limit(if k > 0.0 { Some(k as f32) } else { None });
+                    Ok(true)
+                }
+                None => Err(Error::invalid_argument(format!(
+                    "set-reactive-pf-limit: component {id} not found"
+                ))),
+            }
+        },
+    );
+
+    ctx.defun(
+        "set-reactive-apparent-va",
+        move |id: i64, va: f64| -> Result<bool, Error> {
+            match world.get(id as u64) {
+                Some(c) => {
+                    c.set_reactive_apparent_va(if va > 0.0 { Some(va as f32) } else { None });
+                    Ok(true)
+                }
+                None => Err(Error::invalid_argument(format!(
+                    "set-reactive-apparent-va: component {id} not found"
+                ))),
+            }
+        },
+    );
 }
 
 fn register_load_drivers(ctx: &mut TulispContext, world: World) {

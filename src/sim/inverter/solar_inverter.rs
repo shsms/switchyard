@@ -49,6 +49,9 @@ pub struct SolarInverter {
     interval: Duration,
     cfg: SolarInverterConfig,
     bounds: Mutex<ComponentBounds>,
+    /// Reactive envelope. Mutex-wrapped for runtime tweaking via the
+    /// (set-reactive-pf-limit) / (set-reactive-apparent-va) defuns.
+    reactive: Mutex<ReactiveCapability>,
     delay: CommandDelay,
     ramp: Ramp,
     reactive_var: Mutex<f32>,
@@ -61,12 +64,14 @@ impl SolarInverter {
         let delay = CommandDelay::new(cfg.command_delay);
         let ramp = Ramp::new(cfg.ramp_rate_w_per_s, init_p);
         ramp.set_target(init_p);
+        let reactive = cfg.reactive;
         Self {
             id,
             name: format!("inv-pv-{id}"),
             interval,
             cfg,
             bounds: Mutex::new(bounds),
+            reactive: Mutex::new(reactive),
             delay,
             ramp,
             reactive_var: Mutex::new(0.0),
@@ -123,7 +128,7 @@ impl SimulatedComponent for SolarInverter {
             active_power_bounds: Some(self.bounds.lock().effective()),
             // Dynamic envelope: tightens with |P| under PF, expands
             // toward the kVA edge when P is small.
-            reactive_power_bounds: Some(self.cfg.reactive.q_bounds_at(p)),
+            reactive_power_bounds: Some(self.reactive.lock().q_bounds_at(p)),
             ..Default::default()
         }
     }
@@ -147,7 +152,7 @@ impl SimulatedComponent for SolarInverter {
         // a curtailed PV inverter with P near 0 has tight Q room
         // under a PF cap, and full ±S_rated room under a kVA cap.
         let p_now = self.ramp.actual();
-        let (lo, hi) = self.cfg.reactive.q_bounds_at(p_now);
+        let (lo, hi) = self.reactive.lock().q_bounds_at(p_now);
         if vars < lo || vars > hi {
             return Err(SetpointError::OutOfBounds {
                 value: vars,
@@ -188,7 +193,15 @@ impl SimulatedComponent for SolarInverter {
     }
 
     fn reactive_bounds(&self) -> Option<(f32, f32)> {
-        Some(self.cfg.reactive.q_bounds_at(self.ramp.actual()))
+        Some(self.reactive.lock().q_bounds_at(self.ramp.actual()))
+    }
+
+    fn set_reactive_pf_limit(&self, pf: Option<f32>) {
+        self.reactive.lock().pf_limit = pf;
+    }
+
+    fn set_reactive_apparent_va(&self, va: Option<f32>) {
+        self.reactive.lock().apparent_va = va;
     }
 
     fn subtype(&self) -> Option<&'static str> {

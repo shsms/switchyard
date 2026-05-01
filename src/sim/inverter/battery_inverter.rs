@@ -46,6 +46,11 @@ pub struct BatteryInverter {
     /// and reads back what was accepted.
     successors: Vec<u64>,
     bounds: Mutex<ComponentBounds>,
+    /// Reactive envelope. Lives in its own Mutex (rather than under
+    /// `cfg`) so a (set-reactive-pf-limit …) / (…-apparent-va …)
+    /// defun can mutate it at runtime — same surface a SunSpec
+    /// Modbus client gets on a real smart inverter.
+    reactive: Mutex<ReactiveCapability>,
     reactive_var: Mutex<f32>,
     delay: CommandDelay,
     ramp: Ramp,
@@ -66,6 +71,7 @@ impl BatteryInverter {
         let bounds = ComponentBounds::rated(cfg.rated_lower_w, cfg.rated_upper_w);
         let delay = CommandDelay::new(cfg.command_delay);
         let ramp = Ramp::new(cfg.ramp_rate_w_per_s, 0.0);
+        let reactive = cfg.reactive;
         Self {
             id,
             name: format!("inv-bat-{id}"),
@@ -73,6 +79,7 @@ impl BatteryInverter {
             cfg,
             successors,
             bounds: Mutex::new(bounds),
+            reactive: Mutex::new(reactive),
             reactive_var: Mutex::new(0.0),
             delay,
             ramp,
@@ -169,7 +176,7 @@ impl SimulatedComponent for BatteryInverter {
             active_power_bounds: Some(self.bounds.lock().effective()),
             // Reactive envelope is dynamic: it tightens with P (or
             // expands toward the kVA edge as P falls).
-            reactive_power_bounds: Some(self.cfg.reactive.q_bounds_at(p)),
+            reactive_power_bounds: Some(self.reactive.lock().q_bounds_at(p)),
             component_state: Some(power_state(p)),
             ..Default::default()
         }
@@ -198,7 +205,7 @@ impl SimulatedComponent for BatteryInverter {
         // allowable Q drops with it (PF-style cap) or expands toward
         // the kVA edge.
         let p_now = *self.measured_w.lock();
-        let (lo, hi) = self.cfg.reactive.q_bounds_at(p_now);
+        let (lo, hi) = self.reactive.lock().q_bounds_at(p_now);
         if vars < lo || vars > hi {
             return Err(SetpointError::OutOfBounds {
                 value: vars,
@@ -252,7 +259,15 @@ impl SimulatedComponent for BatteryInverter {
 
     fn reactive_bounds(&self) -> Option<(f32, f32)> {
         let p = *self.measured_w.lock();
-        Some(self.cfg.reactive.q_bounds_at(p))
+        Some(self.reactive.lock().q_bounds_at(p))
+    }
+
+    fn set_reactive_pf_limit(&self, pf: Option<f32>) {
+        self.reactive.lock().pf_limit = pf;
+    }
+
+    fn set_reactive_apparent_va(&self, va: Option<f32>) {
+        self.reactive.lock().apparent_va = va;
     }
 }
 
