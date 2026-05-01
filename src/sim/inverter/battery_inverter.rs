@@ -53,10 +53,15 @@ pub struct BatteryInverter {
     name: String,
     interval: Duration,
     cfg: BatteryInverterConfig,
-    /// IDs of the underlying batteries. The inverter pushes DC power
-    /// onto them via `World::get(id).set_dc_power(share)` on every tick
-    /// and reads back what was accepted.
-    successors: Vec<u64>,
+    /// Hidden children captured at make-time — those are the only
+    /// ones not reachable via `World::connections`, since the
+    /// `connect_successors` helper deliberately skips hidden edges
+    /// to keep them out of the gRPC ListConnections response. Visible
+    /// children come straight from `World::connections` so the live
+    /// topology graph is the single source of truth for them
+    /// (post-make `(world-connect …)` lands, `(world-disconnect …)`
+    /// removes).
+    hidden_successors: Vec<u64>,
     bounds: Mutex<ComponentBounds>,
     delay: CommandDelay,
     ramp: Ramp,
@@ -75,7 +80,7 @@ impl BatteryInverter {
         id: u64,
         interval: Duration,
         cfg: BatteryInverterConfig,
-        successors: Vec<u64>,
+        hidden_successors: Vec<u64>,
     ) -> Self {
         let bounds = ComponentBounds::rated(cfg.rated_lower_w, cfg.rated_upper_w);
         let delay = CommandDelay::new(cfg.command_delay);
@@ -90,7 +95,7 @@ impl BatteryInverter {
             name: format!("inv-bat-{id}"),
             interval,
             cfg,
-            successors,
+            hidden_successors,
             bounds: Mutex::new(bounds),
             delay,
             ramp,
@@ -145,10 +150,9 @@ impl SimulatedComponent for BatteryInverter {
         // child accumulates pushes additively over the tick, so an
         // MxN topology (N inverters → 1 bus → M batteries) settles to
         // the clamped sum of all parent pushes, not last-writer-wins.
-        let healthy: Vec<u64> = self
-            .successors
-            .iter()
-            .copied()
+        let healthy: Vec<u64> = world
+            .children_of(self.id, &self.hidden_successors)
+            .into_iter()
             .filter(|id| world.runtime_of(*id).health == Health::Ok)
             .collect();
         if !healthy.is_empty() {

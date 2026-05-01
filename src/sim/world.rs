@@ -214,6 +214,32 @@ impl World {
         self.inner.connections.read().clone()
     }
 
+    /// Children of `parent` for aggregation / DC-push purposes:
+    /// every visible edge in the topology graph plus any extra
+    /// `extra_hidden` ids the caller has captured for hidden
+    /// children that were intentionally kept out of `connections`
+    /// (so they don't appear in gRPC ListConnections). Hidden
+    /// entries are de-duped against the visible ones in case a
+    /// caller passes overlap. `world-connect` and `world-disconnect`
+    /// flow through `connections`, so anything wired up post-make
+    /// from the UI / REPL automatically lands here.
+    pub fn children_of(&self, parent: u64, extra_hidden: &[u64]) -> Vec<u64> {
+        let mut out: Vec<u64> = self
+            .inner
+            .connections
+            .read()
+            .iter()
+            .filter_map(|(p, c)| (*p == parent).then_some(*c))
+            .collect();
+        let mut seen: std::collections::HashSet<u64> = out.iter().copied().collect();
+        for id in extra_hidden {
+            if seen.insert(*id) {
+                out.push(*id);
+            }
+        }
+        out
+    }
+
     pub fn components(&self) -> Vec<Arc<dyn SimulatedComponent>> {
         self.inner.components.read().clone()
     }
@@ -555,6 +581,27 @@ mod tests {
         // checking the connection-graph shape, not the bounds math.
         assert!(w.aggregate_child_bounds(2).is_none());
         assert!(w.aggregate_child_bounds(3).is_none());
+    }
+
+    /// `children_of` unions visible edges in the connections graph
+    /// with the caller's hidden-child cache. Drives both meter
+    /// aggregation and the inverter DC-push, so both pick up
+    /// post-make `(world-connect …)` adds + `(world-disconnect …)`
+    /// removes while still tracking hidden synthetic loads that
+    /// never enter the graph.
+    #[test]
+    fn children_of_unions_connections_and_hidden() {
+        let w = World::new();
+        w.connect(2, 100);
+        w.connect(2, 101);
+        // Visible-only path: hidden cache empty.
+        assert_eq!(w.children_of(2, &[]), vec![100, 101]);
+        // Hidden cache extends the result; duplicates collapse.
+        assert_eq!(w.children_of(2, &[101, 999]), vec![100, 101, 999]);
+        // Disconnect drops it from the visible set; hidden cache
+        // unaffected so the deduped union shrinks accordingly.
+        w.disconnect(2, 100);
+        assert_eq!(w.children_of(2, &[999]), vec![101, 999]);
     }
 
     /// `parent_count` reflects how many edges in the connections

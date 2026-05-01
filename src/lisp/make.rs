@@ -350,16 +350,26 @@ pub fn register(ctx: &mut TulispContext, world: World) {
             let d = parse_defaults::<MeterDefaults>(ctx, a.config.as_ref())?;
             let id = id_or_next(&w, a.id);
             let interval = ms_to_duration(a.interval.or(d.interval), 1000);
-            let succ_ids: Vec<u64> = a
+            let hidden = a.hidden.unwrap_or(false);
+            // Cache only the children that won't end up in
+            // World::connections — the visible ones flow through
+            // connect_successors below. For a hidden parent
+            // connect_successors gets skipped entirely, so every
+            // child is "hidden" from the graph's perspective.
+            let cached_succ_ids: Vec<u64> = a
                 .successors
                 .as_ref()
-                .map(|v| v.iter().map(|h| h.id()).collect())
+                .map(|v| {
+                    v.iter()
+                        .filter(|h| hidden || h.is_hidden())
+                        .map(|h| h.id())
+                        .collect()
+                })
                 .unwrap_or_default();
-            let hidden = a.hidden.unwrap_or(false);
             let meter = Meter::new(
                 id,
                 interval,
-                succ_ids,
+                cached_succ_ids,
                 a.power.or(d.power).map(|p| p as f32),
                 a.stream_jitter_pct
                     .or(d.stream_jitter_pct)
@@ -482,14 +492,19 @@ pub fn register(ctx: &mut TulispContext, world: World) {
             if let Some(v) = a.reactive_ramp_rate.or(d.reactive_ramp_rate) {
                 cfg.reactive_ramp_rate_var_per_s = v as f32;
             }
-            let succ_ids: Vec<u64> = a
+            // Inverters are never hidden, so cache only the hidden
+            // children (rare in practice — a battery would have to be
+            // marked hidden). Visible batteries come from
+            // World::connections, kept in sync by connect_successors
+            // and post-make `(world-connect …)` / `(world-disconnect …)`.
+            let cached_succ_ids: Vec<u64> = a
                 .successors
                 .as_ref()
-                .map(|v| v.iter().map(|h| h.id()).collect())
+                .map(|v| v.iter().filter(|h| h.is_hidden()).map(|h| h.id()).collect())
                 .unwrap_or_default();
             let h = register_with_modes(
                 &w,
-                BatteryInverter::new(id, interval, cfg, succ_ids),
+                BatteryInverter::new(id, interval, cfg, cached_succ_ids),
                 a.health.or(d.health),
                 a.telemetry_mode.or(d.telemetry_mode),
                 a.command_mode.or(d.command_mode),

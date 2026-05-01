@@ -14,7 +14,14 @@ pub struct Meter {
     id: u64,
     name: String,
     interval: Duration,
-    successors: Vec<u64>,
+    /// Make-time children that aren't reachable via
+    /// `World::connections`: the hidden ones (excluded from the gRPC
+    /// graph by `connect_successors`) and — for a hidden meter —
+    /// every child, since `connect_successors` is skipped wholesale
+    /// for hidden parents. Visible children come from
+    /// `World::children_of` so post-make `(world-connect …)` adds
+    /// and `(world-disconnect …)` removals just work.
+    hidden_successors: Vec<u64>,
     /// Override the aggregate-from-successors path with an explicit
     /// active-power value. Mutex-wrapped so a runtime defun can flip
     /// it without contending against the per-tick aggregation read.
@@ -31,7 +38,7 @@ impl Meter {
     pub fn new(
         id: u64,
         interval: Duration,
-        successors: Vec<u64>,
+        hidden_successors: Vec<u64>,
         fixed_power_w: Option<f32>,
         stream_jitter_pct: f32,
         hidden: bool,
@@ -40,36 +47,19 @@ impl Meter {
             id,
             name: format!("meter-{id}"),
             interval,
-            successors,
+            hidden_successors,
             fixed_power_w: Mutex::new(fixed_power_w),
             stream_jitter_pct,
             hidden,
         }
     }
 
-    /// Children to aggregate over: union of successors set at make-
-    /// time (which include hidden children — those don't appear in
-    /// `World.connections`) and the visible-edge entries currently
-    /// in the topology graph (so post-make `(world-connect …)` calls
-    /// from the UI / REPL get picked up). Returned in registration
-    /// order with no duplicates.
-    fn child_ids(&self, world: &World) -> Vec<u64> {
-        let mut seen: std::collections::HashSet<u64> =
-            self.successors.iter().copied().collect();
-        let mut out = self.successors.clone();
-        for (p, c) in world.connections() {
-            if p == self.id && seen.insert(c) {
-                out.push(c);
-            }
-        }
-        out
-    }
-
     fn aggregate_active(&self, world: &World) -> f32 {
         if let Some(p) = *self.fixed_power_w.lock() {
             return p;
         }
-        self.child_ids(world)
+        world
+            .children_of(self.id, &self.hidden_successors)
             .into_iter()
             .filter_map(|id| world.get(id).map(|c| (id, c)))
             .map(|(child_id, child)| {
@@ -93,7 +83,8 @@ impl Meter {
         if self.fixed_power_w.lock().is_some() {
             return 0.0;
         }
-        self.child_ids(world)
+        world
+            .children_of(self.id, &self.hidden_successors)
             .into_iter()
             .filter_map(|id| world.get(id).map(|c| (id, c)))
             .map(|(child_id, child)| {
@@ -295,6 +286,31 @@ mod tests {
         assert!((m_a.aggregate_power_w(&w) - 5_000.0).abs() < 1e-3);
         assert!((m_b.aggregate_power_w(&w) - 5_000.0).abs() < 1e-3);
         assert!((m_top.aggregate_power_w(&w) - 10_000.0).abs() < 1e-3);
+    }
+
+    /// `(world-disconnect …)` must take aggregation effect even for
+    /// children that were wired at make-time. Pre-fix the meter
+    /// cached its full successor list and ignored disconnects.
+    #[test]
+    fn world_disconnect_after_make_drops_child() {
+        let w = World::new();
+        let inverter = std::sync::Arc::new(FixedFlow {
+            id: 100,
+            p: 2_000.0,
+            q: 0.0,
+        });
+        w.register_arc(inverter);
+        // Visible meter with the inverter as a make-time child —
+        // the cache stays empty (visible children come from
+        // World::connections), so the connect/disconnect dance
+        // works against connections only.
+        let m = Meter::new(2, Duration::from_secs(1), vec![], None, 0.0, false);
+        w.register(m);
+        w.connect(2, 100);
+        let m = w.get(2).unwrap();
+        assert!((m.aggregate_power_w(&w) - 2_000.0).abs() < 1e-3);
+        assert!(w.disconnect(2, 100));
+        assert_eq!(m.aggregate_power_w(&w), 0.0);
     }
 
     /// Children connected via post-make `(world-connect …)` (eg.
