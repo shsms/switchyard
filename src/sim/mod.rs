@@ -12,6 +12,7 @@ pub mod meter;
 pub mod ramp;
 pub mod reactive;
 pub mod runtime;
+pub mod setpoints;
 pub mod world;
 
 pub use battery::Battery;
