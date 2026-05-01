@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use simplelog::{ColorChoice, Config as LogConfig, LevelFilter, TermLogger, TerminalMode};
 use switchyard::{
     lisp::Config, proto::microgrid::microgrid_server::MicrogridServer as MicrogridGrpcServer,
-    server::MicrogridServer, sim::World,
+    server::MicrogridServer, sim::World, ui,
 };
 use tonic::transport::Server;
 
@@ -44,6 +44,15 @@ async fn main() {
 
     // Watch the config file in the background so saves trigger reload.
     tokio::spawn(config.clone().watch());
+
+    // UI server. Localhost-only for now; --ui-bind / --ui-port land
+    // in a follow-up commit.
+    let ui_addr = "127.0.0.1:8801".parse().unwrap();
+    tokio::spawn(async move {
+        if let Err(e) = ui::serve(ui_addr).await {
+            log::error!("UI server exited: {e}");
+        }
+    });
 
     let server = MicrogridServer::new(config);
     Server::builder()

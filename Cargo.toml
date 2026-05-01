@@ -21,6 +21,9 @@ rand = { version = "0.8.5", features = ["small_rng"] }
 chrono = "0.4.42"
 parking_lot = "0.12"
 clap = { version = "4", features = ["derive"] }
+axum = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [build-dependencies]
 tonic-prost-build = { version = "0.14", features = ["cleanup-markdown"] }
