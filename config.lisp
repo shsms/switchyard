@@ -66,6 +66,22 @@
 ;;                                (csv-lookup csv-data "bedroom" rel)
 ;;                                (csv-lookup csv-data "office" rel))))))
 
+;; PV cloud-cover schedule over a 10-minute window, driving the solar
+;; inverter (id 200 below). Sunny first 3 min (80%), 2-min ramp into
+;; clouds (→ 20%), 2 min cloudy, 2-min ramp back to clear. The
+;; per-tick min-avail clamp on the solar inverter picks up each new
+;; sunlight% on the next tick.
+(defun cloud-curve (t-window)
+  (cond ((< t-window 180.0) 80.0)
+        ((< t-window 300.0) (- 80.0 (* 0.5 (- t-window 180.0))))
+        ((< t-window 420.0) 20.0)
+        (t (min 80.0 (+ 20.0 (* 0.5 (- t-window 420.0)))))))
+
+(every
+ :milliseconds 1000
+ :call (lambda ()
+         (set-solar-sunlight 200 (cloud-curve (window-elapsed 600.0)))))
+
 ;; -----------------------------------------------------------------------------
 ;; Per-category defaults. Each (make-*) accepts `:config <alist>`;
 ;; precedence is per-component plist > :config alist > Rust default.
@@ -136,13 +152,14 @@
                    :config      battery-defaults
                    :initial-soc 85.0)))))   ; per-component override
 
-    ;; Solar branch.
+    ;; Solar branch — id 200 so the cloud-curve timer above can reach it.
     (make-meter
      :config meter-defaults
      :successors
      (list (make-solar-inverter
+            :id        200
             :config    solar-inverter-defaults
-            :sunlight% 80.0)))               ; scenario knob
+            :sunlight% 80.0)))               ; scenario starting point
 
     ;; EV branch — near-full so the SoC-protect taper is observable.
     (make-meter
