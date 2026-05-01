@@ -400,7 +400,7 @@ A snapshot of where switchyard sits relative to microsim. Items marked
 | **`swctl` CLI** | clap-based client (`info` / `list` / `tree` / `stream` / `set-power` / `augment-bounds`). Microsim users went via grpcurl or the Frequenz SDK. |
 | **`World::aggregate_child_bounds`** | Public Rust API for walking the topology and summing children's bounds. Microsim's equivalent lives entirely in Lisp. |
 | **MxN inverter ↔ battery topology** | Battery accumulates pushes additively per-tick; one inverter→N batteries equal-share; N inverters→one battery sums; M×N nests both. Failed batteries (`Health::Error/Standby`) are filtered out at distribution and the surviving siblings absorb the full commanded value. Microsim's distribution is hard-wired 1-inverter-to-N-batteries with no failed-child handling. |
-| **Redundant / parallel meters** | Two meters can declare the same subtree as their `:successors` and both edges land in the connections graph; each independently aggregates the shared child. `swctl tree` renders the shared subtree under each parent (DAG → tree projection). Closing one meter via `(set-component-telemetry-mode "closed")` leaves the redundant peer unaffected. |
+| **Parallel-paths meter aggregation** | A child shared by N parents in the connection graph contributes `1/N` of its flow to each parent — so 1 inverter under 2 parallel meters reads as 5 kW under each, and the meter above them sees 10 kW (the inverter's actual flow), not 20 kW. Hidden children with no edges in the graph clamp to `1/1` and contribute their full power to their owning meter. Microsim has no equivalent — `:per-phase-power` aggregation in microsim doesn't model shared children at all. |
 
 ### Functional parity
 

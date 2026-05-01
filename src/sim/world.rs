@@ -127,6 +127,23 @@ impl World {
         self.inner.by_id.read().get(&id).cloned()
     }
 
+    /// Number of `(parent, child)` edges in the connections graph
+    /// where `child == id`. A meter aggregating a child that's
+    /// shared with a sibling meter (parallel paths) divides the
+    /// child's flow by this count so the sum at the parent of those
+    /// siblings doesn't double-count. Returns 0 for hidden children
+    /// whose edges were intentionally suppressed; callers should
+    /// treat 0 as "this meter is the sole consumer" by clamping with
+    /// `.max(1)`.
+    pub fn parent_count(&self, id: u64) -> usize {
+        self.inner
+            .connections
+            .read()
+            .iter()
+            .filter(|(_, c)| *c == id)
+            .count()
+    }
+
     /// Sum the `effective_active_bounds()` of every direct child of
     /// `parent`. Returns `None` when `parent` has no children that
     /// expose bounds.
@@ -248,8 +265,9 @@ mod tests {
 
     /// Two meters can list the same inverter as a successor and both
     /// edges land in the connections graph (a parallel-meter
-    /// redundancy setup). `aggregate_child_bounds` from either parent
-    /// finds its own children independently — no double-counting.
+    /// setup). `aggregate_child_bounds` from either parent finds its
+    /// own children independently — no double-counting at the bounds
+    /// layer.
     #[test]
     fn shared_child_under_two_parents() {
         let w = World::new();
@@ -264,5 +282,21 @@ mod tests {
         // checking the connection-graph shape, not the bounds math.
         assert!(w.aggregate_child_bounds(2).is_none());
         assert!(w.aggregate_child_bounds(3).is_none());
+    }
+
+    /// `parent_count` reflects how many edges in the connections
+    /// graph terminate on a given child. Meter aggregation divides
+    /// by this so a child shared by N parents contributes 1/N to
+    /// each.
+    #[test]
+    fn parent_count_reports_edge_count() {
+        let w = World::new();
+        assert_eq!(w.parent_count(100), 0); // unconnected
+        w.connect(2, 100);
+        assert_eq!(w.parent_count(100), 1);
+        w.connect(3, 100);
+        assert_eq!(w.parent_count(100), 2);
+        // unrelated child unaffected
+        assert_eq!(w.parent_count(101), 0);
     }
 }

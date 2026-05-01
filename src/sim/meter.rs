@@ -53,8 +53,18 @@ impl Meter {
         }
         self.successors
             .iter()
-            .filter_map(|id| world.get(*id))
-            .map(|c| c.aggregate_power_w(world))
+            .filter_map(|id| world.get(*id).map(|c| (*id, c)))
+            .map(|(child_id, child)| {
+                // Parallel-paths share: a child with N parents in the
+                // connection graph contributes 1/N to each parent. So
+                // 1 inverter shared by 2 parallel meters appears as
+                // half of its flow under each — the top meter sums
+                // them and lands on the inverter's actual power.
+                // hidden children have 0 edges in the graph; clamp
+                // to 1 (this meter is the sole consumer).
+                let share = world.parent_count(child_id).max(1) as f32;
+                child.aggregate_power_w(world) / share
+            })
             .sum()
     }
 
@@ -67,8 +77,11 @@ impl Meter {
         }
         self.successors
             .iter()
-            .filter_map(|id| world.get(*id))
-            .map(|c| c.aggregate_reactive_var(world))
+            .filter_map(|id| world.get(*id).map(|c| (*id, c)))
+            .map(|(child_id, child)| {
+                let share = world.parent_count(child_id).max(1) as f32;
+                child.aggregate_reactive_var(world) / share
+            })
             .sum()
     }
 
@@ -175,4 +188,117 @@ pub fn per_phase_apparent_current(
         }
     }
     (one(p.0, q.0, v.0), one(p.1, q.1, v.1), one(p.2, q.2, v.2))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sim::SimulatedComponent;
+
+    /// Stub component that returns a fixed P / Q for testing how
+    /// meters aggregate their children. Doesn't model any physics.
+    struct FixedFlow {
+        id: u64,
+        p: f32,
+        q: f32,
+    }
+    impl std::fmt::Display for FixedFlow {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "fixed-{}", self.id)
+        }
+    }
+    impl SimulatedComponent for FixedFlow {
+        fn id(&self) -> u64 {
+            self.id
+        }
+        fn category(&self) -> Category {
+            Category::Inverter
+        }
+        fn name(&self) -> &str {
+            "fixed"
+        }
+        fn stream_interval(&self) -> Duration {
+            Duration::from_secs(1)
+        }
+        fn tick(&self, _: &World, _: chrono::DateTime<chrono::Utc>, _: Duration) {}
+        fn telemetry(&self, _: &World) -> Telemetry {
+            Telemetry::default()
+        }
+        fn aggregate_power_w(&self, _: &World) -> f32 {
+            self.p
+        }
+        fn aggregate_reactive_var(&self, _: &World) -> f32 {
+            self.q
+        }
+    }
+
+    /// 1 inverter, 2 parallel meters, 1 top meter:
+    ///
+    ///                  top (id 2)
+    ///                  ╱     ╲
+    ///         meter_a (10)  meter_b (11)
+    ///                  ╲     ╱
+    ///                inverter (100)
+    ///
+    /// inverter publishes 10 kW. Each parallel meter should see half
+    /// (5 kW); the top meter aggregates both halves and lands on the
+    /// inverter's actual flow (10 kW), not 20 kW.
+    #[test]
+    fn parallel_paths_share_one_inverter() {
+        let w = World::new();
+
+        // Register an inverter that publishes 10 kW active, 0 VAR.
+        let inverter = std::sync::Arc::new(FixedFlow {
+            id: 100,
+            p: 10_000.0,
+            q: 0.0,
+        });
+        w.register_arc(inverter);
+
+        // Two parallel meters that each list the inverter as their
+        // only successor — connect both edges so parent_count(100) = 2.
+        let meter_a = Meter::new(10, Duration::from_secs(1), vec![100], None, 0.0, false);
+        let meter_b = Meter::new(11, Duration::from_secs(1), vec![100], None, 0.0, false);
+        w.register(meter_a);
+        w.register(meter_b);
+        w.connect(10, 100);
+        w.connect(11, 100);
+
+        // Top meter aggregates both parallel meters.
+        let top = Meter::new(2, Duration::from_secs(1), vec![10, 11], None, 0.0, false);
+        w.register(top);
+        w.connect(2, 10);
+        w.connect(2, 11);
+
+        let m_a = w.get(10).unwrap();
+        let m_b = w.get(11).unwrap();
+        let m_top = w.get(2).unwrap();
+
+        assert!((m_a.aggregate_power_w(&w) - 5_000.0).abs() < 1e-3);
+        assert!((m_b.aggregate_power_w(&w) - 5_000.0).abs() < 1e-3);
+        assert!((m_top.aggregate_power_w(&w) - 10_000.0).abs() < 1e-3);
+    }
+
+    /// Hidden children (no edges in the connections graph) get
+    /// parent_count = 0; meter aggregation clamps that to 1 so a
+    /// hidden consumer-load meter contributes its full power to its
+    /// owning meter.
+    #[test]
+    fn hidden_child_with_no_edges_contributes_full() {
+        let w = World::new();
+        // Hidden consumer that publishes 1500 W active.
+        let consumer = std::sync::Arc::new(FixedFlow {
+            id: 9000,
+            p: 1500.0,
+            q: 0.0,
+        });
+        w.register_arc(consumer);
+        // No w.connect — the hidden meter convention.
+        assert_eq!(w.parent_count(9000), 0);
+
+        let m = Meter::new(2, Duration::from_secs(1), vec![9000], None, 0.0, false);
+        w.register(m);
+        let m = w.get(2).unwrap();
+        assert!((m.aggregate_power_w(&w) - 1500.0).abs() < 1e-3);
+    }
 }
