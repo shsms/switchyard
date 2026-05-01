@@ -47,13 +47,31 @@ impl Meter {
         }
     }
 
+    /// Children to aggregate over: union of successors set at make-
+    /// time (which include hidden children — those don't appear in
+    /// `World.connections`) and the visible-edge entries currently
+    /// in the topology graph (so post-make `(world-connect …)` calls
+    /// from the UI / REPL get picked up). Returned in registration
+    /// order with no duplicates.
+    fn child_ids(&self, world: &World) -> Vec<u64> {
+        let mut seen: std::collections::HashSet<u64> =
+            self.successors.iter().copied().collect();
+        let mut out = self.successors.clone();
+        for (p, c) in world.connections() {
+            if p == self.id && seen.insert(c) {
+                out.push(c);
+            }
+        }
+        out
+    }
+
     fn aggregate_active(&self, world: &World) -> f32 {
         if let Some(p) = *self.fixed_power_w.lock() {
             return p;
         }
-        self.successors
-            .iter()
-            .filter_map(|id| world.get(*id).map(|c| (*id, c)))
+        self.child_ids(world)
+            .into_iter()
+            .filter_map(|id| world.get(id).map(|c| (id, c)))
             .map(|(child_id, child)| {
                 // Parallel-paths share: a child with N parents in the
                 // connection graph contributes 1/N to each parent. So
@@ -75,9 +93,9 @@ impl Meter {
         if self.fixed_power_w.lock().is_some() {
             return 0.0;
         }
-        self.successors
-            .iter()
-            .filter_map(|id| world.get(*id).map(|c| (*id, c)))
+        self.child_ids(world)
+            .into_iter()
+            .filter_map(|id| world.get(id).map(|c| (id, c)))
             .map(|(child_id, child)| {
                 let share = world.parent_count(child_id).max(1) as f32;
                 child.aggregate_reactive_var(world) / share
@@ -277,6 +295,32 @@ mod tests {
         assert!((m_a.aggregate_power_w(&w) - 5_000.0).abs() < 1e-3);
         assert!((m_b.aggregate_power_w(&w) - 5_000.0).abs() < 1e-3);
         assert!((m_top.aggregate_power_w(&w) - 10_000.0).abs() < 1e-3);
+    }
+
+    /// Children connected via post-make `(world-connect …)` (eg.
+    /// the UI's copy / paste flow) must aggregate too — the meter's
+    /// internal successor list isn't the only source of truth.
+    #[test]
+    fn world_connect_after_make_aggregates() {
+        let w = World::new();
+
+        // Inverter publishes 2 kW; meter starts with no successors.
+        let inverter = std::sync::Arc::new(FixedFlow {
+            id: 100,
+            p: 2_000.0,
+            q: 0.0,
+        });
+        w.register_arc(inverter);
+        let m = Meter::new(2, Duration::from_secs(1), vec![], None, 0.0, false);
+        w.register(m);
+
+        // Pre-connect: nothing under the meter.
+        let m = w.get(2).unwrap();
+        assert_eq!(m.aggregate_power_w(&w), 0.0);
+
+        // Post-connect: aggregation picks up the new edge.
+        w.connect(2, 100);
+        assert!((m.aggregate_power_w(&w) - 2_000.0).abs() < 1e-3);
     }
 
     /// Hidden children (no edges in the connections graph) get
