@@ -92,6 +92,18 @@ pub struct PersistResult {
 /// own evals via the /api/eval `?affects=N` query param so the
 /// inspector can show "current overrides for this component" without
 /// parsing the source string).
+/// One top-level form found in the per-microgrid override file. The
+/// `idx` is the form's 0-based position; stable until the next
+/// `persist_pending` rewrites the file. `source` is the form
+/// rendered via tulisp's `Display` impl — round-trips through eval
+/// but doesn't preserve the original spelling (comments stripped,
+/// whitespace normalized).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PersistedOverride {
+    pub idx: usize,
+    pub source: String,
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PendingEntry {
     pub id: u64,
@@ -224,24 +236,34 @@ impl Config {
         self.pending_log.lock().clone()
     }
 
-    /// Exact count of overrides already persisted to
-    /// `config.ui-overrides.<microgrid-id>.lisp`. Parses the file
-    /// via `TulispContext::parse_file` and counts the resulting
-    /// top-level forms. Returns 0 if the file is missing or
-    /// malformed (a parse error here doesn't propagate — the chrome
-    /// would have nothing useful to show, and load-overrides will
-    /// surface the same error on the next reload).
-    pub fn persisted_count(&self) -> usize {
+    /// One entry per top-level form in the per-microgrid override
+    /// file (`config.ui-overrides.<microgrid-id>.lisp`), parsed
+    /// via `TulispContext::parse_file`. Returns an empty vec if
+    /// the file is missing or malformed — load-overrides will
+    /// surface a parse error on the next reload, so we don't bother
+    /// propagating it here.
+    pub fn persisted_overrides(&self) -> Vec<PersistedOverride> {
         let path = self.overrides_path();
         if !path.exists() {
-            return 0;
+            return Vec::new();
         }
         let path_str = path.to_string_lossy();
         let mut ctx = self.ctx.borrow_mut();
-        match ctx.parse_file(&path_str) {
-            Ok(forms) => forms.base_iter().count(),
-            Err(_) => 0,
-        }
+        let Ok(forms) = ctx.parse_file(&path_str) else {
+            return Vec::new();
+        };
+        forms
+            .base_iter()
+            .enumerate()
+            .map(|(idx, form)| PersistedOverride {
+                idx,
+                source: form.to_string(),
+            })
+            .collect()
+    }
+
+    pub fn persisted_count(&self) -> usize {
+        self.persisted_overrides().len()
     }
 
     /// Drop one pending entry by id and re-derive World state by
