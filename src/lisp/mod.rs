@@ -400,19 +400,24 @@ impl Config {
                 .write(true)
                 .open(&tmp)?;
             writeln!(file, ";; ── {} ──", Utc::now().to_rfc3339())?;
+            writeln!(file)?;
             // Hand each form to tulisp-fmt before writing so the file
             // stays readable to a human eyeballing it. format_with_width
             // returns the same source on failure; we fall back to the
-            // raw text rather than dropping a form.
+            // raw text rather than dropping a form. A blank line
+            // between forms keeps the multi-line `let*` paste shapes
+            // visually separable from each other.
             for src in &kept {
                 let fmt = tulisp_fmt::format_with_width(src, 80)
                     .unwrap_or_else(|_| format!("{}\n", src));
                 file.write_all(fmt.as_bytes())?;
+                writeln!(file)?;
             }
             for entry in &entries {
                 let fmt = tulisp_fmt::format_with_width(&entry.source, 80)
                     .unwrap_or_else(|_| format!("{}\n", entry.source));
                 file.write_all(fmt.as_bytes())?;
+                writeln!(file)?;
             }
             file.flush()?;
         }
@@ -503,10 +508,12 @@ impl Config {
             .append(true)
             .open(&path)?;
         writeln!(file, "\n;; ── {} ──", Utc::now().to_rfc3339())?;
+        writeln!(file)?;
         for entry in &entries {
             let fmt = tulisp_fmt::format_with_width(&entry.source, 80)
                 .unwrap_or_else(|_| format!("{}\n", entry.source));
             file.write_all(fmt.as_bytes())?;
+            writeln!(file)?;
         }
         file.flush()?;
         let persisted_ids: HashSet<u64> = entries.iter().map(|e| e.id).collect();
