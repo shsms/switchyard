@@ -5,6 +5,7 @@ pub mod component;
 pub mod decay;
 pub mod ev_charger;
 pub mod grid;
+pub mod history;
 pub mod inverter;
 pub mod meter;
 pub mod ramp;
