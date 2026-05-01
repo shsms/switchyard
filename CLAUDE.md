@@ -85,7 +85,26 @@ in config.lisp). swctl points there by default; override with `--addr`.
    (without `id` / `successors` / other per-component fields). Take the
    alist via `:config<Option<LispValue>>` on the args struct and merge
    in the defun with `a.field.or(d.field)` (helper: `parse_defaults`).
-5. (Optional) Override `subtype()` if proto needs `InverterType::Foo` / etc.
+5. Add a `foo-defaults` alist + bare-name `(defun foo …)` wrapper to
+   `sim/defaults.lisp`. The wrapper prepends `:config foo-defaults` so
+   topology code can write `(foo …)` instead of `(make-foo :config
+   foo-defaults …)`.
+6. (Optional) Override `subtype()` if proto needs `InverterType::Foo` / etc.
+
+## Sample-config DSL convention
+
+`sim/defaults.lisp` defines bare-name wrappers (`grid`, `meter`,
+`battery`, …) that call the matching `make-*` Rust primitive with
+`:config <cat>-defaults` prepended. Topology code uses the bare names;
+callers wanting zero defaults (e.g. the hidden consumer meter) call
+`make-*` directly. Per-component plist args still win — AsPlist! takes
+the last occurrence of each key, and the wrapper's `:config` is
+always the first key in the merged plist.
+
+`config.lisp` loads `sim/defaults.lisp` outside its boundp guard so
+edits re-apply on reload, and registers it via `(watch-file …)` so
+saving defaults.lisp triggers the reload watcher just like saving
+config.lisp does.
 
 ## Lisp value adapters
 
