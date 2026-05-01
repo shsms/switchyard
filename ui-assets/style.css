@@ -57,6 +57,37 @@ header strong {
 .status.connected { color: var(--good); }
 .status.error     { color: var(--bad); }
 
+.spacer { flex: 1; }
+
+.pending-pill {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--bg);
+  background: #d2a106;
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+.pending-pill[hidden] { display: none; }
+
+.hdr-btn {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 3px;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  cursor: pointer;
+}
+.hdr-btn:hover:not(:disabled) { border-color: var(--accent); }
+.hdr-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.hdr-btn.primary {
+  background: var(--accent);
+  color: var(--bg);
+  border-color: var(--accent);
+}
+.hdr-btn.primary:hover:not(:disabled) { filter: brightness(1.1); }
+
 main {
   display: grid;
   grid-template-columns: 1fr 320px;

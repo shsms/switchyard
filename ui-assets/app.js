@@ -196,6 +196,53 @@ function escapeHtml(s) {
   return String(s).replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" })[c]);
 }
 
+function setupPersistControls() {
+  const pill = document.getElementById("pending-pill");
+  const count = document.getElementById("pending-count");
+  const persistBtn = document.getElementById("persist-btn");
+  const discardBtn = document.getElementById("discard-btn");
+
+  async function refresh() {
+    try {
+      const res = await fetch("/api/pending");
+      const data = await res.json();
+      const n = data.entries.length;
+      count.textContent = n;
+      pill.hidden = n === 0;
+      persistBtn.disabled = n === 0;
+      discardBtn.disabled = n === 0;
+    } catch (_) {
+      // Best-effort — server unreachable just leaves last known state.
+    }
+  }
+
+  persistBtn.addEventListener("click", async () => {
+    persistBtn.disabled = true;
+    try {
+      const res = await fetch("/api/persist", { method: "POST" });
+      const data = await res.json();
+      console.log(`persisted ${data.persisted} entries to ${data.path}`);
+    } finally {
+      refresh();
+    }
+  });
+
+  discardBtn.addEventListener("click", async () => {
+    if (!confirm("Discard all unsaved edits and reload?")) return;
+    discardBtn.disabled = true;
+    try {
+      await fetch("/api/discard", { method: "POST" });
+    } finally {
+      // Discard triggers a server-side reload which fires
+      // TopologyChanged on the WS — that handler re-fetches
+      // /api/topology and we'll see the rolled-back state.
+      refresh();
+    }
+  });
+
+  return refresh;
+}
+
 function setupRepl() {
   const form = document.getElementById("repl-form");
   const input = document.getElementById("repl-input");
@@ -322,10 +369,17 @@ async function refreshTopology() {
 }
 
 async function init() {
+  const refreshPending = setupPersistControls();
   await refreshTopology();
-  // WS push: refresh the topology on every TopologyChanged. Sample
-  // events go straight into the live-charts router.
-  openWebSocket((_v) => refreshTopology());
+  await refreshPending();
+  // WS push: refresh both the topology (so the canvas reflects the
+  // mutation) and the pending pill (so the count + button state
+  // updates) on every TopologyChanged. Sample events go straight
+  // into the live-charts router.
+  openWebSocket((_v) => {
+    refreshTopology();
+    refreshPending();
+  });
   setupRepl();
 }
 

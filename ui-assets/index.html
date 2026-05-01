@@ -13,6 +13,12 @@
     <header>
       <strong>switchyard</strong>
       <span id="status" class="status">connecting…</span>
+      <span class="spacer"></span>
+      <span id="pending-pill" class="pending-pill" hidden>
+        <span id="pending-count">0</span> unsaved
+      </span>
+      <button id="discard-btn" class="hdr-btn" disabled>Discard</button>
+      <button id="persist-btn" class="hdr-btn primary" disabled>Persist</button>
     </header>
     <main id="app">
       <div id="topology"></div>
