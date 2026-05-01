@@ -56,6 +56,11 @@ pub struct SolarInverter {
     name: String,
     interval: Duration,
     cfg: SolarInverterConfig,
+    /// Runtime-mutable cloud-cover knob. `cfg.sunlight_pct` seeds this
+    /// at construction; thereafter every read goes through the mutex
+    /// so a Lisp timer can drive a cloud-cover schedule via
+    /// `(set-solar-sunlight ID PCT)`.
+    sunlight_pct: Mutex<f32>,
     bounds: Mutex<ComponentBounds>,
     delay: CommandDelay,
     ramp: Ramp,
@@ -76,16 +81,31 @@ impl SolarInverter {
             cfg.reactive_command_delay,
             cfg.reactive_ramp_rate_var_per_s,
         );
+        let sunlight_pct = Mutex::new(cfg.sunlight_pct);
         Self {
             id,
             name: format!("inv-pv-{id}"),
             interval,
             cfg,
+            sunlight_pct,
             bounds: Mutex::new(bounds),
             delay,
             ramp,
             reactive,
         }
+    }
+
+    /// Update the live cloud-cover percentage. Drives the per-tick
+    /// `min_avail = rated_lower_w × sunlight_pct / 100` clamp the
+    /// inverter applies to incoming setpoints. No clamp on the
+    /// input — out-of-range values just produce out-of-range
+    /// `min_avail`, mirroring microsim.
+    pub fn set_sunlight_pct(&self, pct: f32) {
+        *self.sunlight_pct.lock() = pct;
+    }
+
+    fn min_avail_w(&self) -> f32 {
+        self.cfg.rated_lower_w * *self.sunlight_pct.lock() / 100.0
     }
 }
 
@@ -112,8 +132,7 @@ impl SimulatedComponent for SolarInverter {
     fn tick(&self, _world: &World, now: DateTime<Utc>, dt: Duration) {
         self.bounds.lock().drop_expired(now);
         if let Some(target) = self.delay.poll(now) {
-            let min_avail = self.cfg.rated_lower_w * self.cfg.sunlight_pct / 100.0;
-            self.ramp.set_target(target.max(min_avail));
+            self.ramp.set_target(target.max(self.min_avail_w()));
         }
         let p = self.ramp.advance(dt);
         // Reactive: validated when accepted, re-clamped to the live
@@ -163,9 +182,11 @@ impl SimulatedComponent for SolarInverter {
     }
 
     fn reset_setpoint(&self) {
-        let init_p = self.cfg.rated_lower_w * self.cfg.sunlight_pct / 100.0;
+        // Snap back to the cloud-cover-determined floor — same value
+        // the per-tick clamp uses, so a reset that races with a cloud
+        // shift lands consistently.
         self.delay.reset();
-        self.ramp.snap_to(init_p);
+        self.ramp.snap_to(self.min_avail_w());
         self.reactive.reset();
     }
 
@@ -212,5 +233,35 @@ impl SimulatedComponent for SolarInverter {
 
     fn effective_active_bounds(&self) -> Option<crate::sim::bounds::VecBounds> {
         Some(self.bounds.lock().effective())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg_with_sun(pct: f32) -> SolarInverterConfig {
+        SolarInverterConfig {
+            rated_lower_w: -10_000.0,
+            rated_upper_w: 0.0,
+            sunlight_pct: pct,
+            ramp_rate_w_per_s: f32::INFINITY,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn sunlight_pct_drives_min_avail_floor() {
+        let inv = SolarInverter::new(1, Duration::from_secs(1), cfg_with_sun(50.0));
+        // 50% of -10 kW rated = -5 kW available.
+        assert!((inv.min_avail_w() - (-5_000.0)).abs() < 1e-3);
+
+        // Sun goes behind a cloud → less generation available.
+        inv.set_sunlight_pct(20.0);
+        assert!((inv.min_avail_w() - (-2_000.0)).abs() < 1e-3);
+
+        // Out-of-range values pass through (microsim parity).
+        inv.set_sunlight_pct(150.0);
+        assert!((inv.min_avail_w() - (-15_000.0)).abs() < 1e-3);
     }
 }
