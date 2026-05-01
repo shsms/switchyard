@@ -120,18 +120,32 @@ impl ComponentHistory {
     /// Missing fields (Option::None on the snapshot) are skipped, so a
     /// Meter's tick produces 1–2 metric pushes; a BatteryInverter's
     /// produces 5–6.
-    pub fn push_snapshot(&mut self, ts: DateTime<Utc>, snapshot: &Telemetry) {
+    ///
+    /// Returns the list of `(metric, value)` pairs that were actually
+    /// recorded — the caller (typically `World::record_history_snapshot`)
+    /// uses this to fan out per-sample broadcast events without
+    /// re-walking the snapshot.
+    pub fn push_snapshot(
+        &mut self,
+        ts: DateTime<Utc>,
+        snapshot: &Telemetry,
+    ) -> Vec<(Metric, f32)> {
+        let mut pushed = Vec::new();
+        let mut record = |this: &mut Self, m: Metric, v: f32| {
+            this.push(ts, m, v);
+            pushed.push((m, v));
+        };
         if let Some(v) = snapshot.active_power_w {
-            self.push(ts, Metric::ActivePowerW, v);
+            record(self, Metric::ActivePowerW, v);
         }
         if let Some(v) = snapshot.reactive_power_var {
-            self.push(ts, Metric::ReactivePowerVar, v);
+            record(self, Metric::ReactivePowerVar, v);
         }
         if let Some(v) = snapshot.frequency_hz {
-            self.push(ts, Metric::FrequencyHz, v);
+            record(self, Metric::FrequencyHz, v);
         }
         if let Some(v) = snapshot.soc_pct {
-            self.push(ts, Metric::SocPct, v);
+            record(self, Metric::SocPct, v);
         }
         if let Some(b) = &snapshot.active_power_bounds {
             // Charts plot a single envelope band, so take the first
@@ -141,17 +155,18 @@ impl ComponentHistory {
             // the gRPC stream un-collapsed.
             if let Some(first) = b.0.first() {
                 if let Some(v) = first.lower {
-                    self.push(ts, Metric::ActivePowerLowerBoundW, v);
+                    record(self, Metric::ActivePowerLowerBoundW, v);
                 }
                 if let Some(v) = first.upper {
-                    self.push(ts, Metric::ActivePowerUpperBoundW, v);
+                    record(self, Metric::ActivePowerUpperBoundW, v);
                 }
             }
         }
         if let Some((l, u)) = snapshot.reactive_power_bounds {
-            self.push(ts, Metric::ReactivePowerLowerBoundVar, l);
-            self.push(ts, Metric::ReactivePowerUpperBoundVar, u);
+            record(self, Metric::ReactivePowerLowerBoundVar, l);
+            record(self, Metric::ReactivePowerUpperBoundVar, u);
         }
+        pushed
     }
 
     fn push(&mut self, ts: DateTime<Utc>, metric: Metric, value: f32) {

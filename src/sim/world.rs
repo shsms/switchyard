@@ -321,15 +321,34 @@ impl World {
     /// Take one snapshot pass: read every component's telemetry and
     /// push to its history rings. Extracted so tests can drive sampling
     /// deterministically without spawning the periodic task.
+    ///
+    /// Each pushed metric also fans out as a `WorldEvent::Sample` on
+    /// the broadcast bus, after the histories lock is released — so
+    /// WS subscribers see live samples but can't deadlock against
+    /// each other or against /api/history readers.
     pub fn record_history_snapshot(&self, now: DateTime<Utc>) {
         let components = self.inner.components.read().clone();
-        let mut histories = self.inner.histories.write();
-        for c in &components {
-            let snap = c.telemetry(self);
-            histories
-                .entry(c.id())
-                .or_insert_with(|| ComponentHistory::new(HISTORY_CAPACITY))
-                .push_snapshot(now, &snap);
+        let mut emitted: Vec<(u64, Metric, f32)> = Vec::new();
+        {
+            let mut histories = self.inner.histories.write();
+            for c in &components {
+                let snap = c.telemetry(self);
+                let entry = histories
+                    .entry(c.id())
+                    .or_insert_with(|| ComponentHistory::new(HISTORY_CAPACITY));
+                for (m, v) in entry.push_snapshot(now, &snap) {
+                    emitted.push((c.id(), m, v));
+                }
+            }
+        }
+        let ts_ms = now.timestamp_millis();
+        for (id, metric, value) in emitted {
+            let _ = self.inner.events.send(WorldEvent::Sample {
+                id,
+                metric: metric.as_str(),
+                ts_ms,
+                value,
+            });
         }
     }
 
@@ -465,6 +484,71 @@ mod tests {
         // Windowed read drops samples before `since`.
         let recent = w.history_window(7, Metric::ActivePowerW, t1).unwrap();
         assert_eq!(recent.len(), 1);
+    }
+
+    /// `record_history_snapshot` fans out a Sample event per pushed
+    /// metric. We push two metrics (P + SoC) on the same tick, so
+    /// expect two events at the same timestamp.
+    #[tokio::test]
+    async fn record_history_snapshot_emits_sample_events() {
+        use crate::sim::Telemetry;
+        use crate::sim::events::WorldEvent;
+        use chrono::TimeZone;
+        struct PVStub;
+        impl std::fmt::Display for PVStub {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "stub")
+            }
+        }
+        impl SimulatedComponent for PVStub {
+            fn id(&self) -> u64 {
+                7
+            }
+            fn category(&self) -> crate::sim::Category {
+                crate::sim::Category::Inverter
+            }
+            fn name(&self) -> &str {
+                "stub"
+            }
+            fn stream_interval(&self) -> Duration {
+                Duration::from_secs(1)
+            }
+            fn tick(&self, _: &World, _: DateTime<Utc>, _: Duration) {}
+            fn telemetry(&self, _: &World) -> Telemetry {
+                Telemetry {
+                    active_power_w: Some(-12345.0),
+                    soc_pct: Some(60.0),
+                    ..Default::default()
+                }
+            }
+        }
+        let w = World::new();
+        w.register(PVStub);
+        let mut rx = w.subscribe_events();
+        let now = Utc.timestamp_opt(1_000, 0).unwrap();
+        w.record_history_snapshot(now);
+
+        // Drain the receiver until we've seen one event per emitted
+        // metric. There's no inter-event ordering guarantee so we
+        // collect into a set keyed by metric.
+        let mut seen: std::collections::HashSet<&'static str> = std::collections::HashSet::new();
+        for _ in 0..2 {
+            match rx.recv().await.unwrap() {
+                WorldEvent::Sample {
+                    id,
+                    metric,
+                    ts_ms,
+                    value: _,
+                } => {
+                    assert_eq!(id, 7);
+                    assert_eq!(ts_ms, 1_000_000);
+                    seen.insert(metric);
+                }
+                other => panic!("unexpected event: {other:?}"),
+            }
+        }
+        assert!(seen.contains("active_power_w"));
+        assert!(seen.contains("soc_pct"));
     }
 
     /// `bump_version` advances the counter and broadcasts a
