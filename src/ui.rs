@@ -1079,6 +1079,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn scenarios_round_trip_save_list_load() {
+        // Add two pending entries → save scenario "foo" → list shows
+        // it → discard clears pending → load "foo" puts the saved
+        // forms back into the pending log.
+        let cfg = config_with("(set-microgrid-id 7) (%make-grid :id 1)").await;
+        call(cfg.clone(), post("/api/eval", "(world-rename-component 1 \"a\")")).await;
+        call(cfg.clone(), post("/api/eval", "(world-rename-component 1 \"b\")")).await;
+
+        let (status, body) = call(
+            cfg.clone(),
+            post("/api/scenarios/save?name=foo", ""),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(parsed["persisted"], 2);
+        let path = parsed["path"].as_str().unwrap();
+        assert!(path.ends_with("scenarios/foo.lisp"));
+        let written = std::fs::read_to_string(path).unwrap();
+        assert!(written.contains("\"a\""));
+        assert!(written.contains("\"b\""));
+
+        // save_scenario clears the pending log.
+        let (_, body) = call(cfg.clone(), get("/api/pending")).await;
+        let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(parsed["entries"].as_array().unwrap().is_empty());
+
+        let (status, body) = call(cfg.clone(), get("/api/scenarios")).await;
+        assert_eq!(status, StatusCode::OK);
+        let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let names = parsed["names"].as_array().unwrap();
+        assert!(names.iter().any(|n| n == "foo"));
+
+        let (status, body) = call(
+            cfg.clone(),
+            post("/api/scenarios/load?name=foo", ""),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        // load_scenario evals the whole file as one progn → one
+        // pending entry per load call regardless of form count.
+        assert_eq!(parsed["entries_added"], 1);
+
+        let (_, body) = call(cfg, get("/api/pending")).await;
+        let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(parsed["entries"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn scenarios_save_rejects_bad_names() {
+        // axum's Query parser strips `name=` to an empty string, which
+        // sanitize rejects. The other cases hit the explicit char list.
+        let cfg = config_with("").await;
+        for bad in ["", "../etc", "a/b", "foo.bar", "-flag"] {
+            let uri = format!("/api/scenarios/save?name={bad}");
+            let (status, _) = call(cfg.clone(), post(&uri, "")).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "expected 400 for {bad:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn scenarios_load_missing_file_is_400() {
+        let cfg = config_with("").await;
+        let (status, _) = call(cfg, post("/api/scenarios/load?name=nope", "")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
     async fn eval_endpoint_mutates_world() {
         // Confirm an /api/eval call that registers a component shows
         // up in the topology endpoint immediately afterwards. This is
