@@ -188,6 +188,54 @@ function clearSide() {
   sideEl.innerHTML = '<p class="hint">Click a node to inspect.</p>';
 }
 
+function escapeHtml(s) {
+  return String(s).replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" })[c]);
+}
+
+function setupRepl() {
+  const form = document.getElementById("repl-form");
+  const input = document.getElementById("repl-input");
+  const output = document.getElementById("repl-output");
+
+  async function run() {
+    const src = input.value.trim();
+    if (!src) return;
+    const entry = document.createElement("div");
+    entry.className = "repl-entry";
+    entry.innerHTML = `<pre class="repl-prompt">▸ ${escapeHtml(src)}</pre>`;
+    output.appendChild(entry);
+    output.scrollTop = output.scrollHeight;
+    try {
+      const res = await fetch("/api/eval", { method: "POST", body: src });
+      const data = await res.json();
+      const klass = data.ok ? "repl-value" : "repl-error";
+      const text = data.ok ? data.value : data.error;
+      const out = document.createElement("pre");
+      out.className = klass;
+      out.textContent = text;
+      entry.appendChild(out);
+    } catch (err) {
+      const out = document.createElement("pre");
+      out.className = "repl-error";
+      out.textContent = "transport error: " + err.message;
+      entry.appendChild(out);
+    }
+    input.value = "";
+    output.scrollTop = output.scrollHeight;
+  }
+
+  form.addEventListener("submit", (e) => {
+    e.preventDefault();
+    run();
+  });
+  input.addEventListener("keydown", (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+      e.preventDefault();
+      run();
+    }
+  });
+}
+
 function openWebSocket(onTopologyChanged) {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   const ws = new WebSocket(`${proto}//${location.host}/ws/events`);
@@ -247,6 +295,8 @@ async function init() {
   // For now just log topology-changed; reload-on-mutation lands when
   // the visual editor does.
   openWebSocket((v) => console.log("topology v" + v));
+
+  setupRepl();
 }
 
 init();

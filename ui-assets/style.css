@@ -60,21 +60,84 @@ header strong {
 main {
   display: grid;
   grid-template-columns: 1fr 320px;
+  grid-template-rows: 1fr 200px;
+  grid-template-areas:
+    "topology side"
+    "repl     repl";
   gap: 0;
   height: calc(100vh - 41px); /* viewport minus header */
 }
 
 #topology {
+  grid-area: topology;
   background: var(--bg);
   border-right: 1px solid var(--border);
   position: relative;
 }
 
 #side {
+  grid-area: side;
   padding: 1rem;
   overflow-y: auto;
   background: var(--bg-elev);
 }
+
+#repl {
+  grid-area: repl;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-elev);
+  border-top: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+#repl-output {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0.5rem 0.75rem;
+}
+
+.repl-entry { margin-bottom: 0.5rem; }
+.repl-entry pre { margin: 0; padding: 0.25rem 0.5rem; border-radius: 3px; border: none; background: transparent; }
+.repl-prompt   { color: var(--accent); }
+.repl-value    { color: var(--good); white-space: pre-wrap; }
+.repl-error    { color: var(--bad); white-space: pre-wrap; }
+
+#repl-form {
+  display: flex;
+  align-items: stretch;
+  gap: 0.5rem;
+  padding: 0.5rem;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+}
+
+#repl-input {
+  flex: 1;
+  background: var(--bg-elev);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0.4rem 0.5rem;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  resize: none;
+}
+#repl-input:focus { outline: 1px solid var(--accent); }
+
+#repl-form button {
+  background: var(--accent);
+  color: var(--bg);
+  border: none;
+  border-radius: 3px;
+  padding: 0 1rem;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: bold;
+  cursor: pointer;
+}
+#repl-form button:hover { filter: brightness(1.1); }
 
 #side h2 {
   font-family: var(--font-mono);

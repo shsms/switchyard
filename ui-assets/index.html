@@ -19,6 +19,14 @@
       <aside id="side">
         <p class="hint">Click a node to inspect.</p>
       </aside>
+      <section id="repl">
+        <div id="repl-output"></div>
+        <form id="repl-form">
+          <textarea id="repl-input" rows="2" spellcheck="false"
+                    placeholder="(eval lisp here — ctrl/cmd+enter to run)"></textarea>
+          <button type="submit">Eval</button>
+        </form>
+      </section>
     </main>
     <noscript>This UI requires JavaScript.</noscript>
     <script type="module" src="/assets/app.js"></script>
