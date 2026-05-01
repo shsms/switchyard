@@ -271,8 +271,14 @@ main {
   background: var(--bg);
 }
 
-#repl-input {
+#repl-input-wrap {
   flex: 1;
+  position: relative; /* anchor for the absolutely-positioned completion list */
+}
+
+#repl-input {
+  width: 100%;
+  box-sizing: border-box;
   background: var(--bg-elev);
   color: var(--fg);
   border: 1px solid var(--border);
@@ -283,6 +289,35 @@ main {
   resize: none;
 }
 #repl-input:focus { outline: 1px solid var(--accent); }
+
+#repl-completions {
+  position: absolute;
+  bottom: 100%;       /* float upward from the textarea */
+  left: 0;
+  margin: 0 0 4px 0;
+  padding: 4px 0;
+  list-style: none;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  min-width: 240px;
+  max-height: 220px;
+  overflow-y: auto;
+  z-index: 10;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+#repl-completions li {
+  padding: 3px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+#repl-completions li.selected,
+#repl-completions li:hover {
+  background: var(--accent);
+  color: var(--bg);
+}
 
 #repl-form button {
   background: var(--accent);

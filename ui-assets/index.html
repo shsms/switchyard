@@ -54,8 +54,12 @@
         <div id="logs"></div>
         <div id="repl-output"></div>
         <form id="repl-form">
-          <textarea id="repl-input" rows="2" spellcheck="false"
-                    placeholder="(eval lisp here — ctrl/cmd+enter to run)"></textarea>
+          <div id="repl-input-wrap">
+            <textarea id="repl-input" rows="2" spellcheck="false"
+                      autocomplete="off"
+                      placeholder="(eval lisp here — ctrl/cmd+enter to run, tab to complete)"></textarea>
+            <ul id="repl-completions" hidden></ul>
+          </div>
           <button type="submit">Eval</button>
         </form>
       </section>

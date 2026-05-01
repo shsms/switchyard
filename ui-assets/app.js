@@ -893,10 +893,191 @@ async function backfillLogs() {
   } catch (_) {}
 }
 
+// Hardcoded completion candidates for the REPL. Until tulisp exposes
+// obarray enumeration upstream, this list has to track the surface
+// switchyard exposes by hand. Drop-in replacement: hit /api/symbols
+// (TBD) and merge the response into this array.
+const COMPLETIONS = [
+  // World mutations
+  "world-connect",
+  "world-disconnect",
+  "world-remove-component",
+  "world-rename-component",
+  "world-reset",
+  // Make-* primitives
+  "%make-grid",
+  "%make-meter",
+  "%make-battery",
+  "%make-battery-inverter",
+  "%make-solar-inverter",
+  "%make-ev-charger",
+  "%make-chp",
+  // Make-* lisp wrappers
+  "make-grid",
+  "make-meter",
+  "make-battery",
+  "make-battery-inverter",
+  "make-solar-inverter",
+  "make-ev-charger",
+  "make-chp",
+  // Setters
+  "set-component-health",
+  "set-component-telemetry-mode",
+  "set-component-command-mode",
+  "set-meter-power",
+  "set-solar-sunlight",
+  "set-reactive-pf-limit",
+  "set-reactive-apparent-va",
+  "set-physics-tick-ms",
+  "set-voltage-per-phase",
+  "set-frequency",
+  // Metadata
+  "set-microgrid-id",
+  "set-enterprise-id",
+  "set-microgrid-name",
+  "set-socket-addr",
+  "set-default-request-lifetime-ms",
+  "get-microgrid-id",
+  // Utilities
+  "every",
+  "run-with-timer",
+  "cancel-timer",
+  "sleep-for",
+  "now-seconds",
+  "window-elapsed",
+  "load",
+  "load-overrides",
+  "watch-file",
+  "file-exists-p",
+  "reset-state",
+  "log.info",
+  "log.warn",
+  "log.error",
+  "log.debug",
+  "log.trace",
+  "ceiling",
+  "floor",
+  "random",
+  "csv-load",
+  "csv-lookup",
+  // Per-category defaults variables
+  "grid-defaults",
+  "meter-defaults",
+  "battery-defaults",
+  "battery-inverter-defaults",
+  "solar-inverter-defaults",
+  "ev-charger-defaults",
+  "chp-defaults",
+  // Common Lisp built-ins
+  "defun",
+  "defmacro",
+  "setq",
+  "let",
+  "let*",
+  "if",
+  "when",
+  "unless",
+  "cond",
+  "lambda",
+  "progn",
+  "quote",
+  "list",
+  "cons",
+  "car",
+  "cdr",
+  "nth",
+  "length",
+  "append",
+  "reverse",
+  "mapcar",
+  "dolist",
+  "dotimes",
+  "while",
+  "and",
+  "or",
+  "not",
+  "eq",
+  "equal",
+  "format",
+  "concat",
+  "intern",
+  "symbol-value",
+  "plist-get",
+  "alist-get",
+  "assoc",
+  "boundp",
+  "fboundp",
+  "null",
+  "consp",
+  "listp",
+  "stringp",
+  "numberp",
+  "symbolp",
+];
+
+function wordAtCursor(input) {
+  const v = input.value;
+  const c = input.selectionStart;
+  let start = c;
+  // Lisp identifiers: alnum + - _ % . :
+  while (start > 0 && /[a-zA-Z0-9_%\-.:]/.test(v[start - 1])) start--;
+  return { prefix: v.slice(start, c), start, end: c };
+}
+
 function setupRepl() {
   const form = document.getElementById("repl-form");
   const input = document.getElementById("repl-input");
   const output = document.getElementById("repl-output");
+  const completions = document.getElementById("repl-completions");
+  let selectedIdx = 0;
+  let active = []; // current list of candidates
+
+  function renderCompletions() {
+    if (!active.length) {
+      completions.hidden = true;
+      completions.innerHTML = "";
+      return;
+    }
+    completions.hidden = false;
+    completions.innerHTML = active
+      .map(
+        (c, i) =>
+          `<li class="${i === selectedIdx ? "selected" : ""}" data-i="${i}">${escapeHtml(c)}</li>`,
+      )
+      .join("");
+    for (const li of completions.querySelectorAll("li")) {
+      li.addEventListener("mousedown", (e) => {
+        e.preventDefault(); // don't blur the textarea
+        selectedIdx = Number(li.dataset.i);
+        applyCompletion();
+      });
+    }
+  }
+
+  function refresh() {
+    const { prefix } = wordAtCursor(input);
+    if (!prefix || prefix.length < 1) {
+      active = [];
+    } else {
+      active = COMPLETIONS.filter((c) => c.startsWith(prefix)).slice(0, 12);
+      // If the only match is exactly what's typed, no point showing a popup.
+      if (active.length === 1 && active[0] === prefix) active = [];
+    }
+    selectedIdx = 0;
+    renderCompletions();
+  }
+
+  function applyCompletion() {
+    if (!active.length) return;
+    const choice = active[selectedIdx];
+    const { start, end } = wordAtCursor(input);
+    const v = input.value;
+    input.value = v.slice(0, start) + choice + v.slice(end);
+    const newCursor = start + choice.length;
+    input.setSelectionRange(newCursor, newCursor);
+    active = [];
+    renderCompletions();
+  }
 
   async function run() {
     const src = input.value.trim();
@@ -929,7 +1110,41 @@ function setupRepl() {
     e.preventDefault();
     run();
   });
+  input.addEventListener("input", refresh);
+  input.addEventListener("blur", () => {
+    // Defer hide so click-on-li handlers fire first.
+    setTimeout(() => {
+      active = [];
+      renderCompletions();
+    }, 100);
+  });
   input.addEventListener("keydown", (e) => {
+    // Completion popup keys take priority when it's open.
+    if (active.length) {
+      if (e.key === "Tab" || (e.key === "Enter" && !e.ctrlKey && !e.metaKey)) {
+        e.preventDefault();
+        applyCompletion();
+        return;
+      }
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        selectedIdx = (selectedIdx + 1) % active.length;
+        renderCompletions();
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        selectedIdx = (selectedIdx - 1 + active.length) % active.length;
+        renderCompletions();
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        active = [];
+        renderCompletions();
+        return;
+      }
+    }
     if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
       e.preventDefault();
       run();
