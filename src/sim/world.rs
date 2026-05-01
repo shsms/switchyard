@@ -107,11 +107,7 @@ impl World {
         self.inner.by_id.write().insert(id, c.clone());
         // Default runtime mode: every flag at "Normal" — i.e. emit
         // telemetry, accept commands, report physics-derived state.
-        self.inner
-            .runtime
-            .write()
-            .entry(id)
-            .or_default();
+        self.inner.runtime.write().entry(id).or_default();
         ComponentHandle::from_arc(c)
     }
 
@@ -173,9 +169,7 @@ impl World {
         self.inner.by_id.write().clear();
         self.inner.connections.write().clear();
         self.inner.runtime.write().clear();
-        self.inner
-            .next_id
-            .store(FIRST_AUTO_ID, Ordering::Relaxed);
+        self.inner.next_id.store(FIRST_AUTO_ID, Ordering::Relaxed);
         // The grid state is environmental (set by the config's `every`
         // timer); we deliberately keep it across reloads so the first
         // tick after reload still has plausible values.
@@ -191,30 +185,15 @@ impl World {
     }
 
     pub fn set_health(&self, id: u64, health: Health) {
-        self.inner
-            .runtime
-            .write()
-            .entry(id)
-            .or_default()
-            .health = health;
+        self.inner.runtime.write().entry(id).or_default().health = health;
     }
 
     pub fn set_telemetry_mode(&self, id: u64, mode: TelemetryMode) {
-        self.inner
-            .runtime
-            .write()
-            .entry(id)
-            .or_default()
-            .telemetry = mode;
+        self.inner.runtime.write().entry(id).or_default().telemetry = mode;
     }
 
     pub fn set_command_mode(&self, id: u64, mode: CommandMode) {
-        self.inner
-            .runtime
-            .write()
-            .entry(id)
-            .or_default()
-            .command = mode;
+        self.inner.runtime.write().entry(id).or_default().command = mode;
     }
 
     /// Tick every registered component once. Children are stored before

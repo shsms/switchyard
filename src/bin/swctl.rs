@@ -412,9 +412,10 @@ async fn cmd_stream(
         }
         got += 1;
         if let Some(n) = samples
-            && got >= n {
-                break;
-            }
+            && got >= n
+        {
+            break;
+        }
     }
     Ok(())
 }
@@ -535,9 +536,10 @@ fn active_bounds(c: &ElectricalComponent) -> (Option<f32>, Option<f32>) {
     for b in &c.metric_config_bounds {
         let metric = Metric::try_from(b.metric).ok();
         if matches!(metric, Some(Metric::AcPowerActive) | Some(Metric::DcPower))
-            && let Some(cb) = &b.config_bounds {
-                return (cb.lower, cb.upper);
-            }
+            && let Some(cb) = &b.config_bounds
+        {
+            return (cb.lower, cb.upper);
+        }
     }
     (None, None)
 }
@@ -557,6 +559,5 @@ fn parse_metric_name(s: &str) -> Result<Metric, Box<dyn std::error::Error>> {
     } else {
         format!("METRIC_{normalized}")
     };
-    Metric::from_str_name(&with_prefix)
-        .ok_or_else(|| format!("unknown metric '{s}'").into())
+    Metric::from_str_name(&with_prefix).ok_or_else(|| format!("unknown metric '{s}'").into())
 }

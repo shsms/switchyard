@@ -79,14 +79,15 @@ impl VecBounds {
         let mut prev_upper: Option<f32> = None;
         for b in &self.0 {
             if let Some(lower) = b.lower
-                && value < lower {
-                    return match prev_upper {
-                        // <= so equidistant ties pull to the lower-magnitude
-                        // edge (matches microsim's behaviour).
-                        Some(pu) if (value - pu).abs() <= (lower - value).abs() => pu,
-                        _ => lower,
-                    };
-                }
+                && value < lower
+            {
+                return match prev_upper {
+                    // <= so equidistant ties pull to the lower-magnitude
+                    // edge (matches microsim's behaviour).
+                    Some(pu) if (value - pu).abs() <= (lower - value).abs() => pu,
+                    _ => lower,
+                };
+            }
             if let Some(upper) = b.upper {
                 prev_upper = Some(upper);
             }
@@ -141,13 +142,15 @@ impl VecBounds {
 
 fn bounds_contains(b: &Bounds, value: f32) -> bool {
     if let Some(l) = b.lower
-        && value < l {
-            return false;
-        }
+        && value < l
+    {
+        return false;
+    }
     if let Some(u) = b.upper
-        && value > u {
-            return false;
-        }
+        && value > u
+    {
+        return false;
+    }
     true
 }
 
@@ -162,12 +165,13 @@ fn bounds_intersect(a: &Bounds, b: &Bounds) -> Bounds {
     let lower = pick(a.lower, b.lower, f32::max);
     let upper = pick(a.upper, b.upper, f32::min);
     if let (Some(l), Some(u)) = (lower, upper)
-        && l > u {
-            return Bounds {
-                lower: None,
-                upper: None,
-            };
-        }
+        && l > u
+    {
+        return Bounds {
+            lower: None,
+            upper: None,
+        };
+    }
     Bounds { lower, upper }
 }
 

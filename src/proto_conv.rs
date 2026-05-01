@@ -253,17 +253,20 @@ pub fn telemetry_to_proto(
     }
 
     if let Some(s) = t.component_state
-        && let Some(code) = parse_state(s) {
-            states.push(code as i32);
-        }
+        && let Some(code) = parse_state(s)
+    {
+        states.push(code as i32);
+    }
     if let Some(s) = t.relay_state
-        && let Some(code) = parse_state(s) {
-            states.push(code as i32);
-        }
+        && let Some(code) = parse_state(s)
+    {
+        states.push(code as i32);
+    }
     if let Some(s) = t.cable_state
-        && let Some(code) = parse_state(s) {
-            states.push(code as i32);
-        }
+        && let Some(code) = parse_state(s)
+    {
+        states.push(code as i32);
+    }
 
     ReceiveElectricalComponentTelemetryStreamResponse {
         telemetry: Some(ElectricalComponentTelemetry {

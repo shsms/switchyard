@@ -14,7 +14,7 @@ use crate::sim::{
     bounds::ComponentBounds,
     meter::{per_phase_apparent_current, split_per_phase},
     ramp::{CommandDelay, Ramp},
-    reactive::ReactiveCapability,
+    reactive::{ReactiveCapability, ReactivePath},
 };
 
 #[derive(Clone, Debug)]
@@ -57,15 +57,11 @@ pub struct SolarInverter {
     interval: Duration,
     cfg: SolarInverterConfig,
     bounds: Mutex<ComponentBounds>,
-    /// Reactive envelope. Mutex-wrapped for runtime tweaking via the
-    /// (set-reactive-pf-limit) / (set-reactive-apparent-va) defuns.
-    reactive: Mutex<ReactiveCapability>,
     delay: CommandDelay,
     ramp: Ramp,
-    reactive_var: Mutex<f32>,
-    /// Same delay-then-slew chain as the active path, but for Q.
-    reactive_delay: CommandDelay,
-    reactive_ramp: Ramp,
+    /// Reactive-side state — capability, command-delay, slew-rate
+    /// ramp, last published Q. See [`ReactivePath`].
+    reactive: ReactivePath,
 }
 
 impl SolarInverter {
@@ -75,21 +71,20 @@ impl SolarInverter {
         let delay = CommandDelay::new(cfg.command_delay);
         let ramp = Ramp::new(cfg.ramp_rate_w_per_s, init_p);
         ramp.set_target(init_p);
-        let reactive = cfg.reactive;
-        let reactive_delay = CommandDelay::new(cfg.reactive_command_delay);
-        let reactive_ramp = Ramp::new(cfg.reactive_ramp_rate_var_per_s, 0.0);
+        let reactive = ReactivePath::new(
+            cfg.reactive,
+            cfg.reactive_command_delay,
+            cfg.reactive_ramp_rate_var_per_s,
+        );
         Self {
             id,
             name: format!("inv-pv-{id}"),
             interval,
             cfg,
             bounds: Mutex::new(bounds),
-            reactive: Mutex::new(reactive),
             delay,
             ramp,
-            reactive_var: Mutex::new(0.0),
-            reactive_delay,
-            reactive_ramp,
+            reactive,
         }
     }
 }
@@ -118,28 +113,21 @@ impl SimulatedComponent for SolarInverter {
         self.bounds.lock().drop_expired(now);
         if let Some(target) = self.delay.poll(now) {
             let min_avail = self.cfg.rated_lower_w * self.cfg.sunlight_pct / 100.0;
-            let clamped = target.max(min_avail);
-            self.ramp.set_target(clamped);
+            self.ramp.set_target(target.max(min_avail));
         }
-        self.ramp.advance(dt);
-
-        // Reactive path: same delay → ramp shape as P. The setpoint
-        // was envelope-validated when accepted; re-clamp here in
-        // case P drifted while it was sitting in the delay queue.
-        if let Some(target) = self.reactive_delay.poll(now) {
-            let p_live = self.ramp.actual();
-            let (lo, hi) = self.reactive.lock().q_bounds_at(p_live);
-            self.reactive_ramp.set_target(target.clamp(lo, hi));
-        }
-        let q_actual = self.reactive_ramp.advance(dt);
-        *self.reactive_var.lock() = q_actual;
+        let p = self.ramp.advance(dt);
+        // Reactive: validated when accepted, re-clamped to the live
+        // envelope at p as the command is promoted, then slewed.
+        // Solar has no children to clip Q so step()'s auto-publish
+        // is what telemetry reads next tick.
+        self.reactive.step(p, now, dt);
     }
 
     fn telemetry(&self, world: &World) -> Telemetry {
         let grid = world.grid_state();
         let p = self.ramp.actual();
         let pp = split_per_phase(p, grid.voltage_per_phase);
-        let rp = *self.reactive_var.lock();
+        let rp = self.reactive.published();
         let rpp = split_per_phase(rp, grid.voltage_per_phase);
         Telemetry {
             id: self.id,
@@ -152,9 +140,7 @@ impl SimulatedComponent for SolarInverter {
             per_phase_current_a: Some(per_phase_apparent_current(pp, rpp, grid.voltage_per_phase)),
             frequency_hz: Some(grid.frequency_hz),
             active_power_bounds: Some(self.bounds.lock().effective()),
-            // Dynamic envelope: tightens with |P| under PF, expands
-            // toward the kVA edge when P is small.
-            reactive_power_bounds: Some(self.reactive.lock().q_bounds_at(p)),
+            reactive_power_bounds: Some(self.reactive.bounds_at(p)),
             ..Default::default()
         }
     }
@@ -173,33 +159,14 @@ impl SimulatedComponent for SolarInverter {
     }
 
     fn set_reactive_setpoint(&self, vars: f32) -> Result<(), SetpointError> {
-        // Same envelope semantics as the battery inverter: Q is
-        // validated against the live (lo, hi) at the *current* P, so
-        // a curtailed PV inverter with P near 0 has tight Q room
-        // under a PF cap, and full ±S_rated room under a kVA cap.
-        let p_now = self.ramp.actual();
-        let (lo, hi) = self.reactive.lock().q_bounds_at(p_now);
-        if vars < lo || vars > hi {
-            return Err(SetpointError::OutOfBounds {
-                value: vars,
-                lower: lo,
-                upper: hi,
-            });
-        }
-        // Validated request enters the reactive command-delay queue;
-        // tick() promotes it after the configured latency and the
-        // reactive ramp slews toward it.
-        self.reactive_delay.set_target(Utc::now(), vars);
-        Ok(())
+        self.reactive.accept_setpoint(self.ramp.actual(), vars)
     }
 
     fn reset_setpoint(&self) {
         let init_p = self.cfg.rated_lower_w * self.cfg.sunlight_pct / 100.0;
         self.delay.reset();
         self.ramp.snap_to(init_p);
-        self.reactive_delay.reset();
-        self.reactive_ramp.set_target(0.0);
-        *self.reactive_var.lock() = 0.0;
+        self.reactive.reset();
     }
 
     fn augment_active_bounds(
@@ -216,7 +183,7 @@ impl SimulatedComponent for SolarInverter {
     }
 
     fn aggregate_reactive_var(&self, _world: &World) -> f32 {
-        *self.reactive_var.lock()
+        self.reactive.published()
     }
 
     fn rated_active_bounds(&self) -> Option<(f32, f32)> {
@@ -224,15 +191,15 @@ impl SimulatedComponent for SolarInverter {
     }
 
     fn reactive_bounds(&self) -> Option<(f32, f32)> {
-        Some(self.reactive.lock().q_bounds_at(self.ramp.actual()))
+        Some(self.reactive.bounds_at(self.ramp.actual()))
     }
 
     fn set_reactive_pf_limit(&self, pf: Option<f32>) {
-        self.reactive.lock().pf_limit = pf;
+        self.reactive.set_pf_limit(pf);
     }
 
     fn set_reactive_apparent_va(&self, va: Option<f32>) {
-        self.reactive.lock().apparent_va = va;
+        self.reactive.set_apparent_va(va);
     }
 
     fn subtype(&self) -> Option<&'static str> {

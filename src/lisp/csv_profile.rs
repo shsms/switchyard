@@ -20,8 +20,7 @@
 
 use std::{
     collections::HashMap,
-    fmt,
-    fs,
+    fmt, fs,
     path::{Path, PathBuf},
 };
 
@@ -63,10 +62,7 @@ impl CsvLoadProfile {
         // First column must be time; the rest are value fields.
         let mut headers = header.split(',').map(str::trim);
         let time_col = headers.next().ok_or_else(|| {
-            Error::invalid_argument(format!(
-                "csv-load {}: missing time column",
-                path.display()
-            ))
+            Error::invalid_argument(format!("csv-load {}: missing time column", path.display()))
         })?;
         if time_col.is_empty() {
             return Err(Error::invalid_argument(format!(
@@ -88,10 +84,7 @@ impl CsvLoadProfile {
             let row = lineno + 2; // +1 for header, +1 for 1-based
             let mut cells = line.split(',').map(str::trim);
             let t = cells.next().ok_or_else(|| {
-                Error::invalid_argument(format!(
-                    "csv-load {}:{row}: empty row",
-                    path.display()
-                ))
+                Error::invalid_argument(format!("csv-load {}:{row}: empty row", path.display()))
             })?;
             let t: f64 = t.parse().map_err(|e| {
                 Error::invalid_argument(format!(
@@ -226,10 +219,7 @@ mod tests {
 
     #[test]
     fn loads_and_interpolates() {
-        let p = write_tmp(
-            "interp",
-            "time,a,b\n0,100,500\n10,200,400\n20,300,300\n",
-        );
+        let p = write_tmp("interp", "time,a,b\n0,100,500\n10,200,400\n20,300,300\n");
         let prof = CsvLoadProfile::load(&p).unwrap();
         assert_eq!(prof.fields(), vec!["a".to_string(), "b".to_string()]);
 

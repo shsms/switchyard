@@ -1,4 +1,12 @@
-//! Inverter reactive-power capability envelope.
+//! Inverter reactive-power capability envelope and the per-tick
+//! state machine that drives Q through a command-delay and ramp.
+//!
+//! Two pieces:
+//! - [`ReactiveCapability`]: the envelope shape (PF-limit, kVA-limit,
+//!   or both). Pure data; cheap to copy.
+//! - [`ReactivePath`]: the full per-inverter state — capability +
+//!   delay + slew + last-published Q. Centralises the validation and
+//!   tick logic that BatteryInverter and SolarInverter both need.
 //!
 //! Real inverters limit Q via two composable constraints:
 //!
@@ -12,6 +20,16 @@
 //! Both are optional; either, both, or neither may be set per
 //! inverter. The effective Q-bound at a given P is their
 //! intersection.
+
+use std::time::Duration;
+
+use chrono::{DateTime, Utc};
+use parking_lot::Mutex;
+
+use crate::sim::{
+    SetpointError,
+    ramp::{CommandDelay, Ramp},
+};
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ReactiveCapability {
@@ -66,6 +84,109 @@ impl ReactiveCapability {
     pub fn contains(&self, p: f32, q: f32) -> bool {
         let (lo, hi) = self.q_bounds_at(p);
         q >= lo && q <= hi
+    }
+}
+
+/// Per-inverter reactive-power state machine. Owns the capability
+/// envelope, the command-delay queue, the slew-rate-limited ramp, and
+/// the last-published Q value that telemetry / parent meters read.
+///
+/// The lifecycle is the same for every smart inverter:
+///   1. `accept_setpoint(p_live, vars)` — validate against the live
+///      envelope at the current active power, enqueue into the delay
+///      queue. Returns `OutOfBounds` for envelope violations.
+///   2. `step(p_live, now, dt)` — promote any pending command (re-
+///      clamping to the envelope at this `p_live`, in case P drifted
+///      while the command was in the queue), advance the ramp by
+///      `dt`, store the result as the new published value, return it.
+///   3. (optional) `override_published(q)` — for inverters whose
+///      downstream measurement clips the ramp value (e.g. a battery
+///      that refused part of the apparent share). Solar leaves this
+///      alone; the published value stays equal to the ramp output.
+///   4. `published()` — read what telemetry publishes / what a
+///      parent meter aggregates.
+pub struct ReactivePath {
+    capability: Mutex<ReactiveCapability>,
+    delay: CommandDelay,
+    ramp: Ramp,
+    /// Last published Q (telemetry / aggregate read). Equals
+    /// `ramp.actual()` after every `step` unless `override_published`
+    /// is called between ticks.
+    published: Mutex<f32>,
+}
+
+impl ReactivePath {
+    pub fn new(
+        capability: ReactiveCapability,
+        command_delay: Duration,
+        ramp_rate_var_per_s: f32,
+    ) -> Self {
+        Self {
+            capability: Mutex::new(capability),
+            delay: CommandDelay::new(command_delay),
+            ramp: Ramp::new(ramp_rate_var_per_s, 0.0),
+            published: Mutex::new(0.0),
+        }
+    }
+
+    /// Validate against the live envelope at the current P, then
+    /// enqueue into the command-delay queue. Returns `OutOfBounds` if
+    /// the request exceeds the envelope.
+    pub fn accept_setpoint(&self, p_live: f32, vars: f32) -> Result<(), SetpointError> {
+        let (lo, hi) = self.capability.lock().q_bounds_at(p_live);
+        if vars < lo || vars > hi {
+            return Err(SetpointError::OutOfBounds {
+                value: vars,
+                lower: lo,
+                upper: hi,
+            });
+        }
+        self.delay.set_target(Utc::now(), vars);
+        Ok(())
+    }
+
+    /// Advance one tick: promote any pending command (re-clamped to
+    /// the live envelope at `p_live`), slew the ramp by `dt`, publish
+    /// the result, and return it. Idempotent if there's no pending
+    /// command and the ramp has already settled.
+    pub fn step(&self, p_live: f32, now: DateTime<Utc>, dt: Duration) -> f32 {
+        if let Some(target) = self.delay.poll(now) {
+            let (lo, hi) = self.capability.lock().q_bounds_at(p_live);
+            self.ramp.set_target(target.clamp(lo, hi));
+        }
+        let actual = self.ramp.advance(dt);
+        *self.published.lock() = actual;
+        actual
+    }
+
+    /// Replace the last-published value — for inverters whose
+    /// downstream actually clips Q (the BMS contract on a battery
+    /// today is to pass Q through unchanged, so this is a no-op
+    /// there, but the API is here for the day a child refuses).
+    pub fn override_published(&self, q: f32) {
+        *self.published.lock() = q;
+    }
+
+    pub fn published(&self) -> f32 {
+        *self.published.lock()
+    }
+
+    pub fn bounds_at(&self, p_live: f32) -> (f32, f32) {
+        self.capability.lock().q_bounds_at(p_live)
+    }
+
+    pub fn set_pf_limit(&self, pf: Option<f32>) {
+        self.capability.lock().pf_limit = pf;
+    }
+
+    pub fn set_apparent_va(&self, va: Option<f32>) {
+        self.capability.lock().apparent_va = va;
+    }
+
+    pub fn reset(&self) {
+        self.delay.reset();
+        self.ramp.set_target(0.0);
+        *self.published.lock() = 0.0;
     }
 }
 

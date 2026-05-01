@@ -8,7 +8,7 @@ use crate::sim::{
     bounds::ComponentBounds,
     meter::{per_phase_apparent_current, split_per_phase},
     ramp::{CommandDelay, Ramp},
-    reactive::ReactiveCapability,
+    reactive::{ReactiveCapability, ReactivePath},
 };
 
 #[derive(Clone, Debug)]
@@ -57,23 +57,11 @@ pub struct BatteryInverter {
     /// and reads back what was accepted.
     successors: Vec<u64>,
     bounds: Mutex<ComponentBounds>,
-    /// Reactive envelope. Lives in its own Mutex (rather than under
-    /// `cfg`) so a (set-reactive-pf-limit …) / (…-apparent-va …)
-    /// defun can mutate it at runtime — same surface a SunSpec
-    /// Modbus client gets on a real smart inverter.
-    reactive: Mutex<ReactiveCapability>,
-    /// Published / measured reactive power. Updated each tick from
-    /// what the children accepted (which equals what the reactive
-    /// ramp delivered, since batteries pass Q through unchanged).
-    reactive_var: Mutex<f32>,
     delay: CommandDelay,
     ramp: Ramp,
-    /// Same delay-then-slew chain as the active path, but for Q.
-    /// The setpoint enters `reactive_delay`, gets armed after
-    /// `reactive_command_delay`, and `reactive_ramp` slews toward it
-    /// at `reactive_ramp_rate_var_per_s` VAR/s.
-    reactive_delay: CommandDelay,
-    reactive_ramp: Ramp,
+    /// All reactive-side state — capability envelope, command-delay,
+    /// slew-rate ramp, last published Q. See [`ReactivePath`].
+    reactive: ReactivePath,
     /// What the children actually accepted last tick — the AC-side
     /// quantity a real inverter would publish on its telemetry bus.
     /// Differs from `ramp.actual()` whenever a battery's BMS clipped
@@ -91,9 +79,11 @@ impl BatteryInverter {
         let bounds = ComponentBounds::rated(cfg.rated_lower_w, cfg.rated_upper_w);
         let delay = CommandDelay::new(cfg.command_delay);
         let ramp = Ramp::new(cfg.ramp_rate_w_per_s, 0.0);
-        let reactive = cfg.reactive;
-        let reactive_delay = CommandDelay::new(cfg.reactive_command_delay);
-        let reactive_ramp = Ramp::new(cfg.reactive_ramp_rate_var_per_s, 0.0);
+        let reactive = ReactivePath::new(
+            cfg.reactive,
+            cfg.reactive_command_delay,
+            cfg.reactive_ramp_rate_var_per_s,
+        );
         Self {
             id,
             name: format!("inv-bat-{id}"),
@@ -101,12 +91,9 @@ impl BatteryInverter {
             cfg,
             successors,
             bounds: Mutex::new(bounds),
-            reactive: Mutex::new(reactive),
-            reactive_var: Mutex::new(0.0),
             delay,
             ramp,
-            reactive_delay,
-            reactive_ramp,
+            reactive,
             measured_w: Mutex::new(0.0),
         }
     }
@@ -135,33 +122,27 @@ impl SimulatedComponent for BatteryInverter {
     fn tick(&self, world: &World, now: DateTime<Utc>, dt: Duration) {
         self.bounds.lock().drop_expired(now);
 
-        // We only know about our OWN bounds — clamp the pending command
-        // against those, no peeking at the children. The microgrid
-        // gateway gates over-envelope setpoints upstream of us; if one
-        // slips through the children will refuse the excess on their
-        // own and the measured aggregate will simply fall short.
+        // Active path: clamp the pending command against our OWN
+        // bounds (no peeking at the children — the gateway gates
+        // out-of-envelope setpoints upstream). If one slips through
+        // the children will refuse the excess on their own and the
+        // measured aggregate will simply fall short.
         if let Some(target) = self.delay.poll(now) {
             let own = self.bounds.lock().effective();
             self.ramp.set_target(own.clamp(target));
         }
 
-        // Reactive path: same delay-then-slew shape. The setpoint
-        // was validated against the envelope when accepted, but P
-        // may have moved since then — re-clamp here against the
-        // live envelope before arming the ramp.
-        if let Some(target) = self.reactive_delay.poll(now) {
-            let p_live = *self.measured_w.lock();
-            let (lo, hi) = self.reactive.lock().q_bounds_at(p_live);
-            self.reactive_ramp.set_target(target.clamp(lo, hi));
-        }
-
+        let p_live = *self.measured_w.lock();
         let commanded_p = self.ramp.advance(dt);
-        let commanded_q = self.reactive_ramp.advance(dt);
+        // Reactive: validated when accepted, re-clamped to the live
+        // envelope at p_live as the command is promoted, then slewed.
+        let commanded_q = self.reactive.step(p_live, now, dt);
 
         // Distribute equal shares onto the DC bus and read back what
         // each battery actually accepted. Active is clamped at the
-        // BMS; reactive flows through unmodified (the battery doesn't
-        // refuse Q — the inverter is what terminates reactive energy).
+        // BMS; reactive flows through unmodified today (the battery
+        // doesn't refuse Q), so override_published is a no-op for the
+        // common case but stays in place for forward compatibility.
         let (measured_p, measured_q) = if self.successors.is_empty() {
             (commanded_p, commanded_q)
         } else {
@@ -180,10 +161,7 @@ impl SimulatedComponent for BatteryInverter {
             (sum_p, sum_q)
         };
         *self.measured_w.lock() = measured_p;
-        // Q accepted by the children = what we publish on the AC
-        // side. In the no-batteries branch, this is just the commanded
-        // setpoint (nothing clips Q).
-        *self.reactive_var.lock() = measured_q;
+        self.reactive.override_published(measured_q);
     }
 
     fn telemetry(&self, world: &World) -> Telemetry {
@@ -192,7 +170,7 @@ impl SimulatedComponent for BatteryInverter {
         // those diverge when a battery clips downstream.
         let p = *self.measured_w.lock();
         let pp = split_per_phase(p, grid.voltage_per_phase);
-        let rp = *self.reactive_var.lock();
+        let rp = self.reactive.published();
         let rpp = split_per_phase(rp, grid.voltage_per_phase);
         Telemetry {
             id: self.id,
@@ -208,9 +186,9 @@ impl SimulatedComponent for BatteryInverter {
             // want the combined inverter+battery envelope read both
             // streams and intersect.
             active_power_bounds: Some(self.bounds.lock().effective()),
-            // Reactive envelope is dynamic: it tightens with P (or
-            // expands toward the kVA edge as P falls).
-            reactive_power_bounds: Some(self.reactive.lock().q_bounds_at(p)),
+            // Reactive envelope is dynamic: tightens with |P| under
+            // PF, expands toward the kVA edge when P is small.
+            reactive_power_bounds: Some(self.reactive.bounds_at(p)),
             component_state: Some(power_state(p)),
             ..Default::default()
         }
@@ -234,32 +212,14 @@ impl SimulatedComponent for BatteryInverter {
     }
 
     fn set_reactive_setpoint(&self, vars: f32) -> Result<(), SetpointError> {
-        // Q is validated against the live envelope at the *current*
-        // active power, not the rated upper. As P drops, the
-        // allowable Q drops with it (PF-style cap) or expands toward
-        // the kVA edge.
-        let p_now = *self.measured_w.lock();
-        let (lo, hi) = self.reactive.lock().q_bounds_at(p_now);
-        if vars < lo || vars > hi {
-            return Err(SetpointError::OutOfBounds {
-                value: vars,
-                lower: lo,
-                upper: hi,
-            });
-        }
-        // Validated request enters the reactive command-delay queue;
-        // tick() promotes it after the configured latency and the
-        // reactive ramp slews toward it.
-        self.reactive_delay.set_target(Utc::now(), vars);
-        Ok(())
+        self.reactive
+            .accept_setpoint(*self.measured_w.lock(), vars)
     }
 
     fn reset_setpoint(&self) {
         self.delay.reset();
         self.ramp.set_target(0.0);
-        self.reactive_delay.reset();
-        self.reactive_ramp.set_target(0.0);
-        *self.reactive_var.lock() = 0.0;
+        self.reactive.reset();
         *self.measured_w.lock() = 0.0;
     }
 
@@ -277,7 +237,7 @@ impl SimulatedComponent for BatteryInverter {
     }
 
     fn aggregate_reactive_var(&self, _world: &World) -> f32 {
-        *self.reactive_var.lock()
+        self.reactive.published()
     }
 
     fn rated_active_bounds(&self) -> Option<(f32, f32)> {
@@ -297,16 +257,15 @@ impl SimulatedComponent for BatteryInverter {
     }
 
     fn reactive_bounds(&self) -> Option<(f32, f32)> {
-        let p = *self.measured_w.lock();
-        Some(self.reactive.lock().q_bounds_at(p))
+        Some(self.reactive.bounds_at(*self.measured_w.lock()))
     }
 
     fn set_reactive_pf_limit(&self, pf: Option<f32>) {
-        self.reactive.lock().pf_limit = pf;
+        self.reactive.set_pf_limit(pf);
     }
 
     fn set_reactive_apparent_va(&self, va: Option<f32>) {
-        self.reactive.lock().apparent_va = va;
+        self.reactive.set_apparent_va(va);
     }
 }
 
