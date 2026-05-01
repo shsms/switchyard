@@ -259,6 +259,29 @@ AsPlist! {
         health<":health">: Option<LispLabel> {= None},
         telemetry_mode<":telemetry-mode">: Option<LispLabel> {= None},
         command_mode<":command-mode">: Option<LispLabel> {= None},
+        config<":config">: Option<LispValue> {= None},
+    }
+}
+
+AsAlist! {
+    /// Per-category defaults for `(make-ev-charger)`. Mirrors
+    /// `EvChargerArgs` minus per-component `id`.
+    #[derive(Default)]
+    pub struct EvChargerDefaults {
+        interval: Option<i64> {= None},
+        rated_lower<"rated-lower">: Option<f64> {= None},
+        rated_upper<"rated-upper">: Option<f64> {= None},
+        initial_soc<"initial-soc">: Option<f64> {= None},
+        soc_lower<"soc-lower">: Option<f64> {= None},
+        soc_upper<"soc-upper">: Option<f64> {= None},
+        soc_protect_margin<"soc-protect-margin">: Option<f64> {= None},
+        capacity_wh<"capacity">: Option<f64> {= None},
+        command_delay_ms<"command-delay-ms">: Option<i64> {= None},
+        ramp_rate<"ramp-rate">: Option<f64> {= None},
+        stream_jitter_pct<"stream-jitter-pct">: Option<f64> {= None},
+        health: Option<LispLabel> {= None},
+        telemetry_mode<"telemetry-mode">: Option<LispLabel> {= None},
+        command_mode<"command-mode">: Option<LispLabel> {= None},
     }
 }
 
@@ -536,49 +559,53 @@ pub fn register(ctx: &mut TulispContext, world: World) {
     );
 
     let w = world.clone();
-    ctx.defun("make-ev-charger", move |args: Plist<EvChargerArgs>| {
-        let a = args.into_inner();
-        let id = id_or_next(&w, a.id);
-        let interval = ms_to_duration(a.interval, 1000);
-        let mut cfg = EvChargerConfig::default();
-        if let Some(v) = a.rated_lower {
-            cfg.rated_lower_w = v as f32;
-        }
-        if let Some(v) = a.rated_upper {
-            cfg.rated_upper_w = v as f32;
-        }
-        if let Some(v) = a.initial_soc {
-            cfg.initial_soc_pct = v as f32;
-        }
-        if let Some(v) = a.soc_lower {
-            cfg.soc_lower_pct = v as f32;
-        }
-        if let Some(v) = a.soc_upper {
-            cfg.soc_upper_pct = v as f32;
-        }
-        if let Some(v) = a.soc_protect_margin {
-            cfg.soc_protect_margin_pct = v as f32;
-        }
-        if let Some(v) = a.capacity_wh {
-            cfg.capacity_wh = v as f32;
-        }
-        if let Some(v) = a.command_delay_ms {
-            cfg.command_delay = Duration::from_millis(v.max(0) as u64);
-        }
-        if let Some(v) = a.ramp_rate {
-            cfg.ramp_rate_w_per_s = v as f32;
-        }
-        if let Some(v) = a.stream_jitter_pct {
-            cfg.stream_jitter_pct = v as f32;
-        }
-        register_with_modes(
-            &w,
-            EvCharger::new(id, interval, cfg),
-            a.health.as_ref(),
-            a.telemetry_mode.as_ref(),
-            a.command_mode.as_ref(),
-        )
-    });
+    ctx.defun(
+        "make-ev-charger",
+        move |ctx: &mut TulispContext, args: Plist<EvChargerArgs>| {
+            let a = args.into_inner();
+            let d = parse_defaults::<EvChargerDefaults>(ctx, a.config.as_ref())?;
+            let id = id_or_next(&w, a.id);
+            let interval = ms_to_duration(a.interval.or(d.interval), 1000);
+            let mut cfg = EvChargerConfig::default();
+            if let Some(v) = a.rated_lower.or(d.rated_lower) {
+                cfg.rated_lower_w = v as f32;
+            }
+            if let Some(v) = a.rated_upper.or(d.rated_upper) {
+                cfg.rated_upper_w = v as f32;
+            }
+            if let Some(v) = a.initial_soc.or(d.initial_soc) {
+                cfg.initial_soc_pct = v as f32;
+            }
+            if let Some(v) = a.soc_lower.or(d.soc_lower) {
+                cfg.soc_lower_pct = v as f32;
+            }
+            if let Some(v) = a.soc_upper.or(d.soc_upper) {
+                cfg.soc_upper_pct = v as f32;
+            }
+            if let Some(v) = a.soc_protect_margin.or(d.soc_protect_margin) {
+                cfg.soc_protect_margin_pct = v as f32;
+            }
+            if let Some(v) = a.capacity_wh.or(d.capacity_wh) {
+                cfg.capacity_wh = v as f32;
+            }
+            if let Some(v) = a.command_delay_ms.or(d.command_delay_ms) {
+                cfg.command_delay = Duration::from_millis(v.max(0) as u64);
+            }
+            if let Some(v) = a.ramp_rate.or(d.ramp_rate) {
+                cfg.ramp_rate_w_per_s = v as f32;
+            }
+            if let Some(v) = a.stream_jitter_pct.or(d.stream_jitter_pct) {
+                cfg.stream_jitter_pct = v as f32;
+            }
+            register_with_modes(
+                &w,
+                EvCharger::new(id, interval, cfg),
+                a.health.as_ref().or(d.health.as_ref()),
+                a.telemetry_mode.as_ref().or(d.telemetry_mode.as_ref()),
+                a.command_mode.as_ref().or(d.command_mode.as_ref()),
+            )
+        },
+    );
 
     let w = world;
     ctx.defun(
