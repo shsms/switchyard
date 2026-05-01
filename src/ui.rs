@@ -1119,13 +1119,12 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        // load_scenario evals the whole file as one progn → one
-        // pending entry per load call regardless of form count.
-        assert_eq!(parsed["entries_added"], 1);
+        // Round-trip: 2 forms saved → 2 pending entries on load.
+        assert_eq!(parsed["entries_added"], 2);
 
         let (_, body) = call(cfg, get("/api/pending")).await;
         let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(parsed["entries"].as_array().unwrap().len(), 1);
+        assert_eq!(parsed["entries"].as_array().unwrap().len(), 2);
     }
 
     #[tokio::test]

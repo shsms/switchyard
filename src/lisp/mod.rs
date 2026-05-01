@@ -460,8 +460,12 @@ impl Config {
     /// a named scenario file instead of the per-microgrid override.
     /// Useful for capturing a recent series of edits as a reusable
     /// recipe ("EV-fault-during-cloud-cover", "battery-bypass", …).
+    ///
+    /// Snapshots the entries first, writes + flushes, only then
+    /// removes them from the log. An IO error leaves the pending log
+    /// intact — same data-loss safeguard as `persist_pending`.
     pub fn save_scenario(&self, name: &str) -> std::io::Result<PersistResult> {
-        let entries = std::mem::take(&mut *self.pending_log.lock());
+        let entries: Vec<PendingEntry> = self.pending_log.lock().clone();
         let dir = self.scenarios_dir();
         fs::create_dir_all(&dir)?;
         let path = dir.join(format!("{name}.lisp"));
@@ -473,32 +477,77 @@ impl Config {
         for entry in &entries {
             writeln!(file, "{}", entry.source)?;
         }
+        file.flush()?;
+        let persisted_ids: HashSet<u64> = entries.iter().map(|e| e.id).collect();
+        self.pending_log
+            .lock()
+            .retain(|e| !persisted_ids.contains(&e.id));
         Ok(PersistResult {
             persisted: entries.len(),
             path: path.to_string_lossy().into_owned(),
         })
     }
 
-    /// Load `scenarios/<name>.lisp` and eval its contents. The whole
-    /// file lands as one entry in the pending log (tulisp's
-    /// eval_string handles a multi-form file as one progn; the entry
-    /// preserves the raw source so a later replay re-applies cleanly).
-    /// User can then Persist or Discard.
-    ///
-    /// Returns the number of pending entries added (currently 0 on
-    /// failure or 1 on success — eval pushes one entry per call).
-    /// Read errors and Lisp errors both propagate as String — silent
-    /// drops here were leaving the user thinking a broken scenario
-    /// loaded successfully.
+    /// Load `scenarios/<name>.lisp` into the pending log. Atomic
+    /// (parse failures and eval failures both leave the pending log
+    /// untouched), and round-trips with `save_scenario`: a save of N
+    /// pending entries → file with N forms → load → N new pending
+    /// entries (one per top-level form), so a subsequent Persist
+    /// rewrites them individually.
     pub fn load_scenario(&self, name: &str) -> Result<usize, String> {
         let path = self.scenarios_dir().join(format!("{name}.lisp"));
-        let src = fs::read_to_string(&path)
-            .map_err(|e| format!("read {}: {}", path.display(), e))?;
-        let before = self.pending_log.lock().len();
-        self.eval(&src)
-            .map_err(|e| format!("eval {}: {}", path.display(), e))?;
-        let after = self.pending_log.lock().len();
-        Ok(after - before)
+        if !path.exists() {
+            return Err(format!("scenario {} not found", path.display()));
+        }
+        let path_str = path.to_string_lossy().into_owned();
+
+        let sources: Vec<String> = {
+            let mut ctx = self.ctx.borrow_mut();
+            let forms = ctx
+                .parse_file(&path_str)
+                .map_err(|e| format!("parse {}: {}", path.display(), e.format(&ctx)))?;
+            forms.base_iter().map(|f| f.to_string()).collect()
+        };
+        if sources.is_empty() {
+            return Ok(0);
+        }
+
+        // Eval as one progn. tulisp doesn't roll world state back on
+        // a mid-progn error (the first form's mutation sticks), so we
+        // cover that ourselves: on error, reload the base config +
+        // override file and replay the pre-load pending entries.
+        let combined = sources.join("\n");
+        let eval_err = {
+            let mut ctx = self.ctx.borrow_mut();
+            ctx.eval_string(&combined)
+                .err()
+                .map(|e| format!("eval {}: {}", path.display(), e.format(&ctx)))
+        };
+        if let Some(err) = eval_err {
+            let surviving = self.pending_log.lock().clone();
+            self.reload();
+            for entry in &surviving {
+                let _ = self.ctx.borrow_mut().eval_string(&entry.source);
+            }
+            return Err(err);
+        }
+
+        let now = Utc::now();
+        let mut log = self.pending_log.lock();
+        for src in &sources {
+            let id = self
+                .next_pending_id
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            log.push(PendingEntry {
+                id,
+                ts: now,
+                source: src.clone(),
+                affects: None,
+            });
+        }
+        drop(log);
+        self.world.bump_version();
+        Ok(sources.len())
     }
 
     pub fn reload(&self) {
@@ -971,6 +1020,29 @@ mod tests {
         assert!(
             res.unwrap_err().contains("this-defun-doesnt-exist"),
             "error should name the bad symbol",
+        );
+    }
+
+    /// A scenario with a good form followed by a bad form must roll
+    /// back atomically — neither the good form's pending entry nor
+    /// its world-state mutation can stick after the load fails.
+    #[test]
+    fn load_scenario_partial_failure_is_atomic() {
+        let (cfg, dir) = config_with("(set-microgrid-id 9)");
+        let scenarios = dir.join("scenarios");
+        std::fs::create_dir_all(&scenarios).unwrap();
+        std::fs::write(
+            scenarios.join("mixed.lisp"),
+            "(%make-grid :id 99) (this-defun-doesnt-exist 1)",
+        )
+        .unwrap();
+
+        let res = cfg.load_scenario("mixed");
+        assert!(res.is_err(), "expected error, got {res:?}");
+        assert!(cfg.pending().is_empty(), "pending log should be untouched");
+        assert!(
+            cfg.world().get(99).is_none(),
+            "first form must not have been applied",
         );
     }
 
