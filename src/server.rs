@@ -30,6 +30,7 @@ use crate::proto::microgrid::{
 };
 use crate::proto_conv::{make_component_proto, telemetry_to_proto};
 use crate::sim::runtime::{CommandMode, Health, TelemetryMode};
+use crate::sim::setpoints::{SetpointEvent, SetpointKind, SetpointOutcome};
 use crate::sim::{SetpointError, bounds::VecBounds};
 use crate::timeout_tracker::TimeoutTracker;
 
@@ -62,6 +63,105 @@ impl MicrogridServer {
                 }
             }
         });
+    }
+
+    /// The body of `set_electrical_component_power` minus the
+    /// power-type validation up front. Split out so the wrapper can
+    /// log the outcome of every code path (early-return rejection or
+    /// success) at a single tail point.
+    async fn do_set_power(
+        &self,
+        req: SetElectricalComponentPowerRequest,
+        power_type: PowerType,
+    ) -> Result<
+        tonic::Response<<Self as microgrid_server::Microgrid>::SetElectricalComponentPowerStream>,
+        tonic::Status,
+    > {
+        let world = self.config.world();
+        let component = world.get(req.electrical_component_id).ok_or_else(|| {
+            tonic::Status::not_found(format!(
+                "component {} not found",
+                req.electrical_component_id
+            ))
+        })?;
+
+        // Runtime fault simulation: command_mode and health are
+        // checked before any physics. Order matters — `Timeout` /
+        // `Error` are wire-level faults, `Health` is application-level
+        // refusal.
+        let runtime = world.runtime_of(req.electrical_component_id);
+        match runtime.command {
+            CommandMode::Timeout => {
+                std::future::pending::<()>().await;
+                unreachable!()
+            }
+            CommandMode::Error => {
+                return Err(tonic::Status::unavailable(format!(
+                    "component {} unreachable",
+                    req.electrical_component_id
+                )));
+            }
+            CommandMode::Normal => {}
+        }
+        if runtime.health != Health::Ok {
+            return Err(tonic::Status::failed_precondition(format!(
+                "component {} is in {:?} state; setpoints rejected",
+                req.electrical_component_id, runtime.health
+            )));
+        }
+
+        // Gateway-level envelope check: a real microgrid API gateway
+        // intersects the inverter's reported AC bounds with the sum of
+        // its children's reported DC bounds and rejects setpoints that
+        // exceed the result. Switchyard does the same here so client
+        // code sees the production behaviour even though the inverter
+        // and battery don't share a data link in our model.
+        if matches!(power_type, PowerType::Active)
+            && let Some(child_env) = world.aggregate_child_bounds(req.electrical_component_id)
+        {
+            let own = component.effective_active_bounds().unwrap_or_default();
+            let envelope = own.intersect(&child_env);
+            if !envelope.contains(req.power) {
+                return Err(tonic::Status::failed_precondition(format!(
+                    "set-point {} W exceeds combined envelope {}",
+                    req.power, envelope
+                )));
+            }
+        }
+
+        let result = match power_type {
+            PowerType::Active => component.set_active_setpoint(req.power),
+            PowerType::Reactive => component.set_reactive_setpoint(req.power),
+            PowerType::Unspecified => unreachable!(),
+        };
+
+        if let Err(e) = result {
+            return Err(setpoint_error_to_status(e));
+        }
+
+        let duration = if let Some(dur) = req.request_lifetime {
+            if !(10..=15 * 60).contains(&dur) {
+                return Err(tonic::Status::invalid_argument(
+                    "Request lifetime must be between 10 seconds and 15 minutes.",
+                ));
+            }
+            Duration::from_secs(dur)
+        } else {
+            self.config.metadata().default_request_lifetime
+        };
+        self.timeout_tracker
+            .add(req.electrical_component_id, duration);
+
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        tokio::spawn(async move {
+            let _ = tx
+                .send(Ok(SetElectricalComponentPowerResponse {
+                    valid_until_time: None,
+                    status: SetElectricalComponentPowerRequestStatus::Success as i32,
+                }))
+                .await;
+        });
+        Ok(tonic::Response::new(Box::pin(ReceiverStream::new(rx))))
     }
 }
 
@@ -173,101 +273,38 @@ impl microgrid_server::Microgrid for MicrogridServer {
             ));
         }
 
+        // Capture the inputs the control inspector cares about
+        // before we move `req` into the inner work. Logging happens
+        // at the tail so every code path (early return + success)
+        // emits exactly one event per request.
+        let id = req.electrical_component_id;
+        let value = req.power;
+        let kind = match power_type {
+            PowerType::Active => SetpointKind::ActivePower,
+            PowerType::Reactive => SetpointKind::ReactivePower,
+            PowerType::Unspecified => unreachable!("rejected above"),
+        };
         let world = self.config.world();
-        let component = world.get(req.electrical_component_id).ok_or_else(|| {
-            tonic::Status::not_found(format!(
-                "component {} not found",
-                req.electrical_component_id
-            ))
-        })?;
+        let response = self.do_set_power(req, power_type).await;
 
-        // Runtime fault simulation: command_mode and health are
-        // checked before any physics. Order matters — `Timeout` /
-        // `Error` are wire-level faults, `Health` is application-level
-        // refusal.
-        let runtime = world.runtime_of(req.electrical_component_id);
-        match runtime.command {
-            CommandMode::Timeout => {
-                // Hang until the client gives up. Cheaper than an
-                // unbounded sleep, and cancel-safe (the future is
-                // dropped when the request is cancelled).
-                std::future::pending::<()>().await;
-                unreachable!()
-            }
-            CommandMode::Error => {
-                return Err(tonic::Status::unavailable(format!(
-                    "component {} unreachable",
-                    req.electrical_component_id
-                )));
-            }
-            CommandMode::Normal => {}
-        }
-        if runtime.health != Health::Ok {
-            return Err(tonic::Status::failed_precondition(format!(
-                "component {} is in {:?} state; setpoints rejected",
-                req.electrical_component_id, runtime.health
-            )));
-        }
-
-        // Gateway-level envelope check: a real microgrid API gateway
-        // intersects the inverter's reported AC bounds with the sum of
-        // its children's reported DC bounds and rejects setpoints that
-        // exceed the result. Switchyard does the same here so client
-        // code sees the production behaviour even though the inverter
-        // and battery don't share a data link in our model.
-        if matches!(power_type, PowerType::Active)
-            && let Some(child_env) = world.aggregate_child_bounds(req.electrical_component_id)
-        {
-            let own = component.effective_active_bounds().unwrap_or_default();
-            let envelope = own.intersect(&child_env);
-            if !envelope.contains(req.power) {
-                return Err(tonic::Status::failed_precondition(format!(
-                    "set-point {} W exceeds combined envelope {}",
-                    req.power, envelope
-                )));
-            }
-        }
-
-        let result = match power_type {
-            PowerType::Active => component.set_active_setpoint(req.power),
-            PowerType::Reactive => component.set_reactive_setpoint(req.power),
-            // Unspecified rejected up front; tonic enums don't carry
-            // unknown variants, so this is exhaustive.
-            PowerType::Unspecified => unreachable!(),
+        let outcome = match &response {
+            Ok(_) => SetpointOutcome::Accepted {
+                effective_value: Some(value),
+            },
+            Err(s) => SetpointOutcome::Rejected {
+                reason: s.message().to_string(),
+            },
         };
-
-        if let Err(e) = result {
-            return Err(setpoint_error_to_status(e));
-        }
-
-        // Track lifetime so the set-point clears if the client falls
-        // silent. Range matches microsim's 10 s..15 min window when
-        // the caller supplies a value; otherwise we fall back to the
-        // server-wide default (configurable via Lisp at load time).
-        let duration = if let Some(dur) = req.request_lifetime {
-            if !(10..=15 * 60).contains(&dur) {
-                return Err(tonic::Status::invalid_argument(
-                    "Request lifetime must be between 10 seconds and 15 minutes.",
-                ));
-            }
-            Duration::from_secs(dur)
-        } else {
-            self.config.metadata().default_request_lifetime
-        };
-        self.timeout_tracker
-            .add(req.electrical_component_id, duration);
-
-        // The streaming response is one immediate Success then close.
-        let (tx, rx) = tokio::sync::mpsc::channel(1);
-        tokio::spawn(async move {
-            let _ = tx
-                .send(Ok(SetElectricalComponentPowerResponse {
-                    valid_until_time: None,
-                    status: SetElectricalComponentPowerRequestStatus::Success as i32,
-                }))
-                .await;
-        });
-        Ok(tonic::Response::new(Box::pin(ReceiverStream::new(rx))))
+        world.log_setpoint(
+            id,
+            SetpointEvent {
+                ts: chrono::Utc::now(),
+                kind,
+                value,
+                outcome,
+            },
+        );
+        response
     }
 
     async fn receive_electrical_component_telemetry_stream(
@@ -391,28 +428,45 @@ impl microgrid_server::Microgrid for MicrogridServer {
         let lifetime_s = req.request_lifetime.unwrap_or(5).clamp(5, 15 * 60);
         let lifetime = Duration::from_secs(lifetime_s);
         let now = chrono::Utc::now();
+        let id = req.electrical_component_id;
 
-        let component = self
-            .config
-            .world()
-            .get(req.electrical_component_id)
-            .ok_or_else(|| {
-                tonic::Status::not_found(format!(
-                    "component {} not found",
-                    req.electrical_component_id
+        let world = self.config.world();
+        let response = match world.get(id) {
+            Some(component) => {
+                component.augment_active_bounds(now, VecBounds::new(req.bounds), lifetime);
+                let expiry = now + chrono::Duration::seconds(lifetime_s as i64);
+                Ok(tonic::Response::new(
+                    AugmentElectricalComponentBoundsResponse {
+                        valid_until_time: Some(prost_types::Timestamp {
+                            seconds: expiry.timestamp(),
+                            nanos: expiry.timestamp_subsec_nanos() as i32,
+                        }),
+                    },
                 ))
-            })?;
-        component.augment_active_bounds(now, VecBounds::new(req.bounds), lifetime);
+            }
+            None => Err(tonic::Status::not_found(format!(
+                "component {id} not found"
+            ))),
+        };
 
-        let expiry = now + chrono::Duration::seconds(lifetime_s as i64);
-        Ok(tonic::Response::new(
-            AugmentElectricalComponentBoundsResponse {
-                valid_until_time: Some(prost_types::Timestamp {
-                    seconds: expiry.timestamp(),
-                    nanos: expiry.timestamp_subsec_nanos() as i32,
-                }),
+        let outcome = match &response {
+            Ok(_) => SetpointOutcome::Accepted {
+                effective_value: None,
             },
-        ))
+            Err(s) => SetpointOutcome::Rejected {
+                reason: s.message().to_string(),
+            },
+        };
+        world.log_setpoint(
+            id,
+            SetpointEvent {
+                ts: now,
+                kind: SetpointKind::AugmentBounds,
+                value: 0.0,
+                outcome,
+            },
+        );
+        response
     }
 
     // --- Unimplemented optional surface --------------------------------------
