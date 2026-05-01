@@ -223,6 +223,33 @@ main {
   font-size: 14px;
 }
 
+#logs {
+  /* Log panel takes the top half of the REPL drawer; REPL output
+     takes the rest. Both scroll independently so a chatty log
+     doesn't push REPL replies out of view. */
+  flex: 1;
+  overflow-y: auto;
+  padding: 0.4rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+  font-size: 12px;
+}
+.log-line {
+  display: flex;
+  gap: 0.5rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.35;
+}
+.log-line .log-ts { color: var(--muted); flex-shrink: 0; }
+.log-line .log-lvl { flex-shrink: 0; width: 4ch; text-transform: lowercase; }
+.log-line.info  .log-lvl { color: var(--accent); }
+.log-line.warn  .log-lvl { color: #d2a106; }
+.log-line.error .log-lvl { color: var(--bad); }
+.log-line.debug .log-lvl,
+.log-line.trace .log-lvl { color: var(--muted); }
+.log-line .log-msg { flex: 1; }
+
 #repl-output {
   flex: 1;
   overflow-y: auto;

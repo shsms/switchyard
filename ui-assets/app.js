@@ -866,6 +866,33 @@ function refitCharts() {
   }
 }
 
+// Log panel above the REPL. /api/logs gives the load-time backfill
+// (ring of recent records); /ws/events kind:"log" appends each new
+// record live. Capped at 500 DOM rows so a chatty session doesn't
+// freeze the panel.
+function appendLog(ev) {
+  const box = document.getElementById("logs");
+  const el = document.createElement("div");
+  el.className = "log-line " + (ev.level || "info").toLowerCase();
+  const ts = new Date(ev.ts_ms).toLocaleTimeString();
+  el.innerHTML =
+    `<span class="log-ts">${ts}</span>` +
+    `<span class="log-lvl">${escapeHtml(ev.level || "")}</span>` +
+    `<span class="log-msg">${escapeHtml(ev.message || "")}</span>`;
+  // Scroll-pin: only auto-scroll if the user hadn't scrolled away.
+  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 30;
+  box.appendChild(el);
+  while (box.children.length > 500) box.removeChild(box.firstChild);
+  if (atBottom) box.scrollTop = box.scrollHeight;
+}
+
+async function backfillLogs() {
+  try {
+    const lines = await (await fetch("/api/logs")).json();
+    for (const ln of lines) appendLog(ln);
+  } catch (_) {}
+}
+
 function setupRepl() {
   const form = document.getElementById("repl-form");
   const input = document.getElementById("repl-input");
@@ -936,6 +963,8 @@ function openWebSocket(onTopologyChanged) {
       onTopologyChanged(ev.version);
     } else if (ev.kind === "setpoint") {
       pushSetpoint(ev);
+    } else if (ev.kind === "log") {
+      appendLog(ev);
     }
   };
   ws.onclose = () => setStatus("disconnected", "error");
@@ -1040,6 +1069,7 @@ async function init() {
   setupScenariosToggle();
   setupSplitter();
   setupPendingDialog();
+  backfillLogs();
   const refreshPending = setupPersistControls();
   await refreshTopology();
   await refreshPending();
