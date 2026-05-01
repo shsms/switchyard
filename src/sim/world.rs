@@ -70,6 +70,10 @@ struct WorldInner {
     /// command mode). Defaulted on register, mutated via the
     /// `set-component-*` Lisp defuns or directly from server.rs.
     runtime: RwLock<HashMap<u64, ComponentRuntime>>,
+    /// User-facing name overrides set via `(world-rename-component …)`.
+    /// Reads go through `display_name`; the component's intrinsic
+    /// `SimulatedComponent::name()` stays as the auto-derived default.
+    name_overrides: RwLock<HashMap<u64, String>>,
     /// Per-component telemetry history rings, populated by the
     /// `spawn_history_sampler` task. Read by the UI's `/api/history`
     /// endpoint. Cleared on `reset()` so a hot-reload starts charts
@@ -95,6 +99,7 @@ impl World {
                 physics_tick_ms: AtomicU64::new(100),
                 next_id: AtomicU64::new(FIRST_AUTO_ID),
                 runtime: RwLock::new(HashMap::new()),
+                name_overrides: RwLock::new(HashMap::new()),
                 histories: RwLock::new(HashMap::new()),
                 version: AtomicU64::new(0),
                 events: broadcast::channel(EVENT_BUS_CAPACITY).0,
@@ -229,11 +234,60 @@ impl World {
         self.inner.by_id.write().clear();
         self.inner.connections.write().clear();
         self.inner.runtime.write().clear();
+        self.inner.name_overrides.write().clear();
         self.inner.histories.write().clear();
         self.inner.next_id.store(FIRST_AUTO_ID, Ordering::Relaxed);
         // The grid state is environmental (set by the config's `every`
         // timer); we deliberately keep it across reloads so the first
         // tick after reload still has plausible values.
+    }
+
+    /// Remove a component from the registry and drop every edge that
+    /// touches it (in or out). Returns true if the component was
+    /// present. The Arc held by any in-flight gRPC stream task keeps
+    /// the underlying component alive until the subscriber drops —
+    /// the registry just stops handing it out from `get()`.
+    pub fn remove_component(&self, id: u64) -> bool {
+        let was_present = self.inner.by_id.write().remove(&id).is_some();
+        self.inner.components.write().retain(|c| c.id() != id);
+        self.inner
+            .connections
+            .write()
+            .retain(|(p, c)| *p != id && *c != id);
+        self.inner.histories.write().remove(&id);
+        self.inner.runtime.write().remove(&id);
+        was_present
+    }
+
+    /// Drop a single parent → child edge. Returns true if the edge
+    /// existed. Doesn't touch either endpoint's registration.
+    pub fn disconnect(&self, parent: u64, child: u64) -> bool {
+        let mut edges = self.inner.connections.write();
+        let before = edges.len();
+        edges.retain(|(p, c)| !(*p == parent && *c == child));
+        edges.len() < before
+    }
+
+    /// Override a component's display name. Reads via `display_name`;
+    /// `SimulatedComponent::name()` is unchanged so internal log
+    /// lines and physics-derived state keep their stable default.
+    pub fn rename(&self, id: u64, name: String) {
+        self.inner.name_overrides.write().insert(id, name);
+    }
+
+    /// User-facing display name — override if present, else the
+    /// component's intrinsic `name()`. Returns `None` when the id
+    /// isn't registered (and no override was placed for a since-
+    /// removed component).
+    pub fn display_name(&self, id: u64) -> Option<String> {
+        if let Some(n) = self.inner.name_overrides.read().get(&id) {
+            return Some(n.clone());
+        }
+        self.inner
+            .by_id
+            .read()
+            .get(&id)
+            .map(|c| c.name().to_string())
     }
 
     pub fn runtime_of(&self, id: u64) -> ComponentRuntime {
@@ -568,6 +622,81 @@ mod tests {
             }
             other => panic!("unexpected event: {other:?}"),
         }
+    }
+
+    /// Components used as stubs in the mutation-method tests below.
+    /// All they need to do is identify themselves; physics is irrelevant.
+    struct Stub(u64);
+    impl std::fmt::Display for Stub {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "stub-{}", self.0)
+        }
+    }
+    impl SimulatedComponent for Stub {
+        fn id(&self) -> u64 {
+            self.0
+        }
+        fn category(&self) -> crate::sim::Category {
+            crate::sim::Category::Meter
+        }
+        fn name(&self) -> &str {
+            // 'static lifetime via leak — fine for tests
+            Box::leak(format!("stub-{}", self.0).into_boxed_str())
+        }
+        fn stream_interval(&self) -> Duration {
+            Duration::from_secs(1)
+        }
+        fn tick(&self, _: &World, _: DateTime<Utc>, _: Duration) {}
+        fn telemetry(&self, _: &World) -> crate::sim::Telemetry {
+            crate::sim::Telemetry::default()
+        }
+    }
+
+    #[test]
+    fn remove_component_drops_registry_and_edges() {
+        let w = World::new();
+        w.register(Stub(1));
+        w.register(Stub(2));
+        w.register(Stub(3));
+        w.connect(1, 2);
+        w.connect(2, 3);
+        w.connect(1, 3);
+
+        assert!(w.remove_component(2));
+        assert!(w.get(2).is_none());
+        assert!(w.get(1).is_some());
+        let edges = w.connections();
+        // Both edges touching id 2 went away; the 1→3 direct edge stays.
+        assert_eq!(edges, vec![(1, 3)]);
+        // Removing a missing id is a no-op that returns false.
+        assert!(!w.remove_component(99));
+    }
+
+    #[test]
+    fn disconnect_drops_one_edge_keeps_endpoints() {
+        let w = World::new();
+        w.register(Stub(1));
+        w.register(Stub(2));
+        w.connect(1, 2);
+        w.connect(1, 2); // duplicate
+        assert!(w.disconnect(1, 2));
+        // First call drops both copies (retain semantics).
+        assert!(w.connections().is_empty());
+        assert!(w.get(1).is_some());
+        assert!(w.get(2).is_some());
+        // Second disconnect on the same edge returns false.
+        assert!(!w.disconnect(1, 2));
+    }
+
+    #[test]
+    fn rename_overrides_display_name_only() {
+        let w = World::new();
+        w.register(Stub(7));
+        assert_eq!(w.display_name(7).as_deref(), Some("stub-7"));
+        w.rename(7, "frontside-meter".into());
+        assert_eq!(w.display_name(7).as_deref(), Some("frontside-meter"));
+        // The component's intrinsic name() is untouched.
+        assert_eq!(w.get(7).unwrap().name(), "stub-7");
     }
 
     /// `reset()` clears history alongside the rest of the World so a

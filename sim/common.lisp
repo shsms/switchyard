@@ -45,3 +45,21 @@ can cancel it on reload."
          (secs (/ ms 1000.0)))
     (setq active-timers
           (cons (run-with-timer secs secs func) active-timers))))
+
+;; -----------------------------------------------------------------------------
+;; UI override file loader
+;; -----------------------------------------------------------------------------
+
+(defun overrides-path ()
+  "Path of the per-microgrid UI overrides file, relative to the
+config's load directory. Mirrors what the UI's /api/persist endpoint
+writes to."
+  (format "config.ui-overrides.%d.lisp" (get-microgrid-id)))
+
+(defun load-overrides ()
+  "Load the persisted UI overrides for this microgrid if they exist.
+No-op on a fresh checkout. Call from config.lisp after build-topology
+so user-driven mutations apply on top of the canonical graph."
+  (let ((path (overrides-path)))
+    (when (file-exists-p path)
+      (load path))))

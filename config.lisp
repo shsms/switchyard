@@ -139,3 +139,8 @@
     ;; meter-defaults so the explicit :power isn't combined with a
     ;; default :stream-jitter-pct on a hidden component.
     (%make-meter :id 100 :hidden t :power 1000.0)))))
+
+;; Apply UI-driven edits the user has clicked Persist on. The override
+;; filename is parameterised by microgrid-id so multiple sims sharing
+;; this directory each get their own. No-op when the file doesn't exist.
+(load-overrides)

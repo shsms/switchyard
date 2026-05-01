@@ -125,7 +125,11 @@ async fn topology(State(config): State<Config>) -> Json<TopologySnapshot> {
         .iter()
         .map(|c| ComponentSummary {
             id: c.id(),
-            name: c.name().to_string(),
+            // Display-name override (set by world-rename-component)
+            // wins over the component's intrinsic name.
+            name: world
+                .display_name(c.id())
+                .unwrap_or_else(|| c.name().to_string()),
             category: category_label(c.category()),
             subtype: c.subtype(),
             hidden: c.is_hidden(),

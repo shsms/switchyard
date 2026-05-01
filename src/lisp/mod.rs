@@ -218,7 +218,43 @@ fn register_runtime(ctx: &mut TulispContext, world: &World, metadata: Arc<RwLock
     register_load_drivers(ctx, world.clone());
     register_time_helpers(ctx);
     register_reactive_setters(ctx, world.clone());
+    register_world_ops(ctx, world.clone());
+    register_fs_helpers(ctx);
     csv_profile::register(ctx);
+}
+
+/// Mutation defuns the UI editor (and power-user REPL) call to
+/// reshape the running World — remove a component, drop an edge,
+/// rename for display.
+fn register_world_ops(ctx: &mut TulispContext, world: World) {
+    let w = world.clone();
+    ctx.defun(
+        "world-remove-component",
+        move |id: i64| -> bool { w.remove_component(id as u64) },
+    );
+    let w = world.clone();
+    ctx.defun(
+        "world-disconnect",
+        move |parent: i64, child: i64| -> bool { w.disconnect(parent as u64, child as u64) },
+    );
+    ctx.defun(
+        "world-rename-component",
+        move |id: i64, name: String| -> bool {
+            world.rename(id as u64, name);
+            true
+        },
+    );
+}
+
+/// Filesystem helpers the override-file loader needs.
+fn register_fs_helpers(ctx: &mut TulispContext) {
+    // Resolves relative to the current working directory, same as
+    // tulisp's (load PATH). Returns t/nil — used by load-overrides
+    // to no-op on a fresh checkout where the override file doesn't
+    // exist yet.
+    ctx.defun("file-exists-p", |path: String| -> bool {
+        Path::new(&path).exists()
+    });
 }
 
 fn register_reactive_setters(ctx: &mut TulispContext, world: World) {
@@ -427,14 +463,19 @@ fn register_metadata(ctx: &mut TulispContext, metadata: Arc<RwLock<Metadata>>) {
             Ok(true)
         },
     );
+    let m = metadata.clone();
     ctx.defun(
         "set-default-request-lifetime-ms",
         move |ms: i64| -> Result<bool, Error> {
-            metadata.write().default_request_lifetime =
-                Duration::from_millis(ms.max(0) as u64);
+            m.write().default_request_lifetime = Duration::from_millis(ms.max(0) as u64);
             Ok(true)
         },
     );
+    // Reader counterpart — the override-file loader interpolates this
+    // into the per-microgrid filename.
+    ctx.defun("get-microgrid-id", move || -> i64 {
+        metadata.read().microgrid_id as i64
+    });
 }
 
 fn add_log_functions(ctx: &mut TulispContext) {
