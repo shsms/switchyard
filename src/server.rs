@@ -277,7 +277,8 @@ impl microgrid_server::Microgrid for MicrogridServer {
         request: tonic::Request<ReceiveElectricalComponentTelemetryStreamRequest>,
     ) -> Result<tonic::Response<Self::ReceiveElectricalComponentTelemetryStreamStream>, tonic::Status>
     {
-        let id = request.into_inner().electrical_component_id;
+        let req = request.into_inner();
+        let id = req.electrical_component_id;
         let world = self.config.world();
 
         let component = world
@@ -285,6 +286,20 @@ impl microgrid_server::Microgrid for MicrogridServer {
             .ok_or_else(|| tonic::Status::not_found(format!("component {id} not found")))?;
         let interval = component.stream_interval();
         let jitter_pct = component.stream_jitter_pct().clamp(0.0, 100.0);
+
+        // Optional metric allowlist. Per the proto:
+        //   - filter absent           → all metrics (None below)
+        //   - filter present, empty   → InvalidArgument
+        //   - filter present, non-empty → only those metrics
+        let metric_filter: Option<std::collections::HashSet<i32>> = match req.filter {
+            None => None,
+            Some(f) if f.metrics.is_empty() => {
+                return Err(tonic::Status::invalid_argument(
+                    "ComponentTelemetryStreamFilter.metrics must contain at least one metric",
+                ));
+            }
+            Some(f) => Some(f.metrics.into_iter().collect()),
+        };
 
         let (tx, rx) = tokio::sync::mpsc::channel(128);
         tokio::spawn(async move {
@@ -321,7 +336,11 @@ impl microgrid_server::Microgrid for MicrogridServer {
                         if let Some(label) = world.runtime_of(id).health.state_label() {
                             snapshot.component_state = Some(label);
                         }
-                        let msg = telemetry_to_proto(component.as_ref(), &snapshot);
+                        let msg = telemetry_to_proto(
+                            component.as_ref(),
+                            &snapshot,
+                            metric_filter.as_ref(),
+                        );
                         if tx.send(Ok(msg)).await.is_err() {
                             log::debug!("stream({id}): client disconnected");
                             break;

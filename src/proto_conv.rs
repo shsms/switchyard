@@ -4,6 +4,8 @@
 //! Lives in its own module so the server code stays focused on RPC
 //! plumbing.
 
+use std::collections::HashSet;
+
 use prost_types::Timestamp;
 
 use crate::{
@@ -23,6 +25,18 @@ use crate::{
     proto::microgrid::ReceiveElectricalComponentTelemetryStreamResponse,
     sim::{Category, SimulatedComponent, Telemetry},
 };
+
+/// Subscriber's metric allowlist. `None` means "all metrics"; `Some`
+/// is the set of `Metric as i32` values the client asked for.
+pub type MetricFilter<'a> = Option<&'a HashSet<i32>>;
+
+#[inline]
+fn allowed(filter: MetricFilter<'_>, metric: Metric) -> bool {
+    match filter {
+        None => true,
+        Some(set) => set.contains(&(metric as i32)),
+    }
+}
 
 pub fn category_to_proto(c: Category) -> ElectricalComponentCategory {
     match c {
@@ -112,10 +126,12 @@ pub fn make_component_proto(c: &dyn SimulatedComponent) -> ElectricalComponent {
     }
 }
 
-/// Build a streaming telemetry response for a component.
+/// Build a streaming telemetry response for a component, optionally
+/// limited to a subset of metrics chosen by the subscriber.
 pub fn telemetry_to_proto(
     c: &dyn SimulatedComponent,
     t: &Telemetry,
+    filter: MetricFilter<'_>,
 ) -> ReceiveElectricalComponentTelemetryStreamResponse {
     let now = Some(Timestamp::from(std::time::SystemTime::now()));
     let cat = c.category();
@@ -123,37 +139,67 @@ pub fn telemetry_to_proto(
     let mut samples = Vec::new();
     let mut states = Vec::new();
 
-    if let Some(s) = t.frequency_hz {
+    if let Some(s) = t.frequency_hz
+        && allowed(filter, Metric::AcFrequency)
+    {
         samples.push(simple_sample(now, Metric::AcFrequency, s));
     }
     if let Some((v1, v2, v3)) = t.per_phase_voltage_v {
-        samples.push(simple_sample(now, Metric::AcVoltagePhase1N, v1));
-        samples.push(simple_sample(now, Metric::AcVoltagePhase2N, v2));
-        samples.push(simple_sample(now, Metric::AcVoltagePhase3N, v3));
+        if allowed(filter, Metric::AcVoltagePhase1N) {
+            samples.push(simple_sample(now, Metric::AcVoltagePhase1N, v1));
+        }
+        if allowed(filter, Metric::AcVoltagePhase2N) {
+            samples.push(simple_sample(now, Metric::AcVoltagePhase2N, v2));
+        }
+        if allowed(filter, Metric::AcVoltagePhase3N) {
+            samples.push(simple_sample(now, Metric::AcVoltagePhase3N, v3));
+        }
     }
     if let Some((p1, p2, p3)) = t.per_phase_current_a {
-        samples.push(simple_sample(now, Metric::AcCurrentPhase1, p1));
-        samples.push(simple_sample(now, Metric::AcCurrentPhase2, p2));
-        samples.push(simple_sample(now, Metric::AcCurrentPhase3, p3));
+        if allowed(filter, Metric::AcCurrentPhase1) {
+            samples.push(simple_sample(now, Metric::AcCurrentPhase1, p1));
+        }
+        if allowed(filter, Metric::AcCurrentPhase2) {
+            samples.push(simple_sample(now, Metric::AcCurrentPhase2, p2));
+        }
+        if allowed(filter, Metric::AcCurrentPhase3) {
+            samples.push(simple_sample(now, Metric::AcCurrentPhase3, p3));
+        }
     }
     if let Some((p1, p2, p3)) = t.per_phase_active_w {
-        samples.push(simple_sample(now, Metric::AcPowerActivePhase1, p1));
-        samples.push(simple_sample(now, Metric::AcPowerActivePhase2, p2));
-        samples.push(simple_sample(now, Metric::AcPowerActivePhase3, p3));
+        if allowed(filter, Metric::AcPowerActivePhase1) {
+            samples.push(simple_sample(now, Metric::AcPowerActivePhase1, p1));
+        }
+        if allowed(filter, Metric::AcPowerActivePhase2) {
+            samples.push(simple_sample(now, Metric::AcPowerActivePhase2, p2));
+        }
+        if allowed(filter, Metric::AcPowerActivePhase3) {
+            samples.push(simple_sample(now, Metric::AcPowerActivePhase3, p3));
+        }
     }
     if let Some((q1, q2, q3)) = t.per_phase_reactive_var {
-        samples.push(simple_sample(now, Metric::AcPowerReactivePhase1, q1));
-        samples.push(simple_sample(now, Metric::AcPowerReactivePhase2, q2));
-        samples.push(simple_sample(now, Metric::AcPowerReactivePhase3, q3));
+        if allowed(filter, Metric::AcPowerReactivePhase1) {
+            samples.push(simple_sample(now, Metric::AcPowerReactivePhase1, q1));
+        }
+        if allowed(filter, Metric::AcPowerReactivePhase2) {
+            samples.push(simple_sample(now, Metric::AcPowerReactivePhase2, q2));
+        }
+        if allowed(filter, Metric::AcPowerReactivePhase3) {
+            samples.push(simple_sample(now, Metric::AcPowerReactivePhase3, q3));
+        }
     }
-    if let Some(p) = t.active_power_w {
+    if let Some(p) = t.active_power_w
+        && allowed(filter, Metric::AcPowerActive)
+    {
         let mut sample = simple_sample(now, Metric::AcPowerActive, p);
         if let Some(b) = &t.active_power_bounds {
             sample.bounds = b.0.clone();
         }
         samples.push(sample);
     }
-    if let Some(q) = t.reactive_power_var {
+    if let Some(q) = t.reactive_power_var
+        && allowed(filter, Metric::AcPowerReactive)
+    {
         let mut sample = simple_sample(now, Metric::AcPowerReactive, q);
         if let Some((lo, hi)) = t.reactive_power_bounds {
             sample.bounds = vec![Bounds {
@@ -165,10 +211,14 @@ pub fn telemetry_to_proto(
     }
 
     // DC / battery-flavoured samples
-    if let Some(cap) = t.capacity_wh {
+    if let Some(cap) = t.capacity_wh
+        && allowed(filter, Metric::BatteryCapacity)
+    {
         samples.push(simple_sample(now, Metric::BatteryCapacity, cap));
     }
-    if let Some(soc) = t.soc_pct {
+    if let Some(soc) = t.soc_pct
+        && allowed(filter, Metric::BatterySocPct)
+    {
         let mut s = simple_sample(now, Metric::BatterySocPct, soc);
         if let (Some(l), Some(u)) = (t.soc_lower_pct, t.soc_upper_pct) {
             s.bounds = vec![Bounds {
@@ -178,20 +228,27 @@ pub fn telemetry_to_proto(
         }
         samples.push(s);
     }
-    if let Some(v) = t.dc_voltage_v {
+    if let Some(v) = t.dc_voltage_v
+        && allowed(filter, Metric::DcVoltage)
+    {
         samples.push(simple_sample(now, Metric::DcVoltage, v));
     }
-    if let Some(i) = t.dc_current_a {
+    if let Some(i) = t.dc_current_a
+        && allowed(filter, Metric::DcCurrent)
+    {
         samples.push(simple_sample(now, Metric::DcCurrent, i));
     }
-    if let Some(p) = t.dc_power_w {
+    if let Some(p) = t.dc_power_w
+        && allowed(filter, Metric::DcPower)
+    {
         let mut sample = simple_sample(now, Metric::DcPower, p);
         // Only attach bounds to DC for batteries — for AC components
         // they are attached above.
         if cat == Category::Battery
-            && let Some(b) = &t.active_power_bounds {
-                sample.bounds = b.0.clone();
-            }
+            && let Some(b) = &t.active_power_bounds
+        {
+            sample.bounds = b.0.clone();
+        }
         samples.push(sample);
     }
 

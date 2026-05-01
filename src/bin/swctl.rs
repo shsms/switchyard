@@ -83,6 +83,12 @@ enum Cmd {
         /// Stop after N samples (default: stream forever, Ctrl+C to exit).
         #[arg(long)]
         samples: Option<usize>,
+        /// Subscribe only to specific metrics. Repeatable. Names are
+        /// case-insensitive and match the proto enum either with or
+        /// without the `METRIC_` prefix (e.g. `dc_power` or
+        /// `METRIC_DC_POWER`). Omitting the flag streams every metric.
+        #[arg(long = "metric")]
+        metrics: Vec<String>,
     },
 
     /// Set the active or reactive power set-point on a component.
@@ -155,7 +161,11 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Cmd::List { category, ids } => cmd_list(&mut client, category, ids, cli.json).await,
         Cmd::Connections { from, to } => cmd_connections(&mut client, from, to, cli.json).await,
         Cmd::Tree => cmd_tree(&mut client).await,
-        Cmd::Stream { id, samples } => cmd_stream(&mut client, id, samples, cli.json).await,
+        Cmd::Stream {
+            id,
+            samples,
+            metrics,
+        } => cmd_stream(&mut client, id, samples, metrics, cli.json).await,
         Cmd::SetPower {
             id,
             power,
@@ -329,11 +339,25 @@ async fn cmd_stream(
     client: &mut MicrogridClient<Channel>,
     id: u64,
     samples: Option<usize>,
+    metric_names: Vec<String>,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let filter = if metric_names.is_empty() {
+        None
+    } else {
+        let mut metrics = Vec::with_capacity(metric_names.len());
+        for name in &metric_names {
+            metrics.push(parse_metric_name(name)? as i32);
+        }
+        Some(
+            switchyard::proto::microgrid::receive_electrical_component_telemetry_stream_request::ComponentTelemetryStreamFilter {
+                metrics,
+            },
+        )
+    };
     let req = ReceiveElectricalComponentTelemetryStreamRequest {
         electrical_component_id: id,
-        ..Default::default()
+        filter,
     };
     let mut stream = client
         .receive_electrical_component_telemetry_stream(req)
@@ -520,4 +544,19 @@ fn active_bounds(c: &ElectricalComponent) -> (Option<f32>, Option<f32>) {
 
 fn short_metric(m: Metric) -> String {
     m.as_str_name().trim_start_matches("METRIC_").to_string()
+}
+
+/// Resolve a CLI string to the proto `Metric` enum. Accepts both
+/// `METRIC_AC_POWER_ACTIVE` and the lowercase `ac_power_active` /
+/// `ac-power-active` shorthands; the lookup is case-insensitive and
+/// tolerant of `-` vs `_` so users don't have to fight tab-completion.
+fn parse_metric_name(s: &str) -> Result<Metric, Box<dyn std::error::Error>> {
+    let normalized = s.replace('-', "_").to_ascii_uppercase();
+    let with_prefix = if normalized.starts_with("METRIC_") {
+        normalized
+    } else {
+        format!("METRIC_{normalized}")
+    };
+    Metric::from_str_name(&with_prefix)
+        .ok_or_else(|| format!("unknown metric '{s}'").into())
 }
