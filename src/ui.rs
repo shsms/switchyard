@@ -60,6 +60,11 @@ fn router(config: Config) -> Router {
         .route("/api/setpoints", get(setpoints))
         .route("/api/pending", get(pending))
         .route("/api/pending/{id}", axum::routing::delete(pending_remove))
+        .route(
+            "/api/persisted/{idx}",
+            axum::routing::delete(persisted_mark_remove)
+                .post(persisted_unmark_remove),
+        )
         .route("/api/persist", post(persist))
         .route("/api/discard", post(discard))
         .route("/api/logs", get(logs_backfill))
@@ -393,6 +398,10 @@ struct PendingEntryView {
 struct PersistedOverrideView {
     idx: usize,
     source: String,
+    /// True when the user has × marked this entry but not yet
+    /// persisted. The chrome shows it visually struck-through and
+    /// counts it toward the "unsaved" dirty marker.
+    marked_removal: bool,
 }
 
 #[derive(Serialize)]
@@ -426,6 +435,7 @@ async fn pending(State(config): State<Config>) -> Json<PendingResponse> {
     // .trim_end() drops the formatter's file-style trailing newline
     // — the modal renders each entry in its own <pre>, an extra blank
     // line at the bottom would just look noisy.
+    let removals = config.pending_removals();
     let persisted: Vec<PersistedOverrideView> = config
         .persisted_overrides()
         .into_iter()
@@ -434,6 +444,7 @@ async fn pending(State(config): State<Config>) -> Json<PendingResponse> {
             source: tulisp_fmt::format_with_width(&o.source, 60)
                 .map(|f| f.trim_end().to_string())
                 .unwrap_or(o.source),
+            marked_removal: removals.contains(&o.idx),
         })
         .collect();
     let persisted_count = persisted.len();
@@ -457,6 +468,27 @@ async fn pending_remove(
     } else {
         Err((StatusCode::NOT_FOUND, format!("no pending entry with id {id}")))
     }
+}
+
+/// Mark a persisted-override index for removal on the next persist.
+/// Idempotent — the chrome's × button hits this on click and re-fetches
+/// /api/pending. The actual file rewrite happens when the user clicks
+/// Persist (or is undone via POST /api/persisted/:idx + Discard).
+async fn persisted_mark_remove(
+    State(config): State<Config>,
+    axum::extract::Path(idx): axum::extract::Path<usize>,
+) -> StatusCode {
+    config.mark_persisted_for_removal(idx);
+    StatusCode::NO_CONTENT
+}
+
+/// Undo a pending × on a persisted-override index. Idempotent.
+async fn persisted_unmark_remove(
+    State(config): State<Config>,
+    axum::extract::Path(idx): axum::extract::Path<usize>,
+) -> StatusCode {
+    config.unmark_persisted_for_removal(idx);
+    StatusCode::NO_CONTENT
 }
 
 #[derive(Serialize)]
@@ -970,6 +1002,55 @@ mod tests {
         let (_, body) = call(cfg, get("/api/pending")).await;
         let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(parsed["entries"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn persisted_mark_remove_excludes_form_on_next_persist() {
+        // Persist two evals → file has 2 forms. Mark idx 0 for
+        // removal → /api/pending shows it as marked_removal:true.
+        // Persist again → file has only the second form.
+        let cfg = config_with("(set-microgrid-id 7) (%make-grid :id 1)").await;
+        call(cfg.clone(), post("/api/eval", "(world-rename-component 1 \"a\")")).await;
+        call(cfg.clone(), post("/api/eval", "(world-rename-component 1 \"b\")")).await;
+        let (status, _) = call(cfg.clone(), post("/api/persist", "")).await;
+        assert_eq!(status, StatusCode::OK);
+
+        // Confirm both forms are on disk.
+        let (_, body) = call(cfg.clone(), get("/api/pending")).await;
+        let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let persisted = parsed["persisted"].as_array().unwrap();
+        assert_eq!(persisted.len(), 2);
+
+        // Mark idx 0 for removal.
+        let req = axum::http::Request::builder()
+            .method(axum::http::Method::DELETE)
+            .uri("/api/persisted/0")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let (status, _) = call(cfg.clone(), req).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+
+        // /api/pending should reflect the mark.
+        let (_, body) = call(cfg.clone(), get("/api/pending")).await;
+        let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(parsed["persisted"][0]["marked_removal"], true);
+        assert_eq!(parsed["persisted"][1]["marked_removal"], false);
+
+        // Persist → file rewritten without the marked form.
+        let (status, body) = call(cfg.clone(), post("/api/persist", "")).await;
+        assert_eq!(status, StatusCode::OK);
+        let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let path = parsed["path"].as_str().unwrap();
+        let written = std::fs::read_to_string(path).unwrap();
+        assert!(written.contains("\"b\""));
+        assert!(!written.contains("\"a\""));
+
+        // Removal set cleared.
+        let (_, body) = call(cfg, get("/api/pending")).await;
+        let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let persisted = parsed["persisted"].as_array().unwrap();
+        assert_eq!(persisted.len(), 1);
+        assert_eq!(persisted[0]["marked_removal"], false);
     }
 
     #[tokio::test]
