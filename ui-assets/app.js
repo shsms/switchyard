@@ -1,6 +1,8 @@
-// Phase-1 SPA. Renders /api/topology with cytoscape, and on node
+// Phase-1 SPA. Renders /api/topology with vis-network, and on node
 // selection shows category-appropriate live charts in the side panel.
-// REPL panel + topology editing land in the next commits.
+// Visual editing (add / connect / rename / delete) + REPL + Persist
+// + Defaults / Scenarios all hang off the same /api/eval mutation
+// path so anything done in the UI is also scriptable from outside.
 
 const status = document.getElementById("status");
 // `inspect` is the swappable upper half of the side panel; the lower
@@ -33,12 +35,27 @@ const CHARTS_BY_CATEGORY = {
   chp: ["active_power_w"],
 };
 
-const METRIC_TITLES = {
-  active_power_w: "Active Power (W)",
-  reactive_power_var: "Reactive Power (VAR)",
-  frequency_hz: "Frequency (Hz)",
-  soc_pct: "SoC (%)",
+// Per-metric chart presentation. `kind: "power"` triggers W → kW →
+// MW auto-scaling based on the data range; `linear` skips scaling
+// and just appends the fixed unit. Title doesn't carry a unit
+// itself — the unit string from `chooseScale` gets appended at
+// chart creation so it reflects the actual displayed magnitudes.
+const METRIC_PRESENTATION = {
+  active_power_w:     { title: "Active Power",   kind: "power", baseUnit: "W" },
+  reactive_power_var: { title: "Reactive Power", kind: "power", baseUnit: "VAR" },
+  frequency_hz:       { title: "Frequency",      kind: "linear", unit: "Hz" },
+  soc_pct:            { title: "SoC",            kind: "linear", unit: "%" },
 };
+
+function chooseScale(rule, values) {
+  if (rule.kind === "power" && values.length) {
+    const max = Math.max(...values.map((v) => Math.abs(v)));
+    if (max >= 1e6) return { div: 1e6, unit: "M" + rule.baseUnit };
+    if (max >= 1e3) return { div: 1e3, unit: "k" + rule.baseUnit };
+    return { div: 1, unit: rule.baseUnit };
+  }
+  return { div: 1, unit: rule.unit || "" };
+}
 
 function getCss(name) {
   return getComputedStyle(document.documentElement)
@@ -51,111 +68,140 @@ function getCss(name) {
 // get destroyed in clearCharts.
 let activeCharts = null;
 
-// Cytoscape instance — module-scoped so the WS topology-changed
-// handler can refresh it without tearing the whole panel down.
-let cy = null;
+// vis-network instance + DataSets — module-scoped so the WS
+// topology-changed handler can refresh in place without tearing
+// down the canvas.
+let network = null;
+let nodesDS = null;
+let edgesDS = null;
+// Last topology snapshot keyed by id; used to recover category +
+// subtype on selection (DataSet stores them but it's clearer to keep
+// our own).
+let componentById = new Map();
 
-function buildElements(topology) {
+// Brighten a #rrggbb hex by `n` per channel (clamped to 255). Used to
+// derive hover + selected node-background tints from the canonical
+// category color so the same node visibly reacts to interaction
+// without us hand-picking a separate palette per state.
+function lighten(hex, n) {
+  const c = parseInt(hex.slice(1), 16);
+  const r = Math.min(255, ((c >> 16) & 255) + n);
+  const g = Math.min(255, ((c >> 8) & 255) + n);
+  const b = Math.min(255, (c & 255) + n);
+  return "#" + ((r << 16) | (g << 8) | b).toString(16).padStart(6, "0");
+}
+
+function nodeStyleFor(c) {
+  const healthBorder = {
+    ok: "#1c2128",     // matches --bg — subtle outline at rest
+    standby: "#c4ad55", // toned-down yellow
+    error: "#e58275",   // toned-down red, matches --bad
+  }[c.health || "ok"];
+  const healthWidth = c.health === "ok" ? 1 : 3;
+  const bg = CATEGORY_COLOR[c.category] || "#888";
+  return {
+    id: c.id,
+    label: c.name,
+    shape: "ellipse",
+    color: {
+      background: bg,
+      border: healthBorder,
+      // Selected: lighter background + accent border. Hover: a
+      // smaller lift so it's a softer "you can click this" cue.
+      highlight: { background: lighten(bg, 36), border: "#79b8ff" },
+      hover: { background: lighten(bg, 18), border: "#b0b8c1" },
+    },
+    borderWidth: healthWidth,
+    borderWidthSelected: 4,
+    // vis-network's default `chosen` behaviour bolds the label on
+    // selection (and on hover). Drop the label part — color
+    // changes (selected border, hover border) carry the signal,
+    // we don't need a font-weight shift on top.
+    chosen: { node: true, label: false },
+    font: {
+      color: "#1c2128",
+      face: "ui-monospace, monospace",
+      size: 14,
+    },
+    margin: { top: 9, right: 16, bottom: 9, left: 16 },
+    // Minimum oval size so short-label nodes (grid-1, meter-2) don't
+    // shrink below the readable threshold. Long-label nodes still
+    // grow to fit via the margin.
+    widthConstraint: { minimum: 78 },
+    heightConstraint: { minimum: 34 },
+  };
+}
+
+function buildVisData(topology) {
+  componentById = new Map();
   const visible = topology.components.filter((c) => !c.hidden);
-  const nodes = visible.map((c) => ({
-    data: {
-      id: String(c.id),
-      name: c.name,
-      category: c.category,
-      subtype: c.subtype,
-      // Drives the health-color border via cytoscape selectors.
-      health: c.health,
-    },
-  }));
+  const nodes = visible.map((c) => {
+    componentById.set(c.id, c);
+    return nodeStyleFor(c);
+  });
   const edges = topology.connections.map(([p, c]) => ({
-    data: {
-      id: `${p}-${c}`,
-      source: String(p),
-      target: String(c),
-    },
+    id: `${p}-${c}`,
+    from: p,
+    to: c,
+    arrows: "to",
   }));
-  return [...nodes, ...edges];
+  return { nodes, edges };
 }
 
-function cytoscapeStylesheet() {
-  const perCategory = Object.entries(CATEGORY_COLOR).map(([cat, color]) => ({
-    selector: `node[category="${cat}"]`,
-    style: { "background-color": color },
-  }));
-
-  return [
-    {
-      selector: "node",
-      style: {
-        shape: "ellipse",
-        "background-color": "#888",
-        label: "data(name)",
-        // Centered inside the oval. The label drives node sizing —
-        // `width: label` + padding makes every node fit its name
-        // snugly, no truncation.
-        color: "#0d1117",
-        "text-valign": "center",
-        "text-halign": "center",
-        "font-size": 11,
-        "font-family": "ui-monospace, monospace",
-        "font-weight": "bold",
-        width: "label",
-        height: "label",
-        "padding-left": "12px",
-        "padding-right": "12px",
-        "padding-top": "8px",
-        "padding-bottom": "8px",
-        "border-width": 1,
-        "border-color": "#0d1117",
-      },
+// Layout: vis-network's hierarchical mode places nodes on
+// integer-numbered levels by edge direction. `LR` reads left → right —
+// roots on the left, leaves to the right. Physics off keeps nodes
+// pinned where the layout placed them so the canvas stays stable
+// across data updates.
+const visOptions = {
+  layout: {
+    hierarchical: {
+      enabled: true,
+      direction: "LR",
+      sortMethod: "directed",
+      nodeSpacing: 120,
+      levelSeparation: 180,
+      treeSpacing: 140,
     },
-    ...perCategory,
-    // Health-driven border. Subtle on healthy, loud on faults so an
-    // engineer can spot a degraded component without clicking each one.
-    {
-      selector: 'node[health = "ok"]',
-      style: { "border-color": "#0d1117", "border-width": 1 },
+  },
+  physics: { enabled: false },
+  interaction: {
+    hover: true,
+    dragNodes: true,
+    multiselect: false,
+    selectConnectedEdges: false,
+    navigationButtons: false,
+    keyboard: { enabled: false },
+  },
+  edges: {
+    color: { color: "#6b7280", highlight: "#79b8ff", hover: "#b0b8c1" },
+    width: 1.5,
+    smooth: { enabled: true, type: "cubicBezier", forceDirection: "horizontal", roundness: 0.4 },
+    arrows: { to: { enabled: true, scaleFactor: 0.6 } },
+  },
+  // The manipulation API powers shift+drag connect (next handler);
+  // keeping the toolbar hidden because we drive edit modes
+  // programmatically via key state.
+  manipulation: {
+    enabled: false,
+    addEdge: (data, callback) => {
+      if (data.from === data.to) {
+        callback(null);
+        return;
+      }
+      fetch("/api/eval", {
+        method: "POST",
+        body: `(world-connect ${data.from} ${data.to})`,
+      })
+        .then((r) => r.json())
+        .then((res) => {
+          if (!res.ok) alert("Connect failed:\n" + res.error);
+        });
+      // Don't apply locally — the WS topology refresh will redraw
+      // with the new edge once the eval lands on the server.
+      callback(null);
     },
-    {
-      selector: 'node[health = "standby"]',
-      style: { "border-color": "#d2a106", "border-width": 3 },
-    },
-    {
-      selector: 'node[health = "error"]',
-      style: { "border-color": "#f85149", "border-width": 3 },
-    },
-    // Hover lift — slight darkening + border so the user sees what
-    // they're about to click. Cheap signal of interactivity.
-    {
-      selector: "node.hovered",
-      style: { "border-color": "#c9d1d9", "border-width": 2 },
-    },
-    {
-      selector: "node:selected",
-      style: { "border-width": 4, "border-color": "#58a6ff" },
-    },
-    {
-      selector: "edge",
-      style: {
-        "curve-style": "bezier",
-        "target-arrow-shape": "triangle",
-        "line-color": "#3a3f48",
-        "target-arrow-color": "#3a3f48",
-        width: 1.5,
-      },
-    },
-  ];
-}
-
-// breadthfirst's transform option swaps the (x, y) of every node
-// after layout. Default direction is top → bottom; this flips to
-// left → right, which reads more like a one-line flow chart.
-const layoutOptions = {
-  name: "breadthfirst",
-  directed: true,
-  padding: 30,
-  spacingFactor: 1.4,
-  transform: (_node, pos) => ({ x: pos.y, y: pos.x }),
+  },
 };
 
 function clearCharts() {
@@ -166,8 +212,8 @@ function clearCharts() {
 
 function renderInspect(d, parentIds, childIds) {
   const renderEdgeRow = (id, dataAttr) => {
-    const node = cy.getElementById(id);
-    const label = node.nonempty() ? node.data("name") : `id ${id}`;
+    const c = componentById.get(id);
+    const label = c ? c.name : `id ${id}`;
     return `<li>${escapeHtml(label)} <button class="link-btn" ${dataAttr}="${id}">✕</button></li>`;
   };
   const parentList = parentIds.length
@@ -243,20 +289,36 @@ function jsToLispString(s) {
 
 async function evalQuoted(expr) {
   const res = await fetch("/api/eval", { method: "POST", body: expr });
-  const data = await res.json();
+  // res.json() can throw "JSON.parse: unexpected character" if the
+  // server returned an empty / non-JSON body (e.g. a 5xx with HTML
+  // error page, or a connection that died mid-response). Surface the
+  // raw text so the actual culprit shows up in the console instead
+  // of an opaque parse error.
+  const text = await res.text();
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch (e) {
+    console.error(`evalQuoted: bad JSON for ${expr.slice(0, 60)}…`, {
+      status: res.status,
+      body: text,
+    });
+    alert(`${expr}\n\nserver returned non-JSON (HTTP ${res.status}):\n${text}`);
+    return;
+  }
   if (!data.ok) alert(`${expr}\n\nfailed:\n${data.error}`);
 }
 
-async function showComponent(node) {
-  const d = node.data();
+async function showComponent(d) {
+  if (!d) return;
   clearCharts();
 
-  // Walk the live cytoscape graph for parent/child ids. Cheaper than
-  // re-fetching /api/topology, and good enough for the disconnect
-  // buttons. Display strings get computed inside renderInspect via
-  // cy.getElementById(id).data('name').
-  const parentIds = node.incomers("node").map((n) => n.id());
-  const childIds = node.outgoers("node").map((n) => n.id());
+  // vis-network's getConnectedNodes(id, direction) returns the
+  // ids on either side of the selected node — cheaper than walking
+  // /api/topology for the disconnect buttons. Display labels get
+  // resolved by renderInspect via componentById lookups.
+  const parentIds = network ? network.getConnectedNodes(d.id, "from") : [];
+  const childIds = network ? network.getConnectedNodes(d.id, "to") : [];
   renderInspect(d, parentIds, childIds);
 
   const metrics = CHARTS_BY_CATEGORY[d.category] || [];
@@ -271,8 +333,10 @@ async function showComponent(node) {
     const samples = (await (await fetch(url)).json()).samples || [];
     const xs = samples.map(([t]) => t / 1000);
     const ys = samples.map(([, v]) => v);
-    const plot = makePlot(slot, metric, xs, ys);
-    charts.set(metric, { plot, xs, ys });
+    const { plot, scale } = makePlot(slot, metric, xs, ys);
+    // Stored ys are pre-scaled (already divided by scale.div) so the
+    // live push path can append by dividing each new sample once.
+    charts.set(metric, { plot, xs, ys: ys.map((y) => y / scale.div), scale });
   }
   activeCharts = { id: d.id, charts };
 
@@ -326,23 +390,32 @@ async function renderSetpoints(id, container) {
 }
 
 function makePlot(container, metric, xs, ys) {
+  const rule = METRIC_PRESENTATION[metric] || { title: metric, kind: "linear", unit: "" };
+  const scale = chooseScale(rule, ys);
+  const scaledYs = ys.map((y) => y / scale.div);
   const opts = {
     width: container.clientWidth || 280,
     height: 140,
-    title: METRIC_TITLES[metric] || metric,
+    title: scale.unit ? `${rule.title} (${scale.unit})` : rule.title,
     cursor: { drag: { x: false, y: false } },
     legend: { show: false },
     scales: { x: { time: true } },
     axes: [
-      { stroke: "#8b949e", grid: { stroke: "#30363d", width: 0.5 } },
-      { stroke: "#8b949e", grid: { stroke: "#30363d", width: 0.5 } },
+      { stroke: "#7d848e", grid: { stroke: "#353a45", width: 0.5 } },
+      // size = pixels reserved for the y-axis labels. 60 fits values
+      // up to 6 chars (e.g. -32.5 kW) without truncation.
+      {
+        stroke: "#7d848e",
+        grid: { stroke: "#353a45", width: 0.5 },
+        size: 60,
+      },
     ],
     series: [
       {},
-      { stroke: "#58a6ff", width: 1.5, points: { show: false } },
+      { stroke: "#79b8ff", width: 1.5, points: { show: false } },
     ],
   };
-  return new uPlot(opts, [xs, ys], container);
+  return { plot: new uPlot(opts, [xs, scaledYs], container), scale };
 }
 
 function pushSetpoint(ev) {
@@ -379,7 +452,9 @@ function pushSample(id, metric, ts_ms, value) {
   const series = activeCharts.charts.get(metric);
   if (!series) return;
   series.xs.push(ts_ms / 1000);
-  series.ys.push(value);
+  // Apply the chart's chosen unit scale so live samples stay
+  // consistent with the backfilled ones.
+  series.ys.push(value / series.scale.div);
   // Cap to 5-minute window so the chart doesn't grow forever.
   const cutoff = Date.now() / 1000 - 300;
   while (series.xs.length && series.xs[0] < cutoff) {
@@ -580,6 +655,60 @@ async function renderDefaults() {
   }
 }
 
+/// Drag the splitter between the topology canvas and the side panel.
+/// Updates main's grid-template-columns live; on each frame, also
+/// nudges any open uPlot charts (uPlot doesn't auto-resize) to the
+/// new container width. vis-network handles its own resize via
+/// ResizeObserver on the topology container.
+function setupSplitter() {
+  const splitter = document.getElementById("splitter");
+  const main = document.getElementById("app");
+  const sideEl = document.getElementById("side");
+  const SIDE_MIN = 300; // anything narrower and the inspect form wraps badly
+  const SIDE_MAX_FRAC = 0.7; // don't let the canvas drop below 30% of width
+
+  let dragging = false;
+  let startX = 0;
+  let startWidth = 0;
+
+  splitter.addEventListener("mousedown", (e) => {
+    dragging = true;
+    startX = e.clientX;
+    startWidth = sideEl.getBoundingClientRect().width;
+    splitter.classList.add("dragging");
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    e.preventDefault();
+  });
+  document.addEventListener("mousemove", (e) => {
+    if (!dragging) return;
+    const dx = startX - e.clientX;
+    const sideMax = window.innerWidth * SIDE_MAX_FRAC;
+    const newWidth = Math.min(sideMax, Math.max(SIDE_MIN, startWidth + dx));
+    main.style.gridTemplateColumns = `1fr 5px ${newWidth}px`;
+    refitCharts();
+  });
+  document.addEventListener("mouseup", () => {
+    if (!dragging) return;
+    dragging = false;
+    splitter.classList.remove("dragging");
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+  });
+}
+
+function refitCharts() {
+  if (!activeCharts) return;
+  for (const series of activeCharts.charts.values()) {
+    const parent = series.plot.root.parentElement;
+    if (!parent) continue;
+    series.plot.setSize({
+      width: parent.clientWidth,
+      height: 140,
+    });
+  }
+}
+
 function setupRepl() {
   const form = document.getElementById("repl-form");
   const input = document.getElementById("repl-input");
@@ -628,10 +757,20 @@ function openWebSocket(onTopologyChanged) {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   const ws = new WebSocket(`${proto}//${location.host}/ws/events`);
   ws.onmessage = (msg) => {
+    // Defensive: vis-network and other libs sometimes pump non-string
+    // frames (binary, blob) through fetch / WS pipelines that look
+    // identical from a try/catch perspective. Surface the actual
+    // payload type to console so a "JSON.parse undefined" surprise
+    // points straight at the offending frame.
+    if (typeof msg.data !== "string") {
+      console.warn("WS: non-string payload, skipping:", msg.data);
+      return;
+    }
     let ev;
     try {
       ev = JSON.parse(msg.data);
     } catch (e) {
+      console.warn("WS: JSON parse failed:", e.message, "payload was:", msg.data);
       return;
     }
     if (ev.kind === "sample") {
@@ -653,74 +792,74 @@ function applyTopology(topology) {
     `${visibleCount} components, ${topology.connections.length} connections`,
     "connected",
   );
-  const elements = buildElements(topology);
-  if (!cy) {
-    cy = cytoscape({
-      container: document.getElementById("topology"),
-      elements,
-      style: cytoscapeStylesheet(),
-      layout: layoutOptions,
-      wheelSensitivity: 0.2,
+  const { nodes, edges } = buildVisData(topology);
+  if (!network) {
+    nodesDS = new vis.DataSet(nodes);
+    edgesDS = new vis.DataSet(edges);
+    network = new vis.Network(
+      document.getElementById("topology"),
+      { nodes: nodesDS, edges: edgesDS },
+      visOptions,
+    );
+
+    network.on("click", (params) => {
+      if (params.nodes.length) {
+        const id = params.nodes[0];
+        showComponent(componentById.get(id));
+      } else {
+        clearSide();
+      }
     });
-    cy.on("tap", "node", (evt) => showComponent(evt.target));
-    cy.on("tap", (evt) => {
-      if (evt.target === cy) clearSide();
-    });
-    // Hover lift — the .hovered class is picked up by the
-    // stylesheet selector to draw a lighter border.
-    cy.on("mouseover", "node", (evt) => evt.target.addClass("hovered"));
-    cy.on("mouseout",  "node", (evt) => evt.target.removeClass("hovered"));
-    // Right-click → delete confirm → eval the removal. The WS
-    // TopologyChanged event the eval fires takes care of re-rendering.
-    cy.on("cxttap", "node", async (evt) => {
-      const node = evt.target;
-      const d = node.data();
-      if (!confirm(`Delete ${d.name} (id ${d.id})?`)) return;
-      const res = await fetch("/api/eval", {
+
+    // Right-click → delete confirm. vis-network gives the canvas
+    // pointer; getNodeAt translates to a node id.
+    network.on("oncontext", (params) => {
+      params.event.preventDefault();
+      const id = network.getNodeAt(params.pointer.DOM);
+      if (id == null) return;
+      const c = componentById.get(id);
+      if (!c) return;
+      if (!confirm(`Delete ${c.name} (id ${c.id})?`)) return;
+      fetch("/api/eval", {
         method: "POST",
-        body: `(world-remove-component ${d.id})`,
-      });
-      const data = await res.json();
-      if (!data.ok) alert("Delete failed: " + data.error);
+        body: `(world-remove-component ${c.id})`,
+      })
+        .then((r) => r.json())
+        .then((res) => {
+          if (!res.ok) alert("Delete failed: " + res.error);
+        });
     });
-    // Shift+drag from one node to another → world-connect.
-    // No live-drawn ghost edge for v1; the new edge appears on
-    // release via the WS topology refresh.
-    let connectSource = null;
-    cy.on("tapstart", "node", (evt) => {
-      const e = evt.originalEvent;
-      if (!e || !e.shiftKey) return;
-      connectSource = evt.target.id();
+
+    // Shift toggles vis-network's addEdge mode. Hold Shift, drag
+    // from one node to another to wire them. The addEdge callback
+    // (defined in visOptions) POSTs world-connect and the WS topology
+    // refresh redraws.
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Shift" && network) network.addEdgeMode();
     });
-    cy.on("tapend", async (evt) => {
-      if (!connectSource) return;
-      const source = connectSource;
-      connectSource = null;
-      if (evt.target === cy) return; // released over empty canvas
-      if (!evt.target.isNode || !evt.target.isNode()) return;
-      const target = evt.target.id();
-      if (source === target) return; // self-loops disallowed
-      const res = await fetch("/api/eval", {
-        method: "POST",
-        body: `(world-connect ${source} ${target})`,
-      });
-      const data = await res.json();
-      if (!data.ok) alert("Connect failed:\n" + data.error);
+    document.addEventListener("keyup", (e) => {
+      if (e.key === "Shift" && network) network.disableEditMode();
     });
   } else {
-    // Remember what the user had selected so we can re-highlight it
-    // after the rebuild — or clear the side panel if the component
-    // got removed.
-    const prevSelected = cy.$("node:selected").map((n) => n.id());
-    cy.elements().remove();
-    cy.add(elements);
-    cy.layout(layoutOptions).run();
+    // Diff the DataSets — preserves selection, layout positions, and
+    // any in-flight drag interactions, instead of tearing down the
+    // canvas on every WS topology event.
+    const prevSelected = network.getSelectedNodes();
+    const newIds = new Set(nodes.map((n) => n.id));
+    const stale = nodesDS.getIds().filter((id) => !newIds.has(id));
+    if (stale.length) nodesDS.remove(stale);
+    nodesDS.update(nodes);
+
+    const newEdgeIds = new Set(edges.map((e) => e.id));
+    const staleEdges = edgesDS.getIds().filter((id) => !newEdgeIds.has(id));
+    if (staleEdges.length) edgesDS.remove(staleEdges);
+    edgesDS.update(edges);
+
     if (prevSelected.length) {
-      const stillThere = prevSelected.filter((id) => cy.getElementById(id).nonempty());
+      const stillThere = prevSelected.filter((id) => componentById.has(id));
       if (stillThere.length) {
-        const node = cy.getElementById(stillThere[0]);
-        node.select();
-        showComponent(node);
+        network.selectNodes(stillThere);
+        showComponent(componentById.get(stillThere[0]));
       } else {
         clearSide();
       }
@@ -742,6 +881,7 @@ async function init() {
   setupAddForm();
   setupDefaultsToggle();
   setupScenariosToggle();
+  setupSplitter();
   const refreshPending = setupPersistControls();
   await refreshTopology();
   await refreshPending();

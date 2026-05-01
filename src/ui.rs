@@ -607,16 +607,16 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         // Phrase from app.js — anchors the test against actually
         // serving the right file rather than just any 200.
-        assert!(String::from_utf8_lossy(&body).contains("cytoscape"));
+        assert!(String::from_utf8_lossy(&body).contains("vis-network"));
     }
 
     #[tokio::test]
     async fn asset_route_serves_vendored_lib() {
         let cfg = config_with("").await;
-        let (status, body) = call(cfg, get("/assets/vendor/cytoscape.min.js")).await;
+        let (status, body) = call(cfg, get("/assets/vendor/vis-network.min.js")).await;
         assert_eq!(status, StatusCode::OK);
-        // Cytoscape's bundled file starts with its copyright header.
-        assert!(String::from_utf8_lossy(&body).contains("Cytoscape Consortium"));
+        // vis-network's UMD bundle exports a global `vis` namespace.
+        assert!(String::from_utf8_lossy(&body).contains("vis"));
     }
 
     #[tokio::test]

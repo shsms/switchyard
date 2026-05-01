@@ -2,26 +2,31 @@
    #app; the chrome here stays put. */
 
 :root {
-  --bg: #0d1117;
-  --bg-elev: #161b22;
-  --border: #30363d;
-  --fg: #c9d1d9;
-  --muted: #8b949e;
-  --accent: #58a6ff;
-  --good: #3fb950;
-  --bad: #f85149;
+  /* Softer than the GitHub-dark default — a bit more midtone so the
+     contrast doesn't fight the eye on long sessions. Backgrounds
+     lifted off near-black, foreground dimmed off pure-light, semantic
+     colors desaturated a touch. */
+  --bg: #1c2128;
+  --bg-elev: #262b34;
+  --border: #353a45;
+  --fg: #b0b8c1;
+  --muted: #7d848e;
+  --accent: #79b8ff;
+  --good: #6fbf73;
+  --bad: #e58275;
   --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial,
     sans-serif;
 
-  /* Per-category palette — applied in JS via cytoscape selectors and
-     also here for legend / sidebar consistency. */
-  --cat-grid: #f1c40f;
-  --cat-meter: #58a6ff;
-  --cat-inverter: #3fb950;
-  --cat-battery: #ff7b3d;
-  --cat-ev-charger: #c678dd;
-  --cat-chp: #e06c75;
+  /* Per-category palette — applied in JS via vis-network node colors
+     and also here for legend / sidebar consistency. Softer than the
+     default saturated set; oval text uses --bg for contrast. */
+  --cat-grid: #d4b948;
+  --cat-meter: #79b8ff;
+  --cat-inverter: #6fbf73;
+  --cat-battery: #f1955b;
+  --cat-ev-charger: #b18ed3;
+  --cat-chp: #d27a85;
 }
 
 html,
@@ -32,7 +37,13 @@ body {
   background: var(--bg);
   color: var(--fg);
   font-family: var(--font-sans);
-  font-size: 14px;
+  font-size: 16px;
+  /* The whole page never scrolls — every panel handles its own
+     overflow. Without this, vis-network's ResizeObserver loops
+     against the body's natural growth (the canvas grows, body
+     grows, observer fires, canvas grows, …) and the page balloons
+     under us. */
+  overflow: hidden;
 }
 
 header {
@@ -52,7 +63,7 @@ header strong {
 .status {
   color: var(--muted);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 14px;
 }
 .status.connected { color: var(--good); }
 .status.error     { color: var(--bad); }
@@ -61,7 +72,7 @@ header strong {
 
 .pending-pill {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 13px;
   color: var(--bg);
   background: #d2a106;
   padding: 2px 8px;
@@ -71,7 +82,7 @@ header strong {
 
 .hdr-btn {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 13px;
   padding: 4px 10px;
   border-radius: 3px;
   background: var(--bg);
@@ -90,21 +101,42 @@ header strong {
 
 main {
   display: grid;
-  grid-template-columns: 1fr 320px;
+  /* topology | splitter | side. JS rewrites the third value when the
+     user drags the splitter; clamp lives in JS so we can keep the
+     CSS template rule self-explanatory. */
+  grid-template-columns: 1fr 5px 420px;
   grid-template-rows: 1fr 200px;
   grid-template-areas:
-    "topology side"
-    "repl     repl";
+    "topology splitter side"
+    "repl     repl     repl";
   gap: 0;
   height: calc(100vh - 41px); /* viewport minus header */
+  /* Same reason as on body: keeps the canvas from pushing the
+     grid past its definite size. */
+  overflow: hidden;
+  /* min-height: 0 on a grid cell that holds an auto-sizing canvas
+     prevents the cell from growing to fit the canvas instead of
+     the other way around. */
+  min-height: 0;
 }
 
 #topology {
   grid-area: topology;
   background: var(--bg);
-  border-right: 1px solid var(--border);
   position: relative;
+  overflow: hidden;
+  min-width: 0;
+  min-height: 0;
 }
+
+#splitter {
+  grid-area: splitter;
+  background: var(--border);
+  cursor: col-resize;
+  /* Subtle visual lift on hover so the drag affordance is clear
+     without dominating the chrome. */
+}
+#splitter:hover, #splitter.dragging { background: var(--accent); }
 
 #side {
   grid-area: side;
@@ -120,7 +152,7 @@ main {
   background: var(--bg-elev);
   border-top: 1px solid var(--border);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 14px;
 }
 
 #repl-output {
@@ -152,7 +184,7 @@ main {
   border-radius: 3px;
   padding: 0.4rem 0.5rem;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 14px;
   resize: none;
 }
 #repl-input:focus { outline: 1px solid var(--accent); }
@@ -164,7 +196,7 @@ main {
   border-radius: 3px;
   padding: 0 1rem;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 14px;
   font-weight: bold;
   cursor: pointer;
 }
@@ -172,14 +204,14 @@ main {
 
 #side h2 {
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 15px;
   margin: 0 0 0.5rem;
   color: var(--accent);
 }
 
 #side .hint {
   color: var(--muted);
-  font-size: 12px;
+  font-size: 14px;
 }
 
 #side {
@@ -209,7 +241,7 @@ main {
   border-radius: 3px;
   padding: 4px 6px;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 14px;
 }
 .add-row select:focus { outline: 1px solid var(--accent); }
 
@@ -220,8 +252,7 @@ main {
   border: none;
   border-bottom: 1px dashed transparent;
   font-family: var(--font-mono);
-  font-size: 13px;
-  font-weight: bold;
+  font-size: 15px;
   padding: 2px 0;
 }
 .name-input:hover, .name-input:focus {
@@ -231,7 +262,7 @@ main {
 
 #side h3 {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 13px;
   text-transform: uppercase;
   letter-spacing: 1px;
   color: var(--muted);
@@ -245,7 +276,7 @@ main {
   border-radius: 3px;
   padding: 1px 4px;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 14px;
 }
 #side select[data-knob]:focus { outline: 1px solid var(--accent); }
 
@@ -259,7 +290,7 @@ main {
   padding: 0;
   margin: 0.25rem 0 0;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 13px;
 }
 .conns li {
   display: flex;
@@ -275,7 +306,7 @@ main {
   color: var(--bad);
   cursor: pointer;
   padding: 0 4px;
-  font-size: 11px;
+  font-size: 13px;
 }
 .link-btn:hover { background: var(--bg); border-radius: 3px; }
 
@@ -285,7 +316,7 @@ main {
 .defaults-entry label {
   display: block;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 13px;
   color: var(--accent);
   margin-bottom: 2px;
 }
@@ -297,14 +328,14 @@ main {
   border-radius: 3px;
   padding: 4px 6px;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 13px;
   resize: vertical;
   box-sizing: border-box;
 }
 .defaults-entry textarea:focus { outline: 1px solid var(--accent); }
 .defaults-entry button {
   margin-top: 4px;
-  font-size: 11px;
+  font-size: 13px;
   padding: 3px 10px;
 }
 
@@ -316,7 +347,7 @@ main {
   padding: 0;
   margin: 0.25rem 0 0;
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 13px;
   max-height: 220px;
   overflow-y: auto;
 }
@@ -332,7 +363,7 @@ main {
 .sp-event.rejected { border-left-color: var(--bad); }
 .sp-ts { color: var(--muted); }
 .sp-tag { color: var(--accent); margin-left: 4px; }
-.sp-val { font-weight: bold; margin-left: 4px; }
+.sp-val { color: var(--fg); margin-left: 4px; }
 .sp-ok  { color: var(--good); }
 .sp-bad { color: var(--bad); }
 
@@ -349,7 +380,7 @@ main {
   border-radius: 3px;
   padding: 4px 6px;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 14px;
 }
 .sc-save input:focus { outline: 1px solid var(--accent); }
 .sc-list {
@@ -363,14 +394,14 @@ main {
   align-items: center;
   padding: 4px 0;
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 14px;
   border-bottom: 1px solid var(--border);
 }
 .sc-name { color: var(--accent); }
 
 #side dl {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 14px;
   display: grid;
   grid-template-columns: max-content 1fr;
   gap: 0.25rem 0.75rem;
@@ -384,12 +415,12 @@ main {
 .chart { background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 0.25rem; }
 
 /* uPlot's title styling — match the side panel typography. */
-.u-title { color: var(--fg) !important; font-family: var(--font-mono) !important; font-size: 11px !important; font-weight: normal !important; padding: 4px 6px 0 !important; }
+.u-title { color: var(--fg) !important; font-family: var(--font-mono) !important; font-size: 13px !important; font-weight: normal !important; padding: 4px 6px 0 !important; }
 .u-legend { display: none !important; }
 
 pre {
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 14px;
   line-height: 1.4;
   background: var(--bg-elev);
   border: 1px solid var(--border);
