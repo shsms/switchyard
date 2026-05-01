@@ -9,13 +9,17 @@ use std::net::SocketAddr;
 
 use axum::{
     Json, Router,
-    extract::{Query, State},
+    extract::{
+        Query, State,
+        ws::{Message, WebSocket, WebSocketUpgrade},
+    },
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
 };
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use serde::{Deserialize, Serialize};
+use tokio::sync::broadcast::error::RecvError;
 
 use crate::{
     lisp::Config,
@@ -41,6 +45,7 @@ fn router(config: Config) -> Router {
         .route("/api/topology", get(topology))
         .route("/api/eval", post(eval))
         .route("/api/history", get(history))
+        .route("/ws/events", get(events_ws))
         .with_state(config)
 }
 
@@ -202,6 +207,53 @@ fn parse_metric(s: &str) -> Option<Metric> {
         "reactive_power_lower_bound_var" => Some(Metric::ReactivePowerLowerBoundVar),
         "reactive_power_upper_bound_var" => Some(Metric::ReactivePowerUpperBoundVar),
         _ => None,
+    }
+}
+
+/// WebSocket event push. Subscribers receive WorldEvent JSON for
+/// every TopologyChanged + Sample broadcast. Client-sent frames are
+/// drained but ignored — the channel is server-push only for v1; an
+/// upcoming change adds a /api/eval-style RPC over the same socket
+/// if it turns out latency-sensitive client actions benefit from it.
+async fn events_ws(ws: WebSocketUpgrade, State(config): State<Config>) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| event_pump(socket, config))
+}
+
+async fn event_pump(mut socket: WebSocket, config: Config) {
+    let mut rx = config.world().subscribe_events();
+    loop {
+        tokio::select! {
+            ev = rx.recv() => match ev {
+                Ok(event) => {
+                    let json = match serde_json::to_string(&event) {
+                        Ok(j) => j,
+                        Err(e) => {
+                            log::error!("ws: serde error: {e}");
+                            continue;
+                        }
+                    };
+                    if socket.send(Message::Text(json.into())).await.is_err() {
+                        // Client closed.
+                        break;
+                    }
+                }
+                Err(RecvError::Lagged(n)) => {
+                    // Subscriber fell behind; the receiver auto-skips
+                    // ahead. Tell the client so it can re-sync.
+                    log::warn!("ws: subscriber lagged by {n} events");
+                    let msg = serde_json::json!({"kind": "lagged", "skipped": n}).to_string();
+                    if socket.send(Message::Text(msg.into())).await.is_err() {
+                        break;
+                    }
+                }
+                Err(RecvError::Closed) => break, // shutting down
+            },
+            msg = socket.recv() => match msg {
+                // Drain client frames so we notice a dropped socket.
+                Some(Ok(_)) => {}
+                Some(Err(_)) | None => break,
+            },
+        }
     }
 }
 
