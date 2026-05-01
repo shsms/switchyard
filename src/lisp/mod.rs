@@ -166,6 +166,18 @@ impl Config {
         result
     }
 
+    /// Read-only eval — same machinery as `eval` but the result is
+    /// NOT appended to the pending log and the world version does NOT
+    /// bump. For UI introspection (e.g. "what's the current value of
+    /// battery-defaults?") that shouldn't surface as a persisted edit.
+    pub fn eval_silent(&self, src: &str) -> Result<String, String> {
+        let mut ctx = self.ctx.borrow_mut();
+        match ctx.eval_string(src) {
+            Ok(v) => Ok(v.to_string()),
+            Err(e) => Err(e.format(&ctx)),
+        }
+    }
+
     /// Snapshot of the in-memory pending log. Each entry is one
     /// successfully-evaluated UI expression, oldest first.
     pub fn pending(&self) -> Vec<String> {

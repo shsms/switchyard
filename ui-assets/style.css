@@ -279,6 +279,35 @@ main {
 }
 .link-btn:hover { background: var(--bg); border-radius: 3px; }
 
+.defaults-entry {
+  margin-bottom: 0.75rem;
+}
+.defaults-entry label {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--accent);
+  margin-bottom: 2px;
+}
+.defaults-entry textarea {
+  width: 100%;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 4px 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  resize: vertical;
+  box-sizing: border-box;
+}
+.defaults-entry textarea:focus { outline: 1px solid var(--accent); }
+.defaults-entry button {
+  margin-top: 4px;
+  font-size: 11px;
+  padding: 3px 10px;
+}
+
 #side dl {
   font-family: var(--font-mono);
   font-size: 12px;

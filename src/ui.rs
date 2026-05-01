@@ -56,6 +56,7 @@ fn router(config: Config) -> Router {
         .route("/api/topology", get(topology))
         .route("/api/eval", post(eval))
         .route("/api/history", get(history))
+        .route("/api/defaults", get(defaults))
         .route("/api/pending", get(pending))
         .route("/api/persist", post(persist))
         .route("/api/discard", post(discard))
@@ -269,6 +270,56 @@ fn parse_metric(s: &str) -> Option<Metric> {
         "reactive_power_upper_bound_var" => Some(Metric::ReactivePowerUpperBoundVar),
         _ => None,
     }
+}
+
+/// One per `*-defaults` alist defined in `sim/defaults.lisp`. The
+/// `var_name` is the actual Lisp variable; `value` is its current
+/// printed form (a stringified alist), readable / editable as raw
+/// Lisp by the UI.
+#[derive(Serialize)]
+struct DefaultsEntry {
+    category: &'static str,
+    var_name: String,
+    value: String,
+}
+
+#[derive(Serialize)]
+struct DefaultsResponse {
+    entries: Vec<DefaultsEntry>,
+}
+
+const DEFAULT_CATEGORIES: &[&str] = &[
+    "grid",
+    "meter",
+    "battery",
+    "battery-inverter",
+    "solar-inverter",
+    "ev-charger",
+    "chp",
+];
+
+async fn defaults(State(config): State<Config>) -> Json<DefaultsResponse> {
+    // Read each *-defaults variable via eval_silent so reading the
+    // current state doesn't itself look like an edit. spawn_blocking
+    // because eval acquires the std-RwLock-backed ctx.
+    let entries = tokio::task::spawn_blocking(move || {
+        let mut out = Vec::new();
+        for cat in DEFAULT_CATEGORIES {
+            let var = format!("{cat}-defaults");
+            match config.eval_silent(&var) {
+                Ok(value) => out.push(DefaultsEntry {
+                    category: cat,
+                    var_name: var,
+                    value,
+                }),
+                Err(_) => {} // variable unset — skip
+            }
+        }
+        out
+    })
+    .await
+    .unwrap_or_default();
+    Json(DefaultsResponse { entries })
 }
 
 #[derive(Serialize)]

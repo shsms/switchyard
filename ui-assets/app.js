@@ -346,6 +346,55 @@ function setupPersistControls() {
   return refresh;
 }
 
+// Defaults editor — toggled from the chrome button. Replaces the
+// inspect+add-form view of the side panel while open; toggling off
+// (or selecting a node) restores the inspect view.
+function setupDefaultsToggle() {
+  const btn = document.getElementById("defaults-btn");
+  let open = false;
+  btn.addEventListener("click", async () => {
+    open = !open;
+    btn.classList.toggle("primary", open);
+    if (open) {
+      await renderDefaults();
+    } else {
+      clearSide();
+      document.getElementById("add-form").style.display = "";
+    }
+  });
+  return () => (open = false);
+}
+
+async function renderDefaults() {
+  const res = await fetch("/api/defaults");
+  const data = await res.json();
+  document.getElementById("add-form").style.display = "none";
+  inspectEl.innerHTML = `
+    <h2>Per-category defaults</h2>
+    <p class="hint">
+      Edit a value (raw Lisp) and click Save to <code>setq</code> the
+      variable. Changes apply immediately and ride the pending log.
+    </p>
+    <div id="defaults-list"></div>
+  `;
+  const list = document.getElementById("defaults-list");
+  for (const e of data.entries) {
+    const block = document.createElement("div");
+    block.className = "defaults-entry";
+    block.innerHTML = `
+      <label>${e.var_name}</label>
+      <textarea rows="4" spellcheck="false">${escapeHtml(e.value)}</textarea>
+      <button class="hdr-btn primary">Save</button>
+    `;
+    const ta = block.querySelector("textarea");
+    block.querySelector("button").addEventListener("click", async () => {
+      const expr = `(setq ${e.var_name} (quote ${ta.value}))`;
+      await evalQuoted(expr);
+    });
+    list.appendChild(block);
+  }
+}
+
 function setupRepl() {
   const form = document.getElementById("repl-form");
   const input = document.getElementById("repl-input");
@@ -510,6 +559,7 @@ async function refreshTopology() {
 
 async function init() {
   setupAddForm();
+  setupDefaultsToggle();
   const refreshPending = setupPersistControls();
   await refreshTopology();
   await refreshPending();
