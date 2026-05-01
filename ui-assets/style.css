@@ -100,6 +100,13 @@ main {
 #side dt { color: var(--muted); }
 #side dd { margin: 0; word-break: break-all; }
 
+#charts { margin-top: 1rem; display: flex; flex-direction: column; gap: 0.75rem; }
+.chart { background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 0.25rem; }
+
+/* uPlot's title styling — match the side panel typography. */
+.u-title { color: var(--fg) !important; font-family: var(--font-mono) !important; font-size: 11px !important; font-weight: normal !important; padding: 4px 6px 0 !important; }
+.u-legend { display: none !important; }
+
 pre {
   font-family: var(--font-mono);
   font-size: 12px;
