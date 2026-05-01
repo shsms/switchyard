@@ -484,6 +484,72 @@ function setupDefaultsToggle() {
   return () => (open = false);
 }
 
+function setupScenariosToggle() {
+  const btn = document.getElementById("scenarios-btn");
+  let open = false;
+  btn.addEventListener("click", async () => {
+    open = !open;
+    btn.classList.toggle("primary", open);
+    if (open) {
+      await renderScenarios();
+    } else {
+      clearSide();
+      document.getElementById("add-form").style.display = "";
+    }
+  });
+}
+
+async function renderScenarios() {
+  const res = await fetch("/api/scenarios");
+  const data = await res.json();
+  document.getElementById("add-form").style.display = "none";
+  const items = data.names.length
+    ? data.names
+        .map(
+          (n) =>
+            `<li><span class="sc-name">${escapeHtml(n)}</span>
+             <button class="hdr-btn" data-load="${escapeHtml(n)}">Load</button></li>`,
+        )
+        .join("")
+    : '<li class="hint">no scenarios saved yet</li>';
+  inspectEl.innerHTML = `
+    <h2>Scenarios</h2>
+    <p class="hint">
+      Save the current pending edits as a named recipe; load to replay
+      them into a new pending log (then Persist or Discard).
+    </p>
+    <div class="sc-save">
+      <input id="sc-save-name" placeholder="scenario-name" spellcheck="false" />
+      <button id="sc-save-btn" class="hdr-btn primary">Save current</button>
+    </div>
+    <h3>Saved</h3>
+    <ul class="sc-list">${items}</ul>
+  `;
+  document.getElementById("sc-save-btn").addEventListener("click", async () => {
+    const name = document.getElementById("sc-save-name").value.trim();
+    if (!name) return;
+    const r = await fetch(
+      `/api/scenarios/save?name=${encodeURIComponent(name)}`,
+      { method: "POST" },
+    );
+    if (r.ok) {
+      renderScenarios();
+    } else {
+      alert(`Save failed: ${await r.text()}`);
+    }
+  });
+  for (const btn of inspectEl.querySelectorAll("[data-load]")) {
+    btn.addEventListener("click", async () => {
+      const name = btn.dataset.load;
+      const r = await fetch(
+        `/api/scenarios/load?name=${encodeURIComponent(name)}`,
+        { method: "POST" },
+      );
+      if (!r.ok) alert(`Load failed: ${await r.text()}`);
+    });
+  }
+}
+
 async function renderDefaults() {
   const res = await fetch("/api/defaults");
   const data = await res.json();
@@ -675,6 +741,7 @@ async function refreshTopology() {
 async function init() {
   setupAddForm();
   setupDefaultsToggle();
+  setupScenariosToggle();
   const refreshPending = setupPersistControls();
   await refreshTopology();
   await refreshPending();
