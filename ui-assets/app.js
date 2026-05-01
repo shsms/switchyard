@@ -332,6 +332,19 @@ function applyTopology(topology) {
     cy.on("tap", (evt) => {
       if (evt.target === cy) clearSide();
     });
+    // Right-click → delete confirm → eval the removal. The WS
+    // TopologyChanged event the eval fires takes care of re-rendering.
+    cy.on("cxttap", "node", async (evt) => {
+      const node = evt.target;
+      const d = node.data();
+      if (!confirm(`Delete ${d.name} (id ${d.id})?`)) return;
+      const res = await fetch("/api/eval", {
+        method: "POST",
+        body: `(world-remove-component ${d.id})`,
+      });
+      const data = await res.json();
+      if (!data.ok) alert("Delete failed: " + data.error);
+    });
   } else {
     // Remember what the user had selected so we can re-highlight it
     // after the rebuild — or clear the side panel if the component
