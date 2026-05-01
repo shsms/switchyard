@@ -63,6 +63,8 @@ function buildElements(topology) {
       name: c.name,
       category: c.category,
       subtype: c.subtype,
+      // Drives the health-color border via cytoscape selectors.
+      health: c.health,
     },
   }));
   const edges = topology.connections.map(([p, c]) => ({
@@ -108,9 +110,29 @@ function cytoscapeStylesheet() {
       },
     },
     ...perCategory,
+    // Health-driven border. Subtle on healthy, loud on faults so an
+    // engineer can spot a degraded component without clicking each one.
+    {
+      selector: 'node[health = "ok"]',
+      style: { "border-color": "#0d1117", "border-width": 1 },
+    },
+    {
+      selector: 'node[health = "standby"]',
+      style: { "border-color": "#d2a106", "border-width": 3 },
+    },
+    {
+      selector: 'node[health = "error"]',
+      style: { "border-color": "#f85149", "border-width": 3 },
+    },
+    // Hover lift — slight darkening + border so the user sees what
+    // they're about to click. Cheap signal of interactivity.
+    {
+      selector: "node.hovered",
+      style: { "border-color": "#c9d1d9", "border-width": 2 },
+    },
     {
       selector: "node:selected",
-      style: { "border-width": 3, "border-color": "#58a6ff" },
+      style: { "border-width": 4, "border-color": "#58a6ff" },
     },
     {
       selector: "edge",
@@ -578,6 +600,10 @@ function applyTopology(topology) {
     cy.on("tap", (evt) => {
       if (evt.target === cy) clearSide();
     });
+    // Hover lift — the .hovered class is picked up by the
+    // stylesheet selector to draw a lighter border.
+    cy.on("mouseover", "node", (evt) => evt.target.addClass("hovered"));
+    cy.on("mouseout",  "node", (evt) => evt.target.removeClass("hovered"));
     // Right-click → delete confirm → eval the removal. The WS
     // TopologyChanged event the eval fires takes care of re-rendering.
     cy.on("cxttap", "node", async (evt) => {

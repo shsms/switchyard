@@ -29,7 +29,6 @@ pub enum WorldEvent {
     /// regardless of whether the eval actually mutated state.
     TopologyChanged { version: u64 },
     /// Single telemetry sample, emitted by the history sampler.
-    /// Wired in the next commit.
     Sample {
         id: u64,
         metric: &'static str,
