@@ -35,6 +35,45 @@ function notify(message, kind = "error") {
   setTimeout(() => t.remove(), 5000);
 }
 
+// Single-source-of-truth for /api/pending. Three consumers want this
+// data (persist pill, pending dialog, inspector overrides section)
+// and they all want to refresh after the same triggers (WS
+// TopologyChanged, the various × / persist / discard handlers).
+// Centralizing avoids 3-fetch fan-out per WS tick and lets dialog +
+// inspector render off the same snapshot.
+const pendingState = (() => {
+  let snapshot = { entries: [], persisted: [], persisted_count: 0 };
+  const subs = new Set();
+  let inflight = null;
+  async function refresh() {
+    if (inflight) return inflight;
+    inflight = (async () => {
+      try {
+        const res = await fetch("/api/pending");
+        if (res.ok) {
+          snapshot = await res.json();
+          for (const fn of subs) fn(snapshot);
+        }
+      } catch (_) {
+        // Best-effort — server unreachable just leaves the last
+        // known snapshot in place so the chrome doesn't blank out.
+      } finally {
+        inflight = null;
+      }
+    })();
+    return inflight;
+  }
+  return {
+    get: () => snapshot,
+    refresh,
+    subscribe(fn) {
+      subs.add(fn);
+      fn(snapshot);
+      return () => subs.delete(fn);
+    },
+  };
+})();
+
 const CATEGORY_COLOR = {
   grid: getCss("--cat-grid"),
   meter: getCss("--cat-meter"),
@@ -361,8 +400,11 @@ function renderInspect(d, parentIds, childIds, overrides = []) {
     btn.addEventListener("click", async () => {
       const id = btn.dataset.undo;
       const res = await fetch(`/api/pending/${id}`, { method: "DELETE" });
-      if (!res.ok)
+      if (res.ok) {
+        pendingState.refresh();
+      } else {
         notify(`Remove failed: ${res.status} ${await res.text()}`);
+      }
     });
   }
   for (const btn of inspectEl.querySelectorAll("[data-disconnect-from]")) {
@@ -435,13 +477,12 @@ async function showComponent(d) {
   const parentIds = network ? network.getConnectedNodes(d.id, "from") : [];
   const childIds = network ? network.getConnectedNodes(d.id, "to") : [];
   // Pending entries that target this component — shown as
-  // "Current overrides" with their own ✕ buttons. Failures here
-  // are non-fatal; the inspector still renders without the section.
-  let overrides = [];
-  try {
-    const pending = await (await fetch("/api/pending")).json();
-    overrides = pending.entries.filter((e) => e.affects === d.id);
-  } catch (_) {}
+  // "Current overrides" with their own ✕ buttons. Read from the
+  // shared pendingState cache so we don't fan out a fresh fetch
+  // on every selection click.
+  const overrides = pendingState
+    .get()
+    .entries.filter((e) => e.affects === d.id);
   renderInspect(d, parentIds, childIds, overrides);
 
   const metrics = CHARTS_BY_CATEGORY[d.category] || [];
@@ -619,88 +660,89 @@ function escapeHtml(s) {
 async function showPendingDialog() {
   const dlg = document.getElementById("pending-dialog");
   const content = document.getElementById("pending-dialog-content");
-  content.innerHTML = '<p class="hint">loading…</p>';
+  // Subscribe to live updates so any × or restore re-renders the
+  // dialog automatically without each handler having to explicitly
+  // call renderPendingDialog. Unsubscribe on close to stop pinging
+  // the host element after it's hidden.
+  const unsubscribe = pendingState.subscribe((data) =>
+    renderPendingDialog(content, data),
+  );
+  dlg.addEventListener("close", () => unsubscribe(), { once: true });
   dlg.showModal();
-  await renderPendingDialog(content);
+  // Refresh once on open so the subscriber sees the latest snapshot.
+  pendingState.refresh();
 }
 
-async function renderPendingDialog(content) {
-  try {
-    const data = await (await fetch("/api/pending")).json();
-    const sections = [];
-    if (data.persisted && data.persisted.length) {
-      const rows = data.persisted
-        .map((o) => {
-          const cls = o.marked_removal
-            ? "pending-entry persisted marked-removal"
-            : "pending-entry persisted";
-          const action = o.marked_removal
-            ? `<button class="link-btn persisted-restore" data-idx="${o.idx}" title="Undo removal">⟲</button>`
-            : `<button class="link-btn persisted-del" data-idx="${o.idx}" title="Mark for removal on next persist">✕</button>`;
-          return `<div class="${cls}">
-            <div class="pending-num">#${o.idx + 1}</div>
-            <pre>${escapeHtml(o.source)}</pre>
-            ${action}
-          </div>`;
-        })
-        .join("");
-      sections.push(`<h3>On disk</h3>${rows}`);
-    }
-    if (data.entries.length) {
-      const rows = data.entries
-        .map(
-          (e, i) =>
-            `<div class="pending-entry">
-              <div class="pending-num">#${i + 1}</div>
-              <pre>${escapeHtml(e.source)}</pre>
-              <button class="link-btn pending-del" data-id="${e.id}" title="Remove this edit">✕</button>
-            </div>`,
-        )
-        .join("");
-      sections.push(`<h3>Unsaved</h3>${rows}`);
-    }
-    if (!sections.length) {
-      content.innerHTML = '<p class="hint">no active overrides</p>';
-      return;
-    }
-    content.innerHTML = sections.join("");
-    for (const btn of content.querySelectorAll(".pending-del")) {
-      btn.addEventListener("click", async () => {
-        const id = btn.dataset.id;
-        const res = await fetch(`/api/pending/${id}`, { method: "DELETE" });
-        if (res.ok) {
-          // Refresh in-place; the WS topology event from the reload
-          // also fires and re-renders the canvas + pill count.
-          await renderPendingDialog(content);
-        } else {
-          notify(`Remove failed: ${res.status} ${await res.text()}`);
-        }
-      });
-    }
-    for (const btn of content.querySelectorAll(".persisted-del")) {
-      btn.addEventListener("click", async () => {
-        const idx = btn.dataset.idx;
-        const res = await fetch(`/api/persisted/${idx}`, { method: "DELETE" });
-        if (res.ok) {
-          await renderPendingDialog(content);
-        } else {
-          notify(`Mark failed: ${res.status} ${await res.text()}`);
-        }
-      });
-    }
-    for (const btn of content.querySelectorAll(".persisted-restore")) {
-      btn.addEventListener("click", async () => {
-        const idx = btn.dataset.idx;
-        const res = await fetch(`/api/persisted/${idx}`, { method: "POST" });
-        if (res.ok) {
-          await renderPendingDialog(content);
-        } else {
-          notify(`Restore failed: ${res.status} ${await res.text()}`);
-        }
-      });
-    }
-  } catch (err) {
-    content.innerHTML = `<p class="hint">failed to load: ${escapeHtml(err.message)}</p>`;
+function renderPendingDialog(content, data) {
+  const sections = [];
+  if (data.persisted && data.persisted.length) {
+    const rows = data.persisted
+      .map((o) => {
+        const cls = o.marked_removal
+          ? "pending-entry persisted marked-removal"
+          : "pending-entry persisted";
+        const action = o.marked_removal
+          ? `<button class="link-btn persisted-restore" data-idx="${o.idx}" title="Undo removal">⟲</button>`
+          : `<button class="link-btn persisted-del" data-idx="${o.idx}" title="Mark for removal on next persist">✕</button>`;
+        return `<div class="${cls}">
+          <div class="pending-num">#${o.idx + 1}</div>
+          <pre>${escapeHtml(o.source)}</pre>
+          ${action}
+        </div>`;
+      })
+      .join("");
+    sections.push(`<h3>On disk</h3>${rows}`);
+  }
+  if (data.entries.length) {
+    const rows = data.entries
+      .map(
+        (e, i) =>
+          `<div class="pending-entry">
+            <div class="pending-num">#${i + 1}</div>
+            <pre>${escapeHtml(e.source)}</pre>
+            <button class="link-btn pending-del" data-id="${e.id}" title="Remove this edit">✕</button>
+          </div>`,
+      )
+      .join("");
+    sections.push(`<h3>Unsaved</h3>${rows}`);
+  }
+  if (!sections.length) {
+    content.innerHTML = '<p class="hint">no active overrides</p>';
+    return;
+  }
+  content.innerHTML = sections.join("");
+  for (const btn of content.querySelectorAll(".pending-del")) {
+    btn.addEventListener("click", async () => {
+      const id = btn.dataset.id;
+      const res = await fetch(`/api/pending/${id}`, { method: "DELETE" });
+      if (res.ok) {
+        pendingState.refresh();
+      } else {
+        notify(`Remove failed: ${res.status} ${await res.text()}`);
+      }
+    });
+  }
+  for (const btn of content.querySelectorAll(".persisted-del")) {
+    btn.addEventListener("click", async () => {
+      const idx = btn.dataset.idx;
+      const res = await fetch(`/api/persisted/${idx}`, { method: "DELETE" });
+      if (res.ok) {
+        pendingState.refresh();
+      } else {
+        notify(`Mark failed: ${res.status} ${await res.text()}`);
+      }
+    });
+  }
+  for (const btn of content.querySelectorAll(".persisted-restore")) {
+    btn.addEventListener("click", async () => {
+      const idx = btn.dataset.idx;
+      const res = await fetch(`/api/persisted/${idx}`, { method: "POST" });
+      if (res.ok) {
+        pendingState.refresh();
+      } else {
+        notify(`Restore failed: ${res.status} ${await res.text()}`);
+      }
+    });
   }
 }
 
@@ -724,56 +766,41 @@ function setupPersistControls() {
   const persistBtn = document.getElementById("persist-btn");
   const discardBtn = document.getElementById("discard-btn");
 
-  async function refresh() {
-    try {
-      const res = await fetch("/api/pending");
-      const data = await res.json();
-      const pending = data.entries.length;
-      const persisted = data.persisted || [];
-      const removals = persisted.filter((o) => o.marked_removal).length;
-      const total = pending + persisted.length;
-      const unsaved = pending > 0 || removals > 0;
-      // Pill shows total override count + a `*` (editor-style
-      // modified marker) when any are unsaved. Hidden when neither.
-      count.textContent = total;
-      dirty.textContent = unsaved ? "*" : "";
-      pill.hidden = total === 0;
-      persistBtn.disabled = !unsaved;
-      discardBtn.disabled = !unsaved;
-    } catch (_) {
-      // Best-effort — server unreachable just leaves last known state.
-    }
-  }
+  // Pill shows total override count + a `*` (editor-style modified
+  // marker) when any are unsaved. Hidden when neither.
+  pendingState.subscribe((data) => {
+    const pending = data.entries.length;
+    const persisted = data.persisted || [];
+    const removals = persisted.filter((o) => o.marked_removal).length;
+    const total = pending + persisted.length;
+    const unsaved = pending > 0 || removals > 0;
+    count.textContent = total;
+    dirty.textContent = unsaved ? "*" : "";
+    pill.hidden = total === 0;
+    persistBtn.disabled = !unsaved;
+    discardBtn.disabled = !unsaved;
+  });
 
   persistBtn.addEventListener("click", async () => {
     persistBtn.disabled = true;
-    try {
-      const res = await fetch("/api/persist", { method: "POST" });
-      const data = await res.json();
-      if (res.ok) {
-        notify(`Persisted to ${data.path} (${data.persisted} forms)`, "success");
-      } else {
-        notify(`Persist failed: ${data.error || res.status}`);
-      }
-    } finally {
-      refresh();
+    const res = await fetch("/api/persist", { method: "POST" });
+    const data = await res.json();
+    if (res.ok) {
+      notify(`Persisted to ${data.path} (${data.persisted} forms)`, "success");
+    } else {
+      notify(`Persist failed: ${data.error || res.status}`);
     }
+    pendingState.refresh();
   });
 
   discardBtn.addEventListener("click", async () => {
     if (!confirm("Discard all unsaved edits and reload?")) return;
     discardBtn.disabled = true;
-    try {
-      await fetch("/api/discard", { method: "POST" });
-    } finally {
-      // Discard triggers a server-side reload which fires
-      // TopologyChanged on the WS — that handler re-fetches
-      // /api/topology and we'll see the rolled-back state.
-      refresh();
-    }
+    await fetch("/api/discard", { method: "POST" });
+    // Discard triggers a server-side reload which fires
+    // TopologyChanged on the WS — that handler refreshes too.
+    pendingState.refresh();
   });
-
-  return refresh;
 }
 
 /// Generic side-panel toggle: a chrome button that swaps the
@@ -1404,16 +1431,16 @@ async function init() {
   setupDrawerSplitter();
   setupPendingDialog();
   backfillLogs();
-  const refreshPending = setupPersistControls();
+  setupPersistControls();
   await refreshTopology();
-  await refreshPending();
+  await pendingState.refresh();
   // WS push: refresh both the topology (so the canvas reflects the
-  // mutation) and the pending pill (so the count + button state
-  // updates) on every TopologyChanged. Sample events go straight
-  // into the live-charts router.
+  // mutation) and the pending state (so the pill, dialog, and
+  // inspector all update) on every TopologyChanged. Sample events
+  // go straight into the live-charts router.
   openWebSocket((_v) => {
     refreshTopology();
-    refreshPending();
+    pendingState.refresh();
   });
   setupRepl();
 }
