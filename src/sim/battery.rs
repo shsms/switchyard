@@ -63,7 +63,11 @@ struct BatteryState {
     /// apparent dc_power in telemetry to reflect the conductor /
     /// capacitor / IGBT loading a real DC ammeter would read.
     reactive_var: f32,
-    energy_wh: f32,
+    /// State of charge in % [0, 100]. Updated each tick from
+    /// `power_w * dt`. Clamped at the boundaries — without this,
+    /// configs that disable the SoC-protect taper (margin = 0)
+    /// could pump charge in past 100% indefinitely, then need to
+    /// "discharge" the unphysical surplus before SoC moves back.
     soc_pct: f32,
     /// Cached effective DC bounds — recomputed every tick from SoC,
     /// then read by `effective_active_bounds` and the inverter.
@@ -83,7 +87,6 @@ impl Battery {
             state: Mutex::new(BatteryState {
                 power_w: 0.0,
                 reactive_var: 0.0,
-                energy_wh: 0.0,
                 soc_pct: init_soc,
                 effective_lower_w: l,
                 effective_upper_w: u,
@@ -135,10 +138,14 @@ impl SimulatedComponent for Battery {
     fn tick(&self, _world: &World, _now: DateTime<Utc>, dt: Duration) {
         let mut s = self.state.lock();
 
-        // Energy ↔ SoC update from current power.
-        s.energy_wh += s.power_w * dt.as_secs_f32() / 3600.0;
-        s.soc_pct = (self.cfg.initial_soc_pct + (s.energy_wh / self.cfg.capacity_wh) * 100.0)
-            .clamp(0.0, 100.0);
+        // SoC update from current P. ΔSoC = P · dt / capacity, in %.
+        // Clamping happens at the boundary so unphysical "extra" charge
+        // can't accumulate when the protective taper is disabled.
+        if self.cfg.capacity_wh > 0.0 {
+            let delta_soc =
+                s.power_w * dt.as_secs_f32() / 3600.0 / self.cfg.capacity_wh * 100.0;
+            s.soc_pct = (s.soc_pct + delta_soc).clamp(0.0, 100.0);
+        }
 
         // Refresh SoC-derated bounds.
         let (l, u) = soc_protected_bounds(&self.cfg, s.soc_pct);
