@@ -1,8 +1,11 @@
-//! `(make-grid)`, `(make-meter)`, `(make-battery)`, … — the lisp DSL
-//! for building the microgrid topology. Each constructor takes its
-//! arguments as a typed plist via tulisp's `AsPlist!` macro and
-//! returns a `ComponentHandle` (an opaque `Shared<dyn TulispAny>` on
-//! the lisp side).
+//! `(%make-grid)`, `(%make-meter)`, `(%make-battery)`, … — the
+//! Rust-side constructor primitives the lisp DSL dispatches to. Each
+//! takes its arguments as a typed plist via tulisp's `AsPlist!` macro
+//! and returns a `ComponentHandle` (an opaque `Shared<dyn TulispAny>`
+//! on the lisp side). The user-facing names (`(make-grid)`,
+//! `(make-meter)`, …) are `defun` wrappers in `sim/defaults.lisp`
+//! that prepend `:config <cat>-defaults` before calling these
+//! primitives.
 
 use std::time::Duration;
 
@@ -315,7 +318,7 @@ AsAlist! {
 pub fn register(ctx: &mut TulispContext, world: World) {
     let w = world.clone();
     ctx.defun(
-        "make-grid",
+        "%make-grid",
         move |ctx: &mut TulispContext, args: Plist<GridArgs>| {
             let a = args.into_inner();
             let d = parse_defaults::<GridDefaults>(ctx, a.config.as_ref())?;
@@ -341,7 +344,7 @@ pub fn register(ctx: &mut TulispContext, world: World) {
 
     let w = world.clone();
     ctx.defun(
-        "make-meter",
+        "%make-meter",
         move |ctx: &mut TulispContext, args: Plist<MeterArgs>| {
             let a = args.into_inner();
             let d = parse_defaults::<MeterDefaults>(ctx, a.config.as_ref())?;
@@ -384,7 +387,7 @@ pub fn register(ctx: &mut TulispContext, world: World) {
 
     let w = world.clone();
     ctx.defun(
-        "make-battery",
+        "%make-battery",
         move |ctx: &mut TulispContext, args: Plist<BatteryArgs>| {
             let a = args.into_inner();
             let d = parse_defaults::<BatteryDefaults>(ctx, a.config.as_ref())?;
@@ -430,7 +433,7 @@ pub fn register(ctx: &mut TulispContext, world: World) {
 
     let w = world.clone();
     ctx.defun(
-        "make-battery-inverter",
+        "%make-battery-inverter",
         move |ctx: &mut TulispContext, args: Plist<BatteryInverterArgs>| {
             let a = args.into_inner();
             let d = parse_defaults::<BatteryInverterDefaults>(ctx, a.config.as_ref())?;
@@ -498,7 +501,7 @@ pub fn register(ctx: &mut TulispContext, world: World) {
 
     let w = world.clone();
     ctx.defun(
-        "make-solar-inverter",
+        "%make-solar-inverter",
         move |ctx: &mut TulispContext, args: Plist<SolarInverterArgs>| {
             let a = args.into_inner();
             let d = parse_defaults::<SolarInverterDefaults>(ctx, a.config.as_ref())?;
@@ -556,7 +559,7 @@ pub fn register(ctx: &mut TulispContext, world: World) {
 
     let w = world.clone();
     ctx.defun(
-        "make-ev-charger",
+        "%make-ev-charger",
         move |ctx: &mut TulispContext, args: Plist<EvChargerArgs>| {
             let a = args.into_inner();
             let d = parse_defaults::<EvChargerDefaults>(ctx, a.config.as_ref())?;
@@ -605,7 +608,7 @@ pub fn register(ctx: &mut TulispContext, world: World) {
 
     let w = world;
     ctx.defun(
-        "make-chp",
+        "%make-chp",
         move |ctx: &mut TulispContext, args: Plist<ChpArgs>| {
             let a = args.into_inner();
             let d = parse_defaults::<ChpDefaults>(ctx, a.config.as_ref())?;
@@ -736,7 +739,7 @@ mod tests {
                          (initial-soc . 20.0)
                          (rated-lower . -8000.0)
                          (rated-upper . 8000.0)))
-               (make-battery :id 100 :config d)"#,
+               (%make-battery :id 100 :config d)"#,
         );
         let t = world.get(100).unwrap().telemetry(&world);
         assert_eq!(t.capacity_wh, Some(50_000.0));
@@ -749,7 +752,7 @@ mod tests {
         // initial-soc only in defaults still applies.
         let world = run(
             r#"(setq d '((capacity . 50000.0) (initial-soc . 20.0)))
-               (make-battery :id 101 :config d :capacity 25000.0)"#,
+               (%make-battery :id 101 :config d :capacity 25000.0)"#,
         );
         let t = world.get(101).unwrap().telemetry(&world);
         assert_eq!(t.capacity_wh, Some(25_000.0));
@@ -763,7 +766,7 @@ mod tests {
         // setpoints, but we just verify the runtime knob landed.
         let world = run(
             r#"(setq d '((health . error)))
-               (make-battery :id 102 :config d)"#,
+               (%make-battery :id 102 :config d)"#,
         );
         assert_eq!(
             world.runtime_of(102).health,
@@ -775,7 +778,7 @@ mod tests {
     fn battery_no_config_is_unchanged() {
         // Sanity: with no :config the defaults struct is empty, so
         // the BatteryConfig::default values stand.
-        let world = run("(make-battery :id 103)");
+        let world = run("(%make-battery :id 103)");
         let t = world.get(103).unwrap().telemetry(&world);
         // Default capacity from BatteryConfig::default in battery.rs.
         assert_eq!(t.capacity_wh, Some(92_000.0));

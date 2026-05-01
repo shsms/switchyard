@@ -427,12 +427,11 @@ resetting stale set-points; anchored telemetry timestamps with no
 per-iteration drift; `(every)` / `(run-with-timer)` for environment
 scripting; config-driven topology assembly; per-category defaults
 via `:config '((key . value) …)` with three-layer precedence
-(per-component plist > category alist > Rust struct default), with
-bare-name shorthand wrappers (`(grid …)`, `(meter …)`, `(battery …)`,
-…) defined in `sim/defaults.lisp` so topology code reads cleanly;
-label args (`:health`, `:telemetry-mode`, `:command-mode`) take a
-quoted symbol; additional reload-trigger files registered via
-`(watch-file PATH)`.
+(per-component plist > category alist > Rust struct default), exposed
+as `make-*` wrappers in `sim/defaults.lisp` that dispatch to the
+underlying `%make-*` Rust primitives; label args (`:health`,
+`:telemetry-mode`, `:command-mode`) take a quoted symbol; additional
+reload-trigger files registered via `(watch-file PATH)`.
 
 ## Backlog
 

@@ -92,49 +92,50 @@
 ;; -----------------------------------------------------------------------------
 ;; Topology — nested for visual clarity. The whole graph is one
 ;; expression; reading top-to-bottom traces the grid → main meter →
-;; per-branch meters → underlying device chain. Each bare name (`grid`,
-;; `meter`, `battery`, …) is a defun in sim/defaults.lisp that pulls
-;; in the matching `*-defaults` alist; per-component plist args still
-;; override. To opt out of defaults for a single component, call the
-;; `make-*` Rust primitive directly.
+;; per-branch meters → underlying device chain. Each `make-*` is a
+;; defun in sim/defaults.lisp that pulls in the matching `*-defaults`
+;; alist before calling the underlying `%make-*` Rust primitive;
+;; per-component plist args still override. To opt out of defaults for
+;; a single component, call the `%make-*` primitive directly or pass
+;; `:config nil`.
 ;; -----------------------------------------------------------------------------
 
-(grid
+(make-grid
  :id 1
  :successors
  (list
-  (meter
+  (make-meter
    :id 2
    :successors
    (list
     ;; Battery branch — every knob (SCADA delay, ramp, jitter,
     ;; kVA-circle reactive envelope) comes from battery-inverter-
     ;; defaults / battery-defaults.
-    (meter
+    (make-meter
      :successors
-     (list (battery-inverter
+     (list (make-battery-inverter
             :successors
-            (list (battery :initial-soc 85.0)))))   ; per-component override
+            (list (make-battery :initial-soc 85.0)))))   ; per-component override
 
     ;; Solar branch — id 200 so the cloud-curve timer above can reach it.
-    (meter
+    (make-meter
      :successors
-     (list (solar-inverter :id 200 :sunlight% 80.0)))    ; scenario starting point
+     (list (make-solar-inverter :id 200 :sunlight% 80.0)))   ; scenario starting point
 
     ;; EV branch — near-full so the SoC-protect taper is observable.
-    (meter
+    (make-meter
      :successors
-     (list (ev-charger
+     (list (make-ev-charger
             :initial-soc  92.0
             :soc-upper   100.0
             :rated-upper 22000.0)))
 
     ;; CHP modeled as a constant -2 kW generator on its meter.
-    (meter :power -2000.0 :successors (list (chp)))
+    (make-meter :power -2000.0 :successors (list (make-chp)))
 
     ;; Hidden consumer meter — invisible in ListComponents / tree but
     ;; aggregated into the main meter. Driven dynamically by the
-    ;; consumer-curve timer above via id 100. `make-meter` (the Rust
-    ;; primitive) bypasses meter-defaults so the explicit :power isn't
-    ;; combined with a default :stream-jitter-pct on a hidden component.
-    (make-meter :id 100 :hidden t :power 1000.0)))))
+    ;; consumer-curve timer above via id 100. `%make-meter` bypasses
+    ;; meter-defaults so the explicit :power isn't combined with a
+    ;; default :stream-jitter-pct on a hidden component.
+    (%make-meter :id 100 :hidden t :power 1000.0)))))

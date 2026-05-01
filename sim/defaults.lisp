@@ -9,10 +9,11 @@
 ;;      value here to retune every component of that category in one
 ;;      place. Per-component plist args still win on each call.
 ;;
-;;   2. Bare-name wrappers (`grid`, `meter`, `battery`, …) are thin
-;;      `defuns` that call the matching `make-*` with `:config <cat>-
-;;      defaults` prepended. The `make-*` Rust primitives are still
-;;      available for callers that want zero defaults.
+;;   2. `make-*` wrappers (`make-grid`, `make-meter`, `make-battery`,
+;;      …) are thin `defuns` that call the matching `%make-*` Rust
+;;      primitive with `:config <cat>-defaults` prepended. The
+;;      `%make-*` primitives stay available for callers that want
+;;      zero defaults.
 
 ;; -----------------------------------------------------------------------------
 ;; Per-category defaults
@@ -52,22 +53,25 @@
       '((stream-jitter-pct . 0.0)))
 
 ;; -----------------------------------------------------------------------------
-;; Bare-name shorthand wrappers
+;; make-* shorthand wrappers
 ;; -----------------------------------------------------------------------------
 ;;
 ;; Each wrapper prepends `:config <cat>-defaults` to the user's plist
-;; before calling the underlying make-*. Per-component plist keys
-;; appear after the wrapper's `:config` key, so AsPlist!'s last-wins
-;; key resolution lets the per-component plist override category
-;; defaults. To swap defaults entirely for one call, pass another
-;; `:config` key — same last-wins rule:
+;; before calling the underlying `%make-*` Rust primitive. Per-component
+;; plist keys appear after the wrapper's `:config` key, so AsPlist!'s
+;; last-wins key resolution lets the per-component plist override
+;; category defaults. To swap defaults entirely for one call, pass
+;; another `:config` key — same last-wins rule. To opt out of defaults
+;; entirely, pass `:config nil` or call the `%make-*` primitive directly:
 ;;
-;;   (battery :id 100 :config special-battery-defaults)
+;;   (make-battery :id 100 :config special-battery-defaults)
+;;   (make-battery :id 101 :config nil)               ; no defaults
+;;   (%make-battery :id 102)                          ; raw primitive
 
-(defun grid             (&rest p) (apply 'make-grid             :config grid-defaults             p))
-(defun meter            (&rest p) (apply 'make-meter            :config meter-defaults            p))
-(defun battery          (&rest p) (apply 'make-battery          :config battery-defaults          p))
-(defun battery-inverter (&rest p) (apply 'make-battery-inverter :config battery-inverter-defaults p))
-(defun solar-inverter   (&rest p) (apply 'make-solar-inverter   :config solar-inverter-defaults   p))
-(defun ev-charger       (&rest p) (apply 'make-ev-charger       :config ev-charger-defaults       p))
-(defun chp              (&rest p) (apply 'make-chp              :config chp-defaults              p))
+(defun make-grid             (&rest p) (apply '%make-grid             :config grid-defaults             p))
+(defun make-meter            (&rest p) (apply '%make-meter            :config meter-defaults            p))
+(defun make-battery          (&rest p) (apply '%make-battery          :config battery-defaults          p))
+(defun make-battery-inverter (&rest p) (apply '%make-battery-inverter :config battery-inverter-defaults p))
+(defun make-solar-inverter   (&rest p) (apply '%make-solar-inverter   :config solar-inverter-defaults   p))
+(defun make-ev-charger       (&rest p) (apply '%make-ev-charger       :config ev-charger-defaults       p))
+(defun make-chp              (&rest p) (apply '%make-chp              :config chp-defaults              p))
