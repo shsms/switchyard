@@ -399,6 +399,8 @@ A snapshot of where switchyard sits relative to microsim. Items marked
 | **Apparent DC telemetry** | Battery reports `dc_power_w = sign(P) × √(P² + Q²)` and `dc_current_a = dc_power_w / V_dc`, reflecting the conductor / IGBT loading a real DC instrument would read. SoC integration stays on active P only. |
 | **`swctl` CLI** | clap-based client (`info` / `list` / `tree` / `stream` / `set-power` / `augment-bounds`). Microsim users went via grpcurl or the Frequenz SDK. |
 | **`World::aggregate_child_bounds`** | Public Rust API for walking the topology and summing children's bounds. Microsim's equivalent lives entirely in Lisp. |
+| **MxN inverter ↔ battery topology** | Battery accumulates pushes additively per-tick; one inverter→N batteries equal-share; N inverters→one battery sums; M×N nests both. Failed batteries (`Health::Error/Standby`) are filtered out at distribution and the surviving siblings absorb the full commanded value. Microsim's distribution is hard-wired 1-inverter-to-N-batteries with no failed-child handling. |
+| **Redundant / parallel meters** | Two meters can declare the same subtree as their `:successors` and both edges land in the connections graph; each independently aggregates the shared child. `swctl tree` renders the shared subtree under each parent (DAG → tree projection). Closing one meter via `(set-component-telemetry-mode "closed")` leaves the redundant peer unaffected. |
 
 ### Functional parity
 
@@ -410,64 +412,6 @@ scripting; config-driven topology assembly.
 
 ## Backlog
 
-Items we've recognised as needed but haven't built yet. Each is a
-self-contained piece of work; tackle in any order.
-
-### `SimulatedComponent` readability cleanup
-
-The trait has grown to ~24 methods on one `dyn`-safe surface. Default
-no-ops keep it cheap, but reading the file top-to-bottom is hard. Plan
-the cleanup separately — likely shape:
-
-- Group methods into commented sections (identity / lifecycle /
-  setpoints / aggregation / bounds / runtime modes / metadata).
-- Consider splitting *helper* traits that the server uses behind the
-  scenes (`HasReactiveBounds`, `Aggregable`, etc.) — but the public
-  trait stays a single dyn-safe object so server code keeps holding
-  one `Arc<dyn SimulatedComponent>`.
-- Move per-feature docstrings closer to their methods; the current
-  doc-comment density is uneven.
-
-### MxN inverter ↔ battery topology
-
-Today's distribution is 1-inverter-to-N-batteries with equal-share
-(`commanded / N`). Real installations vary. Three flavours to cover:
-
-1. **N inverters → 1 battery.** Each inverter pushes its own share of
-   the same DC bus. The battery has to fold all incoming pushes from
-   that tick before clamping, otherwise the last writer wins. Move
-   the battery's "accumulate this tick's pushes, clamp once, publish"
-   behaviour out of `set_dc_active_reactive` and into `tick`.
-2. **MxN.** Generalisation of the above — N inverters into one bus
-   that powers M batteries in series/parallel. Each inverter hands its
-   share to "the bus"; the battery group decides how to split among
-   themselves (equal share by default, with weights later). Likely
-   needs a small `DcBus` aggregator between inverter and battery.
-3. **Failed batteries.** Today the battery silently clamps to zero
-   when SoC saturates or when health is `Error`. The inverter's
-   measured aggregate falls short of commanded — clients see the
-   discrepancy. For an MxN setup we need to be sure the still-working
-   batteries can pick up the slack inside the inverter's own envelope.
-   Add a test fixture: 2 batteries, one with `:health "error"`, set
-   inverter to a value the surviving battery can absorb alone.
-
-### Redundant meters in parallel
-
-Some installations put two meters in parallel on the same bus for
-reliability. Today switchyard models a meter as a parent of one or
-more downstream branches; the connection graph is a tree. Parallel
-meters need:
-
-- Multiple meters as roots-of-the-same-subtree (same `:successors`
-  list).
-- Connection graph allows the same `(parent, child)` edge through two
-  different parents — `World::connections` already supports this; need
-  to confirm `aggregate_child_bounds` and the meter aggregation
-  produce the right answer when a child has two parents.
-- Sample config that demonstrates the redundancy and a test that
-  shutting one meter off (`:telemetry-mode "closed"`) leaves the other
-  reporting the same flow.
-
 ### Per-phase reactive setpoints
 
 The proto's `SetElectricalComponentPower` takes a single scalar
@@ -475,6 +419,18 @@ The proto's `SetElectricalComponentPower` takes a single scalar
 dispatch unbalanced reactive across phases for voltage support. Out
 of scope for v1; would need a proto extension or a side-channel
 defun. Track here so we don't forget the gap.
+
+### Per-source attribution under MxN
+
+Today an inverter publishes its **commanded** AC output as
+`measured`; the battery separately publishes the accepted (clamped)
+value. A SCADA client that wants to see "inverter 1 produced 7.5 kW
+of the 13 kW total flowing into the shared battery" has to read both
+streams and reconcile. A future upgrade: track per-source pushes on
+the battery's accumulator (`Vec<(parent_id, p, q)>`), distribute the
+clamp ratio across sources, and let each inverter read its own
+`accepted_from(self.id)` to compute fair-share measured. Minor
+trade-off in trait surface.
 
 ## Risk notes
 
