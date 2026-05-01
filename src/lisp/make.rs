@@ -117,6 +117,10 @@ AsPlist! {
         health<":health">: Option<String> {= None},
         telemetry_mode<":telemetry-mode">: Option<String> {= None},
         command_mode<":command-mode">: Option<String> {= None},
+        /// PF-style Q cap: |Q| ≤ k × |P|. Pass 0 to disable.
+        reactive_pf_limit<":reactive-pf-limit">: Option<f64> {= None},
+        /// kVA-style Q cap: P² + Q² ≤ apparent². Pass 0 to disable.
+        reactive_apparent_va<":reactive-apparent-va">: Option<f64> {= None},
     }
 }
 
@@ -347,6 +351,21 @@ pub fn register(ctx: &mut TulispContext, world: World) {
             }
             if let Some(v) = a.stream_jitter_pct {
                 cfg.stream_jitter_pct = v as f32;
+            }
+            // Same opt-in semantics as make-battery-inverter:
+            // mentioning either reactive arg overrides the default
+            // ReactiveCapability with both, treating 0.0 / negative as
+            // "this constraint is disabled". Absent both → keep the
+            // microsim-style PF=0.35 default.
+            if a.reactive_pf_limit.is_some() || a.reactive_apparent_va.is_some() {
+                cfg.reactive = crate::sim::reactive::ReactiveCapability {
+                    pf_limit: a
+                        .reactive_pf_limit
+                        .and_then(|v| if v > 0.0 { Some(v as f32) } else { None }),
+                    apparent_va: a
+                        .reactive_apparent_va
+                        .and_then(|v| if v > 0.0 { Some(v as f32) } else { None }),
+                };
             }
             register_with_modes(
                 &w,

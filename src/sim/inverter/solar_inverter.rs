@@ -1,7 +1,8 @@
-//! Solar (PV) inverter — placeholder implementation that produces a
-//! constant negative power proportional to `sunlight_pct`. Set-point
-//! curtailment, ramping, and the SoC-style derate need to land here in
-//! a follow-up.
+//! Solar (PV) inverter. Active-side: produces a negative power
+//! proportional to `sunlight_pct`, slewed by the ramp + command-delay
+//! pair. Reactive-side: same `ReactiveCapability` envelope as the
+//! battery inverter — a real PV smart inverter (IEEE 1547-2018) does
+//! Volt/VAR control alongside its real-power output.
 
 use std::{fmt, time::Duration};
 
@@ -11,7 +12,9 @@ use parking_lot::Mutex;
 use crate::sim::{
     Category, SetpointError, SimulatedComponent, Telemetry, World,
     bounds::ComponentBounds,
+    meter::{per_phase_apparent_current, split_per_phase},
     ramp::{CommandDelay, Ramp},
+    reactive::ReactiveCapability,
 };
 
 #[derive(Clone, Debug)]
@@ -22,6 +25,8 @@ pub struct SolarInverterConfig {
     pub command_delay: Duration,
     pub ramp_rate_w_per_s: f32,
     pub stream_jitter_pct: f32,
+    /// Q envelope. Default microsim-compatible PF cap of 0.35.
+    pub reactive: ReactiveCapability,
 }
 
 impl Default for SolarInverterConfig {
@@ -33,6 +38,7 @@ impl Default for SolarInverterConfig {
             command_delay: Duration::ZERO,
             ramp_rate_w_per_s: f32::INFINITY,
             stream_jitter_pct: 0.0,
+            reactive: ReactiveCapability::microsim_default(),
         }
     }
 }
@@ -101,13 +107,23 @@ impl SimulatedComponent for SolarInverter {
     fn telemetry(&self, world: &World) -> Telemetry {
         let grid = world.grid_state();
         let p = self.ramp.actual();
+        let pp = split_per_phase(p, grid.voltage_per_phase);
+        let rp = *self.reactive_var.lock();
+        let rpp = split_per_phase(rp, grid.voltage_per_phase);
         Telemetry {
             id: self.id,
             category: Some(Category::Inverter),
             active_power_w: Some(p),
-            reactive_power_var: Some(*self.reactive_var.lock()),
+            reactive_power_var: Some(rp),
+            per_phase_active_w: Some(pp),
+            per_phase_reactive_var: Some(rpp),
             per_phase_voltage_v: Some(grid.voltage_per_phase),
+            per_phase_current_a: Some(per_phase_apparent_current(pp, rpp, grid.voltage_per_phase)),
             frequency_hz: Some(grid.frequency_hz),
+            active_power_bounds: Some(self.bounds.lock().effective()),
+            // Dynamic envelope: tightens with |P| under PF, expands
+            // toward the kVA edge when P is small.
+            reactive_power_bounds: Some(self.cfg.reactive.q_bounds_at(p)),
             ..Default::default()
         }
     }
@@ -125,6 +141,24 @@ impl SimulatedComponent for SolarInverter {
         Ok(())
     }
 
+    fn set_reactive_setpoint(&self, vars: f32) -> Result<(), SetpointError> {
+        // Same envelope semantics as the battery inverter: Q is
+        // validated against the live (lo, hi) at the *current* P, so
+        // a curtailed PV inverter with P near 0 has tight Q room
+        // under a PF cap, and full ±S_rated room under a kVA cap.
+        let p_now = self.ramp.actual();
+        let (lo, hi) = self.cfg.reactive.q_bounds_at(p_now);
+        if vars < lo || vars > hi {
+            return Err(SetpointError::OutOfBounds {
+                value: vars,
+                lower: lo,
+                upper: hi,
+            });
+        }
+        *self.reactive_var.lock() = vars;
+        Ok(())
+    }
+
     fn reset_setpoint(&self) {
         let init_p = self.cfg.rated_lower_w * self.cfg.sunlight_pct / 100.0;
         self.delay.reset();
@@ -132,12 +166,29 @@ impl SimulatedComponent for SolarInverter {
         *self.reactive_var.lock() = 0.0;
     }
 
+    fn augment_active_bounds(
+        &self,
+        ts: DateTime<Utc>,
+        bounds: crate::sim::bounds::VecBounds,
+        lifetime: Duration,
+    ) {
+        self.bounds.lock().add_augmentation(ts, bounds, lifetime);
+    }
+
     fn aggregate_power_w(&self, _world: &World) -> f32 {
         self.ramp.actual()
     }
 
+    fn aggregate_reactive_var(&self, _world: &World) -> f32 {
+        *self.reactive_var.lock()
+    }
+
     fn rated_active_bounds(&self) -> Option<(f32, f32)> {
         Some((self.cfg.rated_lower_w, self.cfg.rated_upper_w))
+    }
+
+    fn reactive_bounds(&self) -> Option<(f32, f32)> {
+        Some(self.cfg.reactive.q_bounds_at(self.ramp.actual()))
     }
 
     fn subtype(&self) -> Option<&'static str> {
@@ -146,5 +197,9 @@ impl SimulatedComponent for SolarInverter {
 
     fn stream_jitter_pct(&self) -> f32 {
         self.cfg.stream_jitter_pct
+    }
+
+    fn effective_active_bounds(&self) -> Option<crate::sim::bounds::VecBounds> {
+        Some(self.bounds.lock().effective())
     }
 }
