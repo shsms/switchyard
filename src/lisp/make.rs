@@ -33,6 +33,20 @@ AsPlist! {
         health<":health">: Option<LispLabel> {= None},
         telemetry_mode<":telemetry-mode">: Option<LispLabel> {= None},
         command_mode<":command-mode">: Option<LispLabel> {= None},
+        config<":config">: Option<LispValue> {= None},
+    }
+}
+
+AsAlist! {
+    /// Per-category defaults for `(make-grid)`. Mirrors `GridArgs`
+    /// minus per-component identity / topology (`id`, `successors`).
+    #[derive(Default)]
+    pub struct GridDefaults {
+        rated_fuse_current<"rated-fuse-current">: Option<i64> {= None},
+        stream_jitter_pct<"stream-jitter-pct">: Option<f64> {= None},
+        health: Option<LispLabel> {= None},
+        telemetry_mode<"telemetry-mode">: Option<LispLabel> {= None},
+        command_mode<"command-mode">: Option<LispLabel> {= None},
     }
 }
 
@@ -222,24 +236,30 @@ AsPlist! {
 
 pub fn register(ctx: &mut TulispContext, world: World) {
     let w = world.clone();
-    ctx.defun("make-grid", move |args: Plist<GridArgs>| {
-        let a = args.into_inner();
-        let id = id_or_next(&w, a.id);
-        let grid = Grid::new(
-            id,
-            a.rated_fuse_current.unwrap_or(0) as u32,
-            a.stream_jitter_pct.unwrap_or(0.0) as f32,
-        );
-        let h = register_with_modes(
-            &w,
-            grid,
-            a.health.as_ref(),
-            a.telemetry_mode.as_ref(),
-            a.command_mode.as_ref(),
-        )?;
-        connect_successors(&w, id, &a.successors);
-        Ok::<_, Error>(h)
-    });
+    ctx.defun(
+        "make-grid",
+        move |ctx: &mut TulispContext, args: Plist<GridArgs>| {
+            let a = args.into_inner();
+            let d = parse_defaults::<GridDefaults>(ctx, a.config.as_ref())?;
+            let id = id_or_next(&w, a.id);
+            let grid = Grid::new(
+                id,
+                a.rated_fuse_current.or(d.rated_fuse_current).unwrap_or(0) as u32,
+                a.stream_jitter_pct
+                    .or(d.stream_jitter_pct)
+                    .unwrap_or(0.0) as f32,
+            );
+            let h = register_with_modes(
+                &w,
+                grid,
+                a.health.as_ref().or(d.health.as_ref()),
+                a.telemetry_mode.as_ref().or(d.telemetry_mode.as_ref()),
+                a.command_mode.as_ref().or(d.command_mode.as_ref()),
+            )?;
+            connect_successors(&w, id, &a.successors);
+            Ok::<_, Error>(h)
+        },
+    );
 
     let w = world.clone();
     ctx.defun(
