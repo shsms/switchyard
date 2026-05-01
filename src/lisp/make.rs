@@ -4,12 +4,10 @@
 //! returns a `ComponentHandle` (an opaque `Shared<dyn TulispAny>` on
 //! the lisp side).
 
-use std::str::FromStr;
 use std::time::Duration;
 
 use tulisp::{Alistable, AsAlist, AsPlist, Error, Plist, TulispContext};
 
-use crate::lisp::label::LispLabel;
 use crate::lisp::value::LispValue;
 use crate::sim::{
     Battery, BatteryInverter, Chp, ComponentHandle, EvCharger, Grid, Meter, SolarInverter, World,
@@ -30,9 +28,9 @@ AsPlist! {
         rated_fuse_current<":rated-fuse-current">: Option<i64> {= None},
         successors: Option<Vec<ComponentHandle>> {= None},
         stream_jitter_pct<":stream-jitter-pct">: Option<f64> {= None},
-        health<":health">: Option<LispLabel> {= None},
-        telemetry_mode<":telemetry-mode">: Option<LispLabel> {= None},
-        command_mode<":command-mode">: Option<LispLabel> {= None},
+        health<":health">: Option<Health> {= None},
+        telemetry_mode<":telemetry-mode">: Option<TelemetryMode> {= None},
+        command_mode<":command-mode">: Option<CommandMode> {= None},
         config<":config">: Option<LispValue> {= None},
     }
 }
@@ -44,9 +42,9 @@ AsAlist! {
     pub struct GridDefaults {
         rated_fuse_current<"rated-fuse-current">: Option<i64> {= None},
         stream_jitter_pct<"stream-jitter-pct">: Option<f64> {= None},
-        health: Option<LispLabel> {= None},
-        telemetry_mode<"telemetry-mode">: Option<LispLabel> {= None},
-        command_mode<"command-mode">: Option<LispLabel> {= None},
+        health: Option<Health> {= None},
+        telemetry_mode<"telemetry-mode">: Option<TelemetryMode> {= None},
+        command_mode<"command-mode">: Option<CommandMode> {= None},
     }
 }
 
@@ -63,9 +61,9 @@ AsPlist! {
         hidden: Option<bool> {= None},
         reactive_power<":reactive-power">: Option<f64> {= None},
         stream_jitter_pct<":stream-jitter-pct">: Option<f64> {= None},
-        health<":health">: Option<LispLabel> {= None},
-        telemetry_mode<":telemetry-mode">: Option<LispLabel> {= None},
-        command_mode<":command-mode">: Option<LispLabel> {= None},
+        health<":health">: Option<Health> {= None},
+        telemetry_mode<":telemetry-mode">: Option<TelemetryMode> {= None},
+        command_mode<":command-mode">: Option<CommandMode> {= None},
         config<":config">: Option<LispValue> {= None},
     }
 }
@@ -80,9 +78,9 @@ AsAlist! {
         power: Option<f64> {= None},
         reactive_power<"reactive-power">: Option<f64> {= None},
         stream_jitter_pct<"stream-jitter-pct">: Option<f64> {= None},
-        health: Option<LispLabel> {= None},
-        telemetry_mode<"telemetry-mode">: Option<LispLabel> {= None},
-        command_mode<"command-mode">: Option<LispLabel> {= None},
+        health: Option<Health> {= None},
+        telemetry_mode<"telemetry-mode">: Option<TelemetryMode> {= None},
+        command_mode<"command-mode">: Option<CommandMode> {= None},
     }
 }
 
@@ -103,9 +101,9 @@ AsPlist! {
         rated_upper<":rated-upper">: Option<f64> {= None},
         soc_protect_margin<":soc-protect-margin">: Option<f64> {= None},
         stream_jitter_pct<":stream-jitter-pct">: Option<f64> {= None},
-        health<":health">: Option<LispLabel> {= None},
-        telemetry_mode<":telemetry-mode">: Option<LispLabel> {= None},
-        command_mode<":command-mode">: Option<LispLabel> {= None},
+        health<":health">: Option<Health> {= None},
+        telemetry_mode<":telemetry-mode">: Option<TelemetryMode> {= None},
+        command_mode<":command-mode">: Option<CommandMode> {= None},
         config<":config">: Option<LispValue> {= None},
     }
 }
@@ -127,9 +125,9 @@ AsAlist! {
         rated_upper<"rated-upper">: Option<f64> {= None},
         soc_protect_margin<"soc-protect-margin">: Option<f64> {= None},
         stream_jitter_pct<"stream-jitter-pct">: Option<f64> {= None},
-        health: Option<LispLabel> {= None},
-        telemetry_mode<"telemetry-mode">: Option<LispLabel> {= None},
-        command_mode<"command-mode">: Option<LispLabel> {= None},
+        health: Option<Health> {= None},
+        telemetry_mode<"telemetry-mode">: Option<TelemetryMode> {= None},
+        command_mode<"command-mode">: Option<CommandMode> {= None},
     }
 }
 
@@ -147,9 +145,9 @@ AsPlist! {
         command_delay_ms<":command-delay-ms">: Option<i64> {= None},
         ramp_rate<":ramp-rate">: Option<f64> {= None},
         stream_jitter_pct<":stream-jitter-pct">: Option<f64> {= None},
-        health<":health">: Option<LispLabel> {= None},
-        telemetry_mode<":telemetry-mode">: Option<LispLabel> {= None},
-        command_mode<":command-mode">: Option<LispLabel> {= None},
+        health<":health">: Option<Health> {= None},
+        telemetry_mode<":telemetry-mode">: Option<TelemetryMode> {= None},
+        command_mode<":command-mode">: Option<CommandMode> {= None},
         /// PF-style Q cap: |Q| ≤ k × |P|. Pass nil to disable.
         reactive_pf_limit<":reactive-pf-limit">: Option<f64> {= None},
         /// kVA-style Q cap: P² + Q² ≤ apparent². Pass nil to disable.
@@ -176,9 +174,9 @@ AsAlist! {
         command_delay_ms<"command-delay-ms">: Option<i64> {= None},
         ramp_rate<"ramp-rate">: Option<f64> {= None},
         stream_jitter_pct<"stream-jitter-pct">: Option<f64> {= None},
-        health: Option<LispLabel> {= None},
-        telemetry_mode<"telemetry-mode">: Option<LispLabel> {= None},
-        command_mode<"command-mode">: Option<LispLabel> {= None},
+        health: Option<Health> {= None},
+        telemetry_mode<"telemetry-mode">: Option<TelemetryMode> {= None},
+        command_mode<"command-mode">: Option<CommandMode> {= None},
         reactive_pf_limit<"reactive-pf-limit">: Option<f64> {= None},
         reactive_apparent_va<"reactive-apparent-va">: Option<f64> {= None},
         reactive_command_delay_ms<"reactive-command-delay-ms">: Option<i64> {= None},
@@ -200,9 +198,9 @@ AsPlist! {
         command_delay_ms<":command-delay-ms">: Option<i64> {= None},
         ramp_rate<":ramp-rate">: Option<f64> {= None},
         stream_jitter_pct<":stream-jitter-pct">: Option<f64> {= None},
-        health<":health">: Option<LispLabel> {= None},
-        telemetry_mode<":telemetry-mode">: Option<LispLabel> {= None},
-        command_mode<":command-mode">: Option<LispLabel> {= None},
+        health<":health">: Option<Health> {= None},
+        telemetry_mode<":telemetry-mode">: Option<TelemetryMode> {= None},
+        command_mode<":command-mode">: Option<CommandMode> {= None},
         /// PF-style Q cap: |Q| ≤ k × |P|. Pass 0 to disable.
         reactive_pf_limit<":reactive-pf-limit">: Option<f64> {= None},
         /// kVA-style Q cap: P² + Q² ≤ apparent². Pass 0 to disable.
@@ -228,9 +226,9 @@ AsAlist! {
         command_delay_ms<"command-delay-ms">: Option<i64> {= None},
         ramp_rate<"ramp-rate">: Option<f64> {= None},
         stream_jitter_pct<"stream-jitter-pct">: Option<f64> {= None},
-        health: Option<LispLabel> {= None},
-        telemetry_mode<"telemetry-mode">: Option<LispLabel> {= None},
-        command_mode<"command-mode">: Option<LispLabel> {= None},
+        health: Option<Health> {= None},
+        telemetry_mode<"telemetry-mode">: Option<TelemetryMode> {= None},
+        command_mode<"command-mode">: Option<CommandMode> {= None},
         reactive_pf_limit<"reactive-pf-limit">: Option<f64> {= None},
         reactive_apparent_va<"reactive-apparent-va">: Option<f64> {= None},
         reactive_command_delay_ms<"reactive-command-delay-ms">: Option<i64> {= None},
@@ -256,9 +254,9 @@ AsPlist! {
         command_delay_ms<":command-delay-ms">: Option<i64> {= None},
         ramp_rate<":ramp-rate">: Option<f64> {= None},
         stream_jitter_pct<":stream-jitter-pct">: Option<f64> {= None},
-        health<":health">: Option<LispLabel> {= None},
-        telemetry_mode<":telemetry-mode">: Option<LispLabel> {= None},
-        command_mode<":command-mode">: Option<LispLabel> {= None},
+        health<":health">: Option<Health> {= None},
+        telemetry_mode<":telemetry-mode">: Option<TelemetryMode> {= None},
+        command_mode<":command-mode">: Option<CommandMode> {= None},
         config<":config">: Option<LispValue> {= None},
     }
 }
@@ -279,9 +277,9 @@ AsAlist! {
         command_delay_ms<"command-delay-ms">: Option<i64> {= None},
         ramp_rate<"ramp-rate">: Option<f64> {= None},
         stream_jitter_pct<"stream-jitter-pct">: Option<f64> {= None},
-        health: Option<LispLabel> {= None},
-        telemetry_mode<"telemetry-mode">: Option<LispLabel> {= None},
-        command_mode<"command-mode">: Option<LispLabel> {= None},
+        health: Option<Health> {= None},
+        telemetry_mode<"telemetry-mode">: Option<TelemetryMode> {= None},
+        command_mode<"command-mode">: Option<CommandMode> {= None},
     }
 }
 
@@ -293,9 +291,9 @@ AsPlist! {
     pub struct ChpArgs {
         id: Option<i64> {= None},
         stream_jitter_pct<":stream-jitter-pct">: Option<f64> {= None},
-        health<":health">: Option<LispLabel> {= None},
-        telemetry_mode<":telemetry-mode">: Option<LispLabel> {= None},
-        command_mode<":command-mode">: Option<LispLabel> {= None},
+        health<":health">: Option<Health> {= None},
+        telemetry_mode<":telemetry-mode">: Option<TelemetryMode> {= None},
+        command_mode<":command-mode">: Option<CommandMode> {= None},
         config<":config">: Option<LispValue> {= None},
     }
 }
@@ -306,9 +304,9 @@ AsAlist! {
     #[derive(Default)]
     pub struct ChpDefaults {
         stream_jitter_pct<"stream-jitter-pct">: Option<f64> {= None},
-        health: Option<LispLabel> {= None},
-        telemetry_mode<"telemetry-mode">: Option<LispLabel> {= None},
-        command_mode<"command-mode">: Option<LispLabel> {= None},
+        health: Option<Health> {= None},
+        telemetry_mode<"telemetry-mode">: Option<TelemetryMode> {= None},
+        command_mode<"command-mode">: Option<CommandMode> {= None},
     }
 }
 
@@ -334,9 +332,9 @@ pub fn register(ctx: &mut TulispContext, world: World) {
             let h = register_with_modes(
                 &w,
                 grid,
-                a.health.as_ref().or(d.health.as_ref()),
-                a.telemetry_mode.as_ref().or(d.telemetry_mode.as_ref()),
-                a.command_mode.as_ref().or(d.command_mode.as_ref()),
+                a.health.or(d.health),
+                a.telemetry_mode.or(d.telemetry_mode),
+                a.command_mode.or(d.command_mode),
             )?;
             connect_successors(&w, id, &a.successors);
             Ok::<_, Error>(h)
@@ -370,9 +368,9 @@ pub fn register(ctx: &mut TulispContext, world: World) {
             let h = register_with_modes(
                 &w,
                 meter,
-                a.health.as_ref().or(d.health.as_ref()),
-                a.telemetry_mode.as_ref().or(d.telemetry_mode.as_ref()),
-                a.command_mode.as_ref().or(d.command_mode.as_ref()),
+                a.health.or(d.health),
+                a.telemetry_mode.or(d.telemetry_mode),
+                a.command_mode.or(d.command_mode),
             )?;
             // Hidden meters: their *outgoing* edges (to children) are
             // suppressed too, mirroring microsim. The handle-side filter
@@ -425,9 +423,9 @@ pub fn register(ctx: &mut TulispContext, world: World) {
             register_with_modes(
                 &w,
                 Battery::new(id, interval, cfg),
-                a.health.as_ref().or(d.health.as_ref()),
-                a.telemetry_mode.as_ref().or(d.telemetry_mode.as_ref()),
-                a.command_mode.as_ref().or(d.command_mode.as_ref()),
+                a.health.or(d.health),
+                a.telemetry_mode.or(d.telemetry_mode),
+                a.command_mode.or(d.command_mode),
             )
         },
     );
@@ -491,9 +489,9 @@ pub fn register(ctx: &mut TulispContext, world: World) {
             let h = register_with_modes(
                 &w,
                 BatteryInverter::new(id, interval, cfg, succ_ids),
-                a.health.as_ref().or(d.health.as_ref()),
-                a.telemetry_mode.as_ref().or(d.telemetry_mode.as_ref()),
-                a.command_mode.as_ref().or(d.command_mode.as_ref()),
+                a.health.or(d.health),
+                a.telemetry_mode.or(d.telemetry_mode),
+                a.command_mode.or(d.command_mode),
             )?;
             connect_successors(&w, id, &a.successors);
             Ok::<_, Error>(h)
@@ -551,9 +549,9 @@ pub fn register(ctx: &mut TulispContext, world: World) {
             register_with_modes(
                 &w,
                 SolarInverter::new(id, interval, cfg),
-                a.health.as_ref().or(d.health.as_ref()),
-                a.telemetry_mode.as_ref().or(d.telemetry_mode.as_ref()),
-                a.command_mode.as_ref().or(d.command_mode.as_ref()),
+                a.health.or(d.health),
+                a.telemetry_mode.or(d.telemetry_mode),
+                a.command_mode.or(d.command_mode),
             )
         },
     );
@@ -600,9 +598,9 @@ pub fn register(ctx: &mut TulispContext, world: World) {
             register_with_modes(
                 &w,
                 EvCharger::new(id, interval, cfg),
-                a.health.as_ref().or(d.health.as_ref()),
-                a.telemetry_mode.as_ref().or(d.telemetry_mode.as_ref()),
-                a.command_mode.as_ref().or(d.command_mode.as_ref()),
+                a.health.or(d.health),
+                a.telemetry_mode.or(d.telemetry_mode),
+                a.command_mode.or(d.command_mode),
             )
         },
     );
@@ -621,9 +619,9 @@ pub fn register(ctx: &mut TulispContext, world: World) {
             register_with_modes(
                 &w,
                 Chp::new(id, jitter),
-                a.health.as_ref().or(d.health.as_ref()),
-                a.telemetry_mode.as_ref().or(d.telemetry_mode.as_ref()),
-                a.command_mode.as_ref().or(d.command_mode.as_ref()),
+                a.health.or(d.health),
+                a.telemetry_mode.or(d.telemetry_mode),
+                a.command_mode.or(d.command_mode),
             )
         },
     );
@@ -684,50 +682,38 @@ fn id_or_next(world: &World, explicit: Option<i64>) -> u64 {
 fn register_with_modes<C: crate::sim::SimulatedComponent + 'static>(
     world: &World,
     component: C,
-    health: Option<&LispLabel>,
-    telemetry: Option<&LispLabel>,
-    command: Option<&LispLabel>,
+    health: Option<Health>,
+    telemetry: Option<TelemetryMode>,
+    command: Option<CommandMode>,
 ) -> Result<ComponentHandle, Error> {
     let id = component.id();
     let h = world.register(component);
-    apply_initial_modes(world, id, health, telemetry, command)?;
+    apply_initial_modes(world, id, health, telemetry, command);
     Ok(h)
 }
 
 /// Apply initial runtime mode args from a plist constructor. Each
 /// `make-*` calls this immediately after `world.register(...)` so a
 /// component declared with `:health 'error` is broken from the very
-/// first tick.
+/// first tick. Symbol → enum parsing happens in the `TryFrom` impls
+/// (`src/lisp/runtime_modes.rs`); by the time we get here the values
+/// are typed.
 fn apply_initial_modes(
     world: &World,
     id: u64,
-    health: Option<&LispLabel>,
-    telemetry: Option<&LispLabel>,
-    command: Option<&LispLabel>,
-) -> Result<(), Error> {
+    health: Option<Health>,
+    telemetry: Option<TelemetryMode>,
+    command: Option<CommandMode>,
+) {
     if let Some(h) = health {
-        let parsed = Health::from_str(h.as_str()).map_err(|_| {
-            Error::invalid_argument(format!("unknown :health '{h}'; expected ok/error/standby"))
-        })?;
-        world.set_health(id, parsed);
+        world.set_health(id, h);
     }
     if let Some(t) = telemetry {
-        let parsed = TelemetryMode::from_str(t.as_str()).map_err(|_| {
-            Error::invalid_argument(format!(
-                "unknown :telemetry-mode '{t}'; expected normal/silent/closed"
-            ))
-        })?;
-        world.set_telemetry_mode(id, parsed);
+        world.set_telemetry_mode(id, t);
     }
     if let Some(c) = command {
-        let parsed = CommandMode::from_str(c.as_str()).map_err(|_| {
-            Error::invalid_argument(format!(
-                "unknown :command-mode '{c}'; expected normal/timeout/error"
-            ))
-        })?;
-        world.set_command_mode(id, parsed);
+        world.set_command_mode(id, c);
     }
-    Ok(())
 }
 
 #[cfg(test)]

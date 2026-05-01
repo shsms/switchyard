@@ -261,48 +261,31 @@ fn register_time_helpers(ctx: &mut TulispContext) {
 }
 
 fn register_runtime_modes(ctx: &mut TulispContext, world: World) {
-    use crate::lisp::label::LispLabel;
     use crate::sim::runtime::{CommandMode, Health, TelemetryMode};
-    use std::str::FromStr;
 
     let w = world.clone();
     ctx.defun(
         "set-component-health",
-        move |id: i64, label: LispLabel| -> Result<bool, Error> {
-            let h = Health::from_str(label.as_str()).map_err(|_| {
-                Error::invalid_argument(format!(
-                    "unknown health label '{label}'; expected ok/error/standby"
-                ))
-            })?;
+        move |id: i64, h: Health| -> bool {
             w.set_health(id as u64, h);
-            Ok(true)
+            true
         },
     );
 
     let w = world.clone();
     ctx.defun(
         "set-component-telemetry-mode",
-        move |id: i64, label: LispLabel| -> Result<bool, Error> {
-            let m = TelemetryMode::from_str(label.as_str()).map_err(|_| {
-                Error::invalid_argument(format!(
-                    "unknown telemetry mode '{label}'; expected normal/silent/closed"
-                ))
-            })?;
+        move |id: i64, m: TelemetryMode| -> bool {
             w.set_telemetry_mode(id as u64, m);
-            Ok(true)
+            true
         },
     );
 
     ctx.defun(
         "set-component-command-mode",
-        move |id: i64, label: LispLabel| -> Result<bool, Error> {
-            let m = CommandMode::from_str(label.as_str()).map_err(|_| {
-                Error::invalid_argument(format!(
-                    "unknown command mode '{label}'; expected normal/timeout/error"
-                ))
-            })?;
+        move |id: i64, m: CommandMode| -> bool {
             world.set_command_mode(id as u64, m);
-            Ok(true)
+            true
         },
     );
 }
