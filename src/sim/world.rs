@@ -27,12 +27,19 @@ use crate::sim::component::{ComponentHandle, FIRST_AUTO_ID, SimulatedComponent};
 use crate::sim::events::{EVENT_BUS_CAPACITY, WorldEvent};
 use crate::sim::history::{ComponentHistory, History, Metric, Sample};
 use crate::sim::runtime::{CommandMode, ComponentRuntime, Health, TelemetryMode};
+use crate::sim::setpoints::{SetpointEvent, SetpointLog};
 
 /// Hard cap on per-component-per-metric ring buffer length. At the
 /// fixed 1 Hz history sampling cadence (see `spawn_history_sampler`)
 /// this works out to a 10-minute window per series — plenty for the
 /// "what was my control app doing recently" use case.
 const HISTORY_CAPACITY: usize = 600;
+
+/// Cap on per-component setpoint-log length. Setpoint requests
+/// arrive at the gRPC server's pace; a busy control app might land
+/// 10/sec on one component. 1000 entries ≈ 100 s of dense traffic
+/// or several minutes of typical use; older events evict.
+const SETPOINT_LOG_CAPACITY: usize = 1000;
 
 /// External AC environment shared by all AC components. Mirrors
 /// microsim's `voltage-per-phase` / `ac-frequency` globals.
@@ -79,6 +86,11 @@ struct WorldInner {
     /// endpoint. Cleared on `reset()` so a hot-reload starts charts
     /// fresh.
     histories: RwLock<HashMap<u64, ComponentHistory>>,
+    /// Per-component log of incoming setpoint requests + outcome.
+    /// Populated by the gRPC server handlers for SetActivePower /
+    /// SetReactivePower / AugmentBounds; read by /api/setpoints for
+    /// the UI's control inspector.
+    setpoint_logs: RwLock<HashMap<u64, SetpointLog>>,
     /// Monotonic version counter; bumped via `bump_version` on every
     /// accepted /api/eval (and future programmatic mutations) so UI
     /// tabs know to refetch /api/topology.
@@ -101,6 +113,7 @@ impl World {
                 runtime: RwLock::new(HashMap::new()),
                 name_overrides: RwLock::new(HashMap::new()),
                 histories: RwLock::new(HashMap::new()),
+                setpoint_logs: RwLock::new(HashMap::new()),
                 version: AtomicU64::new(0),
                 events: broadcast::channel(EVENT_BUS_CAPACITY).0,
             }),
@@ -236,6 +249,7 @@ impl World {
         self.inner.runtime.write().clear();
         self.inner.name_overrides.write().clear();
         self.inner.histories.write().clear();
+        self.inner.setpoint_logs.write().clear();
         self.inner.next_id.store(FIRST_AUTO_ID, Ordering::Relaxed);
         // The grid state is environmental (set by the config's `every`
         // timer); we deliberately keep it across reloads so the first
@@ -429,6 +443,35 @@ impl World {
             .read()
             .get(&id)
             .map(|c| c.metrics().collect())
+            .unwrap_or_default()
+    }
+
+    /// Append a setpoint event to the per-component log. Auto-creates
+    /// the ring on first push for that id; bounded to
+    /// `SETPOINT_LOG_CAPACITY` entries (oldest evict).
+    pub fn log_setpoint(&self, id: u64, event: SetpointEvent) {
+        self.inner
+            .setpoint_logs
+            .write()
+            .entry(id)
+            .or_insert_with(|| SetpointLog::new(SETPOINT_LOG_CAPACITY))
+            .push(event);
+    }
+
+    /// Read the recent setpoint events for one component.  Returns
+    /// owned events so the caller can release the lock immediately.
+    /// Empty Vec when the component has no recorded setpoints yet —
+    /// either because it's new or because no client has set anything.
+    pub fn setpoints_window(
+        &self,
+        id: u64,
+        since: DateTime<Utc>,
+    ) -> Vec<SetpointEvent> {
+        self.inner
+            .setpoint_logs
+            .read()
+            .get(&id)
+            .map(|log| log.iter_window(since).cloned().collect())
             .unwrap_or_default()
     }
 }
