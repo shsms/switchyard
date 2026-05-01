@@ -39,7 +39,8 @@ impl fmt::Display for SetpointError {
 
 impl std::error::Error for SetpointError {}
 
-/// Per-tick snapshot a component emits for telemetry / TUI / logging.
+/// Per-tick snapshot a component emits for the gRPC telemetry stream
+/// + the UI's history sampler.
 /// All numeric fields are SI units (W, VAR, V, A, %, Wh).
 ///
 /// Optional fields stay `None` for component types that do not expose

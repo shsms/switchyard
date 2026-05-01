@@ -70,16 +70,18 @@ switchyard/
 │   ├── proto.rs
 │   ├── server.rs                 gRPC service impl
 │   ├── timeout_tracker.rs
-│   ├── tui_log.rs
+│   ├── ui.rs                     embedded web UI (axum)
+│   ├── ui_log.rs                 LogTap — captures records for the UI
 │   ├── bin/
 │   │   ├── switchyard.rs         headless server
-│   │   └── switchyard-tui.rs     server + TUI
+│   │   └── swctl.rs              clap-based gRPC client
 │   ├── lisp/
 │   │   ├── mod.rs                Config (parses config.lisp, holds World)
-│   │   ├── make.rs               (make-grid) (make-meter) … via AsPlist
+│   │   ├── make.rs               (%make-grid) (%make-meter) … via AsPlist
 │   │   ├── handle.rs             ComponentHandle ↔ TulispAny conversions
-│   │   ├── time.rs               dt:now, parse-iso-timestamp, …
-│   │   └── bounds.rs             bounds/make-container, bounds/add, …
+│   │   ├── runtime_modes.rs      Health / TelemetryMode / CommandMode
+│   │   ├── value.rs              raw TulispObject passthrough wrapper
+│   │   └── csv_profile.rs        (csv-load) / (csv-lookup) for load curves
 │   └── sim/
 │       ├── mod.rs                re-exports
 │       ├── component.rs          SimulatedComponent trait, Category, Telemetry
@@ -328,14 +330,15 @@ Phase markers correspond to the existing TaskList items.
 6. **gRPC server** — the streaming + control surface.
 7. **Sample config + smoke** — a switchyard-equivalent `config.lisp`
    loads cleanly and `cargo build` is warning-free.
-8. **(future)** TUI, full proto coverage of state codes / phases beyond
+8. **(future)** Full proto coverage of state codes / phases beyond
    what microsim currently fills in, integration tests against the
    Frequenz SDK.
 
-## Out of scope (initial)
+## Out of scope
 
-- TUI parity with microsim. The TUI module is large and orthogonal;
-  switchyard ships headless first.
+- TUI parity with microsim. Switchyard's interactive surface is the
+  embedded web UI (see UI.org); a TUI would duplicate effort and is
+  better covered by `swctl` for terminal use.
 - DC bus / power-flow physics beyond what microsim already does (real
   power, naive voltage drop). The `gpt-5 discussion …` note in microsim
   is interesting follow-up material but not part of v1.
