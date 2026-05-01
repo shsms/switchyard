@@ -12,7 +12,7 @@
 //! code parses it via the existing `FromStr` impls on `Health`,
 //! `TelemetryMode`, etc.
 
-use tulisp::{Error, TulispObject};
+use tulisp::{Error, TulispConvertible, TulispObject};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LispLabel(String);
@@ -56,6 +56,19 @@ impl TryFrom<TulispObject> for LispLabel {
             Error::type_mismatch(format!("Expected symbol or string, got {value}"))
                 .with_trace(value),
         )
+    }
+}
+
+/// Direct `defun` parameter conversion — `defun` uses
+/// `TulispConvertible`, not the `TryFrom`-based `Plistable` pipeline.
+/// Implementing this makes `(set-component-health 100 'error)` and
+/// `(set-component-health 100 "error")` both work.
+impl TulispConvertible for LispLabel {
+    fn from_tulisp(value: &TulispObject) -> Result<Self, Error> {
+        Self::try_from(value)
+    }
+    fn into_tulisp(self) -> TulispObject {
+        self.into()
     }
 }
 
