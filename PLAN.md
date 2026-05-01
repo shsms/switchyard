@@ -408,6 +408,74 @@ resetting stale set-points; anchored telemetry timestamps with no
 per-iteration drift; `(every)` / `(run-with-timer)` for environment
 scripting; config-driven topology assembly.
 
+## Backlog
+
+Items we've recognised as needed but haven't built yet. Each is a
+self-contained piece of work; tackle in any order.
+
+### `SimulatedComponent` readability cleanup
+
+The trait has grown to ~24 methods on one `dyn`-safe surface. Default
+no-ops keep it cheap, but reading the file top-to-bottom is hard. Plan
+the cleanup separately — likely shape:
+
+- Group methods into commented sections (identity / lifecycle /
+  setpoints / aggregation / bounds / runtime modes / metadata).
+- Consider splitting *helper* traits that the server uses behind the
+  scenes (`HasReactiveBounds`, `Aggregable`, etc.) — but the public
+  trait stays a single dyn-safe object so server code keeps holding
+  one `Arc<dyn SimulatedComponent>`.
+- Move per-feature docstrings closer to their methods; the current
+  doc-comment density is uneven.
+
+### MxN inverter ↔ battery topology
+
+Today's distribution is 1-inverter-to-N-batteries with equal-share
+(`commanded / N`). Real installations vary. Three flavours to cover:
+
+1. **N inverters → 1 battery.** Each inverter pushes its own share of
+   the same DC bus. The battery has to fold all incoming pushes from
+   that tick before clamping, otherwise the last writer wins. Move
+   the battery's "accumulate this tick's pushes, clamp once, publish"
+   behaviour out of `set_dc_active_reactive` and into `tick`.
+2. **MxN.** Generalisation of the above — N inverters into one bus
+   that powers M batteries in series/parallel. Each inverter hands its
+   share to "the bus"; the battery group decides how to split among
+   themselves (equal share by default, with weights later). Likely
+   needs a small `DcBus` aggregator between inverter and battery.
+3. **Failed batteries.** Today the battery silently clamps to zero
+   when SoC saturates or when health is `Error`. The inverter's
+   measured aggregate falls short of commanded — clients see the
+   discrepancy. For an MxN setup we need to be sure the still-working
+   batteries can pick up the slack inside the inverter's own envelope.
+   Add a test fixture: 2 batteries, one with `:health "error"`, set
+   inverter to a value the surviving battery can absorb alone.
+
+### Redundant meters in parallel
+
+Some installations put two meters in parallel on the same bus for
+reliability. Today switchyard models a meter as a parent of one or
+more downstream branches; the connection graph is a tree. Parallel
+meters need:
+
+- Multiple meters as roots-of-the-same-subtree (same `:successors`
+  list).
+- Connection graph allows the same `(parent, child)` edge through two
+  different parents — `World::connections` already supports this; need
+  to confirm `aggregate_child_bounds` and the meter aggregation
+  produce the right answer when a child has two parents.
+- Sample config that demonstrates the redundancy and a test that
+  shutting one meter off (`:telemetry-mode "closed"`) leaves the other
+  reporting the same flow.
+
+### Per-phase reactive setpoints
+
+The proto's `SetElectricalComponentPower` takes a single scalar
+`power` value, not per-phase. Real inverters can be commanded to
+dispatch unbalanced reactive across phases for voltage support. Out
+of scope for v1; would need a proto extension or a side-channel
+defun. Track here so we don't forget the gap.
+
 ## Risk notes
 
 - **Locking**: tulisp `vm` branch's `Shared<dyn TulispAny>` is
