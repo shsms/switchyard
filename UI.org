@@ -1,0 +1,396 @@
+#+TITLE: switchyard UI — design
+#+OPTIONS: toc:2 num:nil
+
+A single-file-distributable web UI for switchyard: live telemetry,
+topology editing, runtime knob editing, control-app evaluation. Drives
+sim mutations through the existing Lisp evaluator, not a parallel REST
+API surface.
+
+* Goals & non-goals
+
+** Goals
+- Visualize the running sim: topology + per-component time-series
+  telemetry + bounds + setpoints.
+- Build a component graph from scratch in the browser, then have it
+  served via the existing gRPC Microgrid API with no extra steps.
+- Edit existing graphs: add/remove components, rewire, change defaults,
+  flip runtime knobs (health, telemetry-mode, command-mode, sunlight%,
+  meter power overrides, …).
+- Evaluate control applications: see what setpoints arrived, what the
+  sim did, where bounds clipped them.
+- Single-file distributable: HTML/JS/CSS embedded in the binary. No
+  external assets, no build step at runtime.
+
+** Non-goals (for v1)
+- Multi-user with conflict resolution. Strictly single-developer; multi
+  *tab* is supported because it's cheap.
+- Authentication / authorization. Localhost-only by default.
+- Mobile / responsive design. Desktop browser, recent Chrome/Firefox.
+- A TUI. Out of scope for v1; could be a phase-4 ratatui dashboard
+  reusing the same telemetry-history store.
+
+* Architecture
+
+The UI does not introduce a parallel mutation API. Every action a user
+takes — add a component, change health, edit defaults, drop an edge —
+becomes a Lisp expression POSTed to a single ~/api/eval~ endpoint. The
+running interpreter mutates the World using the same defuns the config
+file uses. This means:
+
+- Anything the UI can do, a script can also do, and vice versa.
+- No Rust↔TypeScript schema to keep in sync beyond the Lisp source.
+- Adding a feature to the UI usually means adding a defun + a button.
+
+The Rust additions are minimal: the HTTP/WS server, a telemetry-history
+ring buffer, a few new defuns the UI needs (~world-remove-component~
+etc.), and the embedded asset shell.
+
+* Backend
+
+** HTTP + WebSocket server (axum)
+
+Runs alongside the gRPC server on the same tokio runtime, separate
+port. Default ~8801~; CLI override ~--ui-port~.
+
+Endpoints:
+
+| Method | Path                       | Purpose                                                  |
+|--------+----------------------------+----------------------------------------------------------|
+| GET    | =/=                        | SPA shell (=index.html=)                                 |
+| GET    | =/assets/*=                | embedded JS/CSS/img                                      |
+| POST   | =/api/eval=                | run a Lisp expression, return result-or-error            |
+| GET    | =/api/topology=            | JSON snapshot of current World                           |
+| GET    | =/api/config=              | current Lisp source (entry-point + persisted overrides)  |
+| GET    | =/api/history?id=&metric=&window= | recent ring-buffer samples for one metric          |
+| GET    | =/api/pending=             | in-memory mutation log since last persist                |
+| POST   | =/api/persist=             | flush pending log to overrides file, clear log           |
+| POST   | =/api/discard=             | reset World + clear pending log (revert to last persist) |
+| WS     | =/ws/events=               | push channel: telemetry, version bumps, setpoint log     |
+
+Bind localhost-only by default. ~--ui-bind 0.0.0.0~ opt-in.
+
+** Lisp eval as the unifying mutation API
+
+The endpoint is dumb: take a string, hand it to the interpreter,
+return whatever comes back. The UI is responsible for synthesizing
+correct Lisp. Side effects:
+
+1. Run the expression on the running World.
+2. Append the verbatim source string to the *in-memory pending log*.
+3. Bump ~world_version~ and broadcast on the WebSocket.
+
+The pending log is server-global (not per-tab), so any open tab can
+inspect what's accumulated since the last persist via ~/api/pending~
+and any tab can hit ~/api/persist~ to flush it.
+
+Examples of what the UI sends:
+
+#+begin_src lisp
+;; Add a battery
+(make-battery :id 1100 :capacity 75000.0)
+
+;; Connect inverter 1001 to it
+(world-connect 1001 1100)
+
+;; Drop a component
+(world-remove-component 1006)
+
+;; Flip health
+(set-component-health 1003 'error)
+
+;; Edit a category default
+(setq battery-defaults (cons '(stream-jitter-pct . 12.0) battery-defaults))
+#+end_src
+
+Every accepted eval increments ~world_version: AtomicU64~; that bump
+is broadcast on the WebSocket so all open tabs refresh.
+
+** New defuns the UI needs
+
+| defun                                | shape                         | notes                                              |
+|--------------------------------------+-------------------------------+----------------------------------------------------|
+| ~(world-remove-component ID)~        | bool                          | drop from registry; cascade-disconnect edges       |
+| ~(world-disconnect PARENT CHILD)~    | bool                          | break a single edge                                |
+| ~(world-rename-component ID NAME)~   | bool                          | sets a name override; default name still derives   |
+| ~(world-list-component-ids)~         | list of int                   | for the topology snapshot endpoint                 |
+| ~(file-exists-p PATH)~               | bool                          | reusable utility                                   |
+| ~(load-overrides)~                   | bool                          | loads =config.ui-overrides.<microgrid-id>.lisp= if it exists; called from config.lisp |
+
+All small (~10 lines each) once the corresponding ~World::~ method
+exists.
+
+** Telemetry history store
+
+Per-component ring buffer keyed by metric. Sized for ~5–15 minutes at
+~1 Hz × ~10 metrics × ~50 components = a few MB. Lives on ~World~ as
+~Arc<Mutex<HashMap<u64, ComponentHistory>>>~. Per-tick the existing
+~telemetry()~ call also pushes into the ring buffer; the UI subscribes
+via WebSocket for new samples and ~/api/history~ for backfills.
+
+Metrics tracked: ~active_power_w~, ~reactive_power_var~, ~soc_pct~ (when
+applicable), per-phase voltages/currents, bound envelope (lower/upper
+pair). Setpoint events logged separately (see Control Inspector).
+
+** Concurrency model
+
+- Single ~tokio::sync::Mutex<TulispContext>~. Every ~/api/eval~ call,
+  every reload, every timer firing acquires it. Contention is bounded
+  (one developer, low write rate) and serialization is desirable
+  anyway.
+- WebSocket fan-out via ~tokio::sync::broadcast~ — one publisher
+  (telemetry sampler + version-bump notifier), N subscribers (open
+  tabs).
+- gRPC handlers do not touch the interpreter — they go through ~World~.
+  No contention there.
+
+* Frontend
+
+** SPA shape
+
+Vanilla JS, no framework. ~index.html~ + a couple of ~.js~ modules + CSS.
+Three panels:
+
+- *Left*: collapsible component tree (cytoscape's hierarchical layout
+  + a list view toggle).
+- *Center top*: topology canvas (cytoscape).
+- *Center bottom*: per-component charts for whichever node is selected
+  (uPlot).
+- *Right*: edit pane — auto-generated form for the selected
+  component's plist args + runtime knobs.
+- *Bottom drawer*: Lisp REPL panel (collapsible). Power-user fallback
+  for anything the UI doesn't expose.
+
+Bundling: ~rust-embed~ at compile time. Cytoscape ~600 KB, uPlot ~40
+KB, app shell ~50 KB. Total binary growth ~1 MB.
+
+** Topology editor (cytoscape.js)
+
+Drag from a left-side palette (one icon per component category) onto
+the canvas to add. Click-drag between two nodes to draw an edge.
+Right-click for delete. Each interaction emits a Lisp expression sent
+to ~/api/eval~.
+
+Edit forms are introspected from the per-category ~AsPlist!~ struct via
+a new ~/api/component-schema~ endpoint that lists each defun's args
+and their types. (Or hardcode the schema in JS for v1; introspection
+later.)
+
+** Charts (uPlot)
+
+For each selected component, render:
+
+- Active power (line), reactive power (line on second axis when
+  applicable).
+- SoC for batteries / EV chargers (line, 0–100).
+- Bounds envelope (filled area between lower/upper).
+- Setpoint markers overlaid as dots / vertical lines.
+
+Live updates push appended samples; selecting a longer window backfills
+via ~/api/history~.
+
+** Lisp REPL panel
+
+A textarea + "Eval" button. Sends raw Lisp to ~/api/eval~. Output
+streamed below. Doubles as the escape hatch for anything the visual
+editor can't express, and as a teaching tool ("the buttons just send
+this for you").
+
+* Persistence
+
+** ~build-topology~ + per-microgrid override file split
+
+#+begin_src lisp
+;; config.lisp — version-controlled, owned by the user
+(unless (boundp 'switchyard-loaded)
+  (setq switchyard-loaded t)
+  (load "sim/common.lisp"))
+
+(load "sim/defaults.lisp")
+(watch-file "sim/defaults.lisp")
+
+(set-microgrid-id 2200)
+(reset-state)
+;; … environment-animation timers …
+
+(defun build-topology ()
+  (make-grid
+   :id 1
+   :successors (list (make-meter :id 2 :successors (list ...)))))
+
+(build-topology)
+
+;; Replay UI edits the user has clicked "Persist" on. The override
+;; filename is parameterised by microgrid-id so multiple sims sharing a
+;; directory each get their own. (load-overrides) is a no-op if the
+;; file doesn't exist.
+(load-overrides)
+#+end_src
+
+The split:
+
+- ~build-topology~ is the canonical, *snapshottable* description of the
+  graph. The UI's "Compact" button rewrites just this defun's body —
+  surgical edit, no full-file regenerator needed.
+- ~config.ui-overrides.<microgrid-id>.lisp~ holds *persisted* UI
+  edits: runtime knobs, add/remove/connect operations, defaults
+  tweaks. Reload-safe; deleted when Compact runs.
+
+The function boundary marks ownership: the serializer knows it owns
+~build-topology~'s body and nothing else in ~config.lisp~. The
+microgrid-id in the override filename keeps multiple sims in the same
+working directory from clobbering each other's persisted state.
+
+** Persistence flow
+
+Mutations are *ephemeral* until the user clicks Persist. The model is:
+
+1. UI sends Lisp to ~/api/eval~ → World mutates immediately, expression
+   appended to in-memory pending log, version bumped, all tabs see the
+   new state.
+2. User keeps editing. Changes accumulate in the pending log.
+3. User clicks *Persist*. Server appends the pending log verbatim to
+   ~config.ui-overrides.<microgrid-id>.lisp~, then clears the log.
+4. User clicks *Discard* (alternative). Server clears the pending log,
+   triggers a reload — the World rebuilds from ~config.lisp~ + the
+   override file, dropping un-persisted changes.
+
+This means a developer can experiment freely (try a config, see what
+breaks, revert) and only commit edits they want to keep. Restart with
+no Persist == clean slate, no surprises in version control.
+
+** Override file format
+
+Each persist appends a header-commented block of expressions captured
+verbatim as the UI sent them. No pretty-printing for v1 — that's a
+future tulisp formatting-support hookup.
+
+#+begin_src lisp
+;; ── 2026-05-01T12:34:56Z ────────────────────────────────────
+(world-remove-component 1006)
+
+;; ── 2026-05-01T12:35:02Z ────────────────────────────────────
+(make-battery :id 1100 :capacity 75000.0)
+(world-connect 1003 1100)
+
+;; ── 2026-05-01T12:38:14Z ────────────────────────────────────
+(setq battery-defaults '((soc-protect-margin . 8.0) ...))
+#+end_src
+
+On reload, the file replays top-to-bottom after ~build-topology~ runs.
+Repeated ~setq~ of the same variable executes redundantly (older
+values overwritten by newer); wasteful but harmless. Compact removes
+the dups when run.
+
+** Compact (rewrite ~build-topology~ body)
+
+On demand: the UI POSTs ~/api/compact~. Server walks the World, emits
+a fresh ~build-topology~ body, replaces the existing defun in
+~config.lisp~ in place, deletes ~config.ui-overrides.<id>.lisp~.
+Phase 3.
+
+For the serializer, store the original ~AsPlist!~ args at registration:
+~World~ grows ~component_args: HashMap<u64, OriginalArgs>~ where
+~OriginalArgs~ is an enum over the seven Args structs. At compact time
+we read these back + traverse ~connections~ for ~:successors~ lists. No
+need for per-component ~to_lisp_args()~ methods.
+
+* Phasing
+
+Three releases, ~4 weeks total. Each ships standalone.
+
+** Phase 1 — server + read + REPL                            [~1.5 wks]
+:PROPERTIES:
+:STATE: TODO
+:END:
+
+- axum server, embedded asset shim, localhost bind.
+- ~/api/eval~, ~/api/topology~, ~/api/config~, ~/api/history~.
+- ~/ws/events~ broadcast.
+- Telemetry ring buffer in World.
+- SPA: read-only topology viewer (cytoscape, no editing yet) + per-
+  component charts (uPlot) + REPL panel.
+
+Already useful: power-user can mutate via REPL; visible feedback loop
+on the editor.
+
+** Phase 2 — visual editor                                   [~1.5 wks]
+:PROPERTIES:
+:STATE: TODO
+:END:
+
+- New defuns: ~world-remove-component~, ~world-disconnect~,
+  ~world-rename-component~, ~world-list-component-ids~,
+  ~file-exists-p~, ~load-overrides~.
+- Cytoscape interactivity: drag from palette, click-drag to connect,
+  right-click delete.
+- Per-component edit form (auto-generated from each Args struct).
+- Defaults editor pane (loads ~sim/defaults.lisp~, edits in place,
+  evals the new alist).
+- In-memory pending log + ~/api/persist~ + ~/api/discard~ +
+  ~config.ui-overrides.<microgrid-id>.lisp~ writer.
+- Persist / Discard buttons in the SPA chrome.
+
+This is the milestone the user asked for: click-driven editing with
+explicit save semantics.
+
+** Phase 3 — inspector + scenarios + compact                 [~1 wk]
+:PROPERTIES:
+:STATE: TODO
+:END:
+
+- Setpoint log (incoming gRPC requests + outcome) per component.
+- Setpoint overlay on the active-power chart.
+- Compact button → rewrite ~build-topology~ body, delete the
+  per-microgrid override file.
+- Named scenario save/load (write/read ~scenarios/<name>.lisp~ files).
+
+The differentiator: control engineers can see "I asked for X, the
+inverter clipped to Y because Z" at a glance.
+
+* Open questions
+
+- *Form auto-generation vs. hardcoded UI*: phase 2 needs an edit form
+  per component category. Auto-generating from the Rust ~AsPlist!~
+  schema (via a ~/api/component-schema~ endpoint) is cleaner long-term
+  but adds Rust-side reflection work. Hardcoding the seven forms in JS
+  is faster to ship. Recommend hardcode for v1, introspect later.
+- *Component naming*: currently auto-derived (~bat-1000~). UI rename
+  needs a name field + setter on every component. Worth doing in
+  phase 2 or skip?
+- *History TTL*: 5 minutes? 15? Per-metric tunable? Default 5 min,
+  ~--history-window 15min~ flag.
+
+* Decided micro-issues
+
+- Override filename: ~config.ui-overrides.<microgrid-id>.lisp~
+  (parameterised per-microgrid so multiple sims can coexist;
+  gitignored). Resolved by ~(load-overrides)~ at config.lisp load time.
+- Persist semantic: explicit *Persist* button, not append-on-edit.
+  Mutations live in an in-memory log until the user commits them. A
+  *Discard* button reverts the in-memory log + reloads.
+- Override-file formatting: dump expressions verbatim as the UI sent
+  them, with a timestamp comment per persist batch. Hook up tulisp's
+  pretty-printer when it lands upstream.
+- UI port: ~8801~. CLI override: ~--ui-port~.
+- Bind address: localhost. Override: ~--ui-bind~.
+- Asset embedding: ~rust-embed~. No JS framework; vanilla + cytoscape
+  + uPlot.
+- REPL is unsandboxed. Local-only single-developer == clear trust
+  boundary.
+- Serializer approach: store original args at registration (option b
+  in the design discussion).
+
+* Risks & footguns
+
+- *Interpreter mutex contention*: every UI eval + every reload + every
+  timer-driven mutation acquires the same lock. Should be fine for one
+  developer; document and revisit if it bites.
+- *Reload mid-edit*: if the user is mid-edit and the watcher fires
+  (config.lisp changed externally), pending UI edits get lost. Mitigation:
+  show a "stale topology — last reload was N seconds ago" banner.
+- *Multi-tab race*: two tabs editing the same component simultaneously
+  produce a "last write wins" outcome. The version bump propagates so
+  both tabs re-render to the new state; whichever lost gets a stale
+  form they can re-submit. Acceptable.
+- *Defaults edits accumulating in the override file*: harmless (idempotent
+  re-application) but the file grows. Compact addresses it.
