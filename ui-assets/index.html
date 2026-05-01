@@ -18,7 +18,7 @@
       <button id="scenarios-btn" class="hdr-btn">Scenarios</button>
       <button id="defaults-btn" class="hdr-btn">Defaults</button>
       <span id="pending-pill" class="pending-pill" hidden>
-        <span id="pending-count">0</span> unsaved
+        <span id="pending-count">0</span> overrides<span id="pending-dirty"></span>
       </span>
       <button id="discard-btn" class="hdr-btn" disabled>Discard</button>
       <button id="persist-btn" class="hdr-btn primary" disabled>Persist</button>
@@ -68,7 +68,7 @@
     <noscript>This UI requires JavaScript.</noscript>
     <dialog id="pending-dialog">
       <header>
-        <h3>Unsaved changes</h3>
+        <h3>Active overrides</h3>
         <button id="pending-dialog-close" type="button">×</button>
       </header>
       <div id="pending-dialog-content"></div>

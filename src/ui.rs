@@ -394,6 +394,10 @@ struct PendingResponse {
     /// Successful eval expressions accumulated since the last persist
     /// (or process start). Oldest first.
     entries: Vec<PendingEntryView>,
+    /// Approximate count of overrides already on disk in the
+    /// per-microgrid override file. Lets the chrome show
+    /// "N overrides" total even when nothing is currently unsaved.
+    persisted_count: usize,
 }
 
 fn format_entry(e: PendingEntry) -> PendingEntryView {
@@ -414,8 +418,12 @@ async fn pending(State(config): State<Config>) -> Json<PendingResponse> {
     // .trim_end() drops the formatter's file-style trailing newline
     // — the modal renders each entry in its own <pre>, an extra blank
     // line at the bottom would just look noisy.
+    let persisted_count = config.persisted_count();
     let entries = config.pending().into_iter().map(format_entry).collect();
-    Json(PendingResponse { entries })
+    Json(PendingResponse {
+        entries,
+        persisted_count,
+    })
 }
 
 async fn pending_remove(

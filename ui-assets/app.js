@@ -652,6 +652,7 @@ function setupPendingDialog() {
 function setupPersistControls() {
   const pill = document.getElementById("pending-pill");
   pill.addEventListener("click", showPendingDialog);
+  const dirty = document.getElementById("pending-dirty");
   const count = document.getElementById("pending-count");
   const persistBtn = document.getElementById("persist-btn");
   const discardBtn = document.getElementById("discard-btn");
@@ -660,11 +661,16 @@ function setupPersistControls() {
     try {
       const res = await fetch("/api/pending");
       const data = await res.json();
-      const n = data.entries.length;
-      count.textContent = n;
-      pill.hidden = n === 0;
-      persistBtn.disabled = n === 0;
-      discardBtn.disabled = n === 0;
+      const pending = data.entries.length;
+      const persisted = data.persisted_count || 0;
+      const total = pending + persisted;
+      // Pill shows total override count + a `*` (editor-style
+      // modified marker) when any are unsaved. Hidden when neither.
+      count.textContent = total;
+      dirty.textContent = pending > 0 ? "*" : "";
+      pill.hidden = total === 0;
+      persistBtn.disabled = pending === 0;
+      discardBtn.disabled = pending === 0;
     } catch (_) {
       // Best-effort — server unreachable just leaves last known state.
     }

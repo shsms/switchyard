@@ -224,6 +224,21 @@ impl Config {
         self.pending_log.lock().clone()
     }
 
+    /// Approximate count of overrides already persisted to
+    /// `config.ui-overrides.<microgrid-id>.lisp`. Implemented as
+    /// "number of persist-batch markers" (each Persist click writes
+    /// one `;; ── <ts> ──` header) — under-counts a batch with
+    /// multiple entries. Cheap, exact for the common case (one edit
+    /// per Persist), and good enough for the chrome's "N overrides"
+    /// pill to be a confidence signal.
+    pub fn persisted_count(&self) -> usize {
+        let path = self.overrides_path();
+        match fs::read_to_string(&path) {
+            Ok(content) => content.lines().filter(|l| l.starts_with(";; ──")).count(),
+            Err(_) => 0,
+        }
+    }
+
     /// Drop one pending entry by id and re-derive World state by
     /// reloading config.lisp + the override file, then re-evalling
     /// every remaining pending entry in order. Side effect: per-tick
