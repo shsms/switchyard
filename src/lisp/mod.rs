@@ -214,16 +214,36 @@ fn register_load_drivers(ctx: &mut TulispContext, world: World) {
     // `(every)` callback gives Lisp a way to drive any load curve
     // (computed from a function or interpolated from a CSV) without
     // teaching Rust how to read CSV files.
+    let w = world.clone();
     ctx.defun(
         "set-meter-power",
         move |id: i64, watts: f64| -> Result<bool, Error> {
-            match world.get(id as u64) {
+            match w.get(id as u64) {
                 Some(c) => {
                     c.set_active_power_override(watts as f32);
                     Ok(true)
                 }
                 None => Err(Error::invalid_argument(format!(
                     "set-meter-power: component {id} not found"
+                ))),
+            }
+        },
+    );
+
+    // Cloud-cover schedule: drive a solar inverter's `sunlight%` from
+    // a Lisp timer the same way `(set-meter-power)` drives a meter's
+    // fixed-power override. Per-tick `min-avail = rated-lower ×
+    // sunlight%/100` clamp picks up the new value on the next tick.
+    ctx.defun(
+        "set-solar-sunlight",
+        move |id: i64, pct: f64| -> Result<bool, Error> {
+            match world.get(id as u64) {
+                Some(c) => {
+                    c.set_sunlight_pct(pct as f32);
+                    Ok(true)
+                }
+                None => Err(Error::invalid_argument(format!(
+                    "set-solar-sunlight: component {id} not found"
                 ))),
             }
         },

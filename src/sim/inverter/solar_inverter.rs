@@ -234,6 +234,10 @@ impl SimulatedComponent for SolarInverter {
     fn effective_active_bounds(&self) -> Option<crate::sim::bounds::VecBounds> {
         Some(self.bounds.lock().effective())
     }
+
+    fn set_sunlight_pct(&self, pct: f32) {
+        SolarInverter::set_sunlight_pct(self, pct);
+    }
 }
 
 #[cfg(test)]

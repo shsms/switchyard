@@ -184,6 +184,12 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
     /// consumer load curve from a timer callback. Default no-op.
     fn set_active_power_override(&self, _p: f32) {}
 
+    /// Update the live cloud-cover percentage on a solar inverter.
+    /// Used by `(set-solar-sunlight id PCT)` to drive a cloud schedule
+    /// from a Lisp timer (the PV analogue of `set-meter-power` for
+    /// consumer load curves). Default no-op for non-solar components.
+    fn set_sunlight_pct(&self, _pct: f32) {}
+
     // ── bounds telemetry ─────────────────────────────────────────────
 
     /// Static rated active-power bounds (W). Used by
