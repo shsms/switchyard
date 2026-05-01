@@ -216,6 +216,29 @@ function clearCharts() {
 // the dropdown rather than offering a knob that does nothing.
 const ACCEPTS_SETPOINTS = new Set(["battery", "inverter", "ev-charger", "chp"]);
 
+// Per-category runtime knobs the inspector exposes as numeric
+// inputs. Each one binds to an existing Lisp setter — so this is
+// just UI sugar over what the REPL could already do. Construction-
+// time args (capacity, rated bounds, …) aren't here because most
+// aren't runtime-mutable on the underlying component yet.
+const KNOBS_BY_CATEGORY = {
+  meter: [{ label: "power override (W)", defun: "set-meter-power" }],
+  inverter: [
+    { label: "reactive PF limit", defun: "set-reactive-pf-limit" },
+    { label: "reactive apparent (VA)", defun: "set-reactive-apparent-va" },
+  ],
+};
+
+function knobsFor(d) {
+  const knobs = [...(KNOBS_BY_CATEGORY[d.category] || [])];
+  // Solar inverters also get a sunlight knob — driven by the same
+  // (set-solar-sunlight ID PCT) defun the cloud-curve timer uses.
+  if (d.category === "inverter" && d.subtype === "solar") {
+    knobs.unshift({ label: "sunlight (%)", defun: "set-solar-sunlight" });
+  }
+  return knobs;
+}
+
 function renderInspect(d, parentIds, childIds) {
   const renderEdgeRow = (id, dataAttr) => {
     const c = componentById.get(id);
@@ -244,6 +267,18 @@ function renderInspect(d, parentIds, childIds) {
         ? `<dt>commands</dt><dd>${selectField("command-mode", d.command_mode, ["normal", "timeout", "error"])}</dd>`
         : ""}
     </dl>
+    ${(() => {
+      const knobs = knobsFor(d);
+      if (!knobs.length) return "";
+      return `<h3>Knobs</h3><dl>${knobs
+        .map(
+          (k) => `<dt>${escapeHtml(k.label)}</dt><dd>
+            <input type="number" step="any" class="knob-input"
+                   data-defun="${k.defun}" placeholder="value" />
+          </dd>`,
+        )
+        .join("")}</dl>`;
+    })()}
     <h3>Connections</h3>
     <div class="conns">
       <div><strong>parents</strong><ul>${parentList}</ul></div>
@@ -269,6 +304,19 @@ function renderInspect(d, parentIds, childIds) {
     if (!sel) continue; // dropdown hidden for this category
     sel.addEventListener("change", (e) => {
       evalQuoted(`(${defun} ${d.id} '${e.target.value})`);
+    });
+  }
+  // Numeric knob inputs: change (or Enter then blur) → eval the
+  // setter with the typed value; then clear so the field reads as
+  // "what would you set it to next" rather than "what's it set to
+  // now" (we don't have getters for most of these, and stale values
+  // would mislead).
+  for (const inp of inspectEl.querySelectorAll(".knob-input")) {
+    inp.addEventListener("change", (e) => {
+      const v = e.target.value.trim();
+      if (v === "") return;
+      evalQuoted(`(${e.target.dataset.defun} ${d.id} ${v})`);
+      e.target.value = "";
     });
   }
   for (const btn of inspectEl.querySelectorAll("[data-disconnect-from]")) {

@@ -342,6 +342,19 @@ main {
 }
 #side select[data-knob]:focus { outline: 1px solid var(--accent); }
 
+#side .knob-input {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 4px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  width: 100%;
+  box-sizing: border-box;
+}
+#side .knob-input:focus { outline: 1px solid var(--accent); }
+
 .conns {
   display: grid;
   grid-template-columns: 1fr 1fr;
