@@ -391,6 +391,30 @@ main {
 }
 .link-btn:hover { background: var(--bg); border-radius: 3px; }
 
+.overrides-list {
+  list-style: none;
+  padding: 0;
+  margin: 0.25rem 0 0;
+}
+.overrides-list li {
+  display: grid;
+  grid-template-columns: 1fr 24px;
+  gap: 0.5rem;
+  align-items: start;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+}
+.overrides-list pre {
+  margin: 0;
+  font-size: 12px;
+  background: var(--bg);
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .defaults-entry {
   margin-bottom: 0.75rem;
 }

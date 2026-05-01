@@ -239,7 +239,7 @@ function knobsFor(d) {
   return knobs;
 }
 
-function renderInspect(d, parentIds, childIds) {
+function renderInspect(d, parentIds, childIds, overrides = []) {
   const renderEdgeRow = (id, dataAttr) => {
     const c = componentById.get(id);
     const label = c ? c.name : `id ${id}`;
@@ -279,6 +279,17 @@ function renderInspect(d, parentIds, childIds) {
         )
         .join("")}</dl>`;
     })()}
+    ${overrides.length
+      ? `<h3>Current overrides</h3>
+         <ul class="overrides-list">${overrides
+           .map(
+             (e) => `<li>
+               <pre>${escapeHtml(e.source)}</pre>
+               <button class="link-btn" data-undo="${e.id}" title="Remove this override">✕</button>
+             </li>`,
+           )
+           .join("")}</ul>`
+      : ""}
     <h3>Connections</h3>
     <div class="conns">
       <div><strong>parents</strong><ul>${parentList}</ul></div>
@@ -293,7 +304,9 @@ function renderInspect(d, parentIds, childIds) {
   document.getElementById("rename").addEventListener("change", (e) => {
     const name = e.target.value.trim();
     if (!name) return;
-    evalQuoted(`(world-rename-component ${d.id} "${jsToLispString(name)}")`);
+    evalQuoted(`(world-rename-component ${d.id} "${jsToLispString(name)}")`, {
+      affects: d.id,
+    });
   });
   for (const [key, defun] of [
     ["health", "set-component-health"],
@@ -303,7 +316,7 @@ function renderInspect(d, parentIds, childIds) {
     const sel = inspectEl.querySelector(`select[data-knob="${key}"]`);
     if (!sel) continue; // dropdown hidden for this category
     sel.addEventListener("change", (e) => {
-      evalQuoted(`(${defun} ${d.id} '${e.target.value})`);
+      evalQuoted(`(${defun} ${d.id} '${e.target.value})`, { affects: d.id });
     });
   }
   // Numeric knob inputs: change (or Enter then blur) → eval the
@@ -315,18 +328,35 @@ function renderInspect(d, parentIds, childIds) {
     inp.addEventListener("change", (e) => {
       const v = e.target.value.trim();
       if (v === "") return;
-      evalQuoted(`(${e.target.dataset.defun} ${d.id} ${v})`);
+      evalQuoted(`(${e.target.dataset.defun} ${d.id} ${v})`, { affects: d.id });
       e.target.value = "";
+    });
+  }
+  // Override removal: DELETE /api/pending/<id>. The server replays
+  // remaining edits + bumps world-version; the WS topology event
+  // re-runs showComponent, which re-fetches /api/pending and the
+  // override drops out of the list.
+  for (const btn of inspectEl.querySelectorAll("[data-undo]")) {
+    btn.addEventListener("click", async () => {
+      const id = btn.dataset.undo;
+      const res = await fetch(`/api/pending/${id}`, { method: "DELETE" });
+      if (!res.ok) alert(`Remove failed: ${res.status} ${await res.text()}`);
     });
   }
   for (const btn of inspectEl.querySelectorAll("[data-disconnect-from]")) {
     btn.addEventListener("click", () =>
-      evalQuoted(`(world-disconnect ${btn.dataset.disconnectFrom} ${d.id})`),
+      evalQuoted(
+        `(world-disconnect ${btn.dataset.disconnectFrom} ${d.id})`,
+        { affects: d.id },
+      ),
     );
   }
   for (const btn of inspectEl.querySelectorAll("[data-disconnect-to]")) {
     btn.addEventListener("click", () =>
-      evalQuoted(`(world-disconnect ${d.id} ${btn.dataset.disconnectTo})`),
+      evalQuoted(
+        `(world-disconnect ${d.id} ${btn.dataset.disconnectTo})`,
+        { affects: d.id },
+      ),
     );
   }
 }
@@ -344,8 +374,14 @@ function jsToLispString(s) {
   return s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
-async function evalQuoted(expr) {
-  const res = await fetch("/api/eval", { method: "POST", body: expr });
+async function evalQuoted(expr, opts = {}) {
+  // `affects: <id>` tags the resulting pending entry so the
+  // inspector can show "current overrides on component X" without
+  // parsing the source string. Untagged evals (REPL, defaults
+  // editor) just go without the query param.
+  const url =
+    "/api/eval" + (opts.affects != null ? `?affects=${opts.affects}` : "");
+  const res = await fetch(url, { method: "POST", body: expr });
   // res.json() can throw "JSON.parse: unexpected character" if the
   // server returned an empty / non-JSON body (e.g. a 5xx with HTML
   // error page, or a connection that died mid-response). Surface the
@@ -376,7 +412,15 @@ async function showComponent(d) {
   // resolved by renderInspect via componentById lookups.
   const parentIds = network ? network.getConnectedNodes(d.id, "from") : [];
   const childIds = network ? network.getConnectedNodes(d.id, "to") : [];
-  renderInspect(d, parentIds, childIds);
+  // Pending entries that target this component — shown as
+  // "Current overrides" with their own ✕ buttons. Failures here
+  // are non-fatal; the inspector still renders without the section.
+  let overrides = [];
+  try {
+    const pending = await (await fetch("/api/pending")).json();
+    overrides = pending.entries.filter((e) => e.affects === d.id);
+  } catch (_) {}
+  renderInspect(d, parentIds, childIds, overrides);
 
   const metrics = CHARTS_BY_CATEGORY[d.category] || [];
   const container = document.getElementById("charts");
@@ -933,7 +977,7 @@ function applyTopology(topology) {
       const c = componentById.get(id);
       if (!c) return;
       if (!confirm(`Delete ${c.name} (id ${c.id})?`)) return;
-      fetch("/api/eval", {
+      fetch(`/api/eval?affects=${c.id}`, {
         method: "POST",
         body: `(world-remove-component ${c.id})`,
       })
