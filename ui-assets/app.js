@@ -125,8 +125,78 @@ function getCss(name) {
 
 // Live-chart state for whichever component the user has selected.
 // Replaced wholesale on every selection change; the previous uPlots
-// get destroyed in clearCharts.
-let activeCharts = null;
+// get destroyed in clear(). All access to the per-selection chart
+// session goes through this module so the surrounding code never
+// has to spell out the "is the right component selected, has the
+// metric been wired" preconditions for the live push paths.
+const liveCharts = (() => {
+  let active = null; // { id, charts: Map<metric, {plot, xs, ys, scale}> }
+  return {
+    set(id, charts) {
+      active = { id, charts };
+    },
+    clear() {
+      if (!active) return;
+      for (const ch of active.charts.values()) ch.plot.destroy();
+      active = null;
+    },
+    pushSample(id, metric, ts_ms, value) {
+      if (!active || active.id !== Number(id)) return;
+      const series = active.charts.get(metric);
+      if (!series) return;
+      series.xs.push(ts_ms / 1000);
+      // Apply the chart's chosen unit scale so live samples stay
+      // consistent with the backfilled ones.
+      series.ys.push(value / series.scale.div);
+      // Cap to 5-minute window so the chart doesn't grow forever.
+      const cutoff = Date.now() / 1000 - 300;
+      while (series.xs.length && series.xs[0] < cutoff) {
+        series.xs.shift();
+        series.ys.shift();
+      }
+      series.plot.setData([series.xs, series.ys]);
+    },
+    pushSetpoint(ev) {
+      // Only render if the event is for the currently-inspected
+      // component; otherwise it'll be picked up next time the user
+      // selects that node (the server's per-component log is the
+      // source of truth).
+      if (!active || active.id !== Number(ev.id)) return;
+      const list = inspectEl.querySelector(".sp-list");
+      if (!list) return;
+      // Drop the "none" placeholder if it's still showing.
+      const empty = list.querySelector(".sp-empty");
+      if (empty) empty.remove();
+      const li = document.createElement("li");
+      li.className = "sp-event " + (ev.accepted ? "accepted" : "rejected");
+      const ts = new Date(ev.ts_ms).toLocaleTimeString();
+      // The WS event carries the setpoint kind on `setpoint_kind`
+      // to dodge collision with the WorldEvent discriminator (also
+      // called `kind`).
+      const tag = ev.setpoint_kind.replace("_", " ");
+      const head = `<span class="sp-ts">${ts}</span> <span class="sp-tag">${tag}</span> <span class="sp-val">${ev.value}</span>`;
+      const body = ev.accepted
+        ? '<span class="sp-ok">✓ accepted</span>'
+        : `<span class="sp-bad">✕ ${escapeHtml(ev.reason || "")}</span>`;
+      li.innerHTML = `${head}<br/>${body}`;
+      list.prepend(li);
+      // Trim if the list is getting long — match the 600s window
+      // used by the initial fetch.
+      while (list.children.length > 100) list.removeChild(list.lastChild);
+    },
+    refit() {
+      if (!active) return;
+      for (const series of active.charts.values()) {
+        const parent = series.plot.root.parentElement;
+        if (!parent) continue;
+        series.plot.setSize({
+          width: parent.clientWidth,
+          height: 140,
+        });
+      }
+    },
+  };
+})();
 
 // vis-network instance + DataSets — module-scoped so the WS
 // topology-changed handler can refresh in place without tearing
@@ -264,11 +334,6 @@ const visOptions = {
   },
 };
 
-function clearCharts() {
-  if (!activeCharts) return;
-  for (const ch of activeCharts.charts.values()) ch.plot.destroy();
-  activeCharts = null;
-}
 
 // Categories that the gRPC server actually accepts setpoints on.
 // command-mode (timeout / error fault simulation) only makes sense
@@ -468,7 +533,7 @@ async function evalQuoted(expr, opts = {}) {
 
 async function showComponent(d) {
   if (!d) return;
-  clearCharts();
+  liveCharts.clear();
 
   // vis-network's getConnectedNodes(id, direction) returns the
   // ids on either side of the selected node — cheaper than walking
@@ -502,7 +567,7 @@ async function showComponent(d) {
     // live push path can append by dividing each new sample once.
     charts.set(metric, { plot, xs, ys: ys.map((y) => y / scale.div), scale });
   }
-  activeCharts = { id: d.id, charts };
+  liveCharts.set(d.id, charts);
 
   // Setpoint events: list recent control-app requests + outcome
   // below the charts. Live-overlay markers on the chart are a
@@ -582,54 +647,8 @@ function makePlot(container, metric, xs, ys) {
   return { plot: new uPlot(opts, [xs, scaledYs], container), scale };
 }
 
-function pushSetpoint(ev) {
-  // Only render if the event is for the currently-inspected
-  // component; otherwise it'll be picked up next time the user
-  // selects that node (the server's per-component log is the source
-  // of truth).
-  if (!activeCharts || activeCharts.id !== Number(ev.id)) return;
-  const list = inspectEl.querySelector(".sp-list");
-  if (!list) return;
-  // Drop the "none" placeholder if it's still showing.
-  const empty = list.querySelector(".sp-empty");
-  if (empty) empty.remove();
-  const li = document.createElement("li");
-  li.className = "sp-event " + (ev.accepted ? "accepted" : "rejected");
-  const ts = new Date(ev.ts_ms).toLocaleTimeString();
-  // The WS event carries the setpoint kind on `setpoint_kind` to
-  // dodge collision with the WorldEvent discriminator (also called
-  // `kind`).
-  const tag = ev.setpoint_kind.replace("_", " ");
-  const head = `<span class="sp-ts">${ts}</span> <span class="sp-tag">${tag}</span> <span class="sp-val">${ev.value}</span>`;
-  const body = ev.accepted
-    ? '<span class="sp-ok">✓ accepted</span>'
-    : `<span class="sp-bad">✕ ${escapeHtml(ev.reason || "")}</span>`;
-  li.innerHTML = `${head}<br/>${body}`;
-  list.prepend(li);
-  // Trim if the list is getting long — match the 600s window used
-  // by the initial fetch.
-  while (list.children.length > 100) list.removeChild(list.lastChild);
-}
-
-function pushSample(id, metric, ts_ms, value) {
-  if (!activeCharts || activeCharts.id !== Number(id)) return;
-  const series = activeCharts.charts.get(metric);
-  if (!series) return;
-  series.xs.push(ts_ms / 1000);
-  // Apply the chart's chosen unit scale so live samples stay
-  // consistent with the backfilled ones.
-  series.ys.push(value / series.scale.div);
-  // Cap to 5-minute window so the chart doesn't grow forever.
-  const cutoff = Date.now() / 1000 - 300;
-  while (series.xs.length && series.xs[0] < cutoff) {
-    series.xs.shift();
-    series.ys.shift();
-  }
-  series.plot.setData([series.xs, series.ys]);
-}
-
 function clearSide() {
-  clearCharts();
+  liveCharts.clear();
   inspectEl.innerHTML =
     '<p class="hint">Click a node to inspect. Right-click to delete.</p>';
 }
@@ -999,17 +1018,7 @@ function setupDrawerSplitter() {
   });
 }
 
-function refitCharts() {
-  if (!activeCharts) return;
-  for (const series of activeCharts.charts.values()) {
-    const parent = series.plot.root.parentElement;
-    if (!parent) continue;
-    series.plot.setSize({
-      width: parent.clientWidth,
-      height: 140,
-    });
-  }
-}
+const refitCharts = () => liveCharts.refit();
 
 // Log panel above the REPL. /api/logs gives the load-time backfill
 // (ring of recent records); /ws/events kind:"log" appends each new
@@ -1318,11 +1327,11 @@ function openWebSocket(onTopologyChanged) {
       return;
     }
     if (ev.kind === "sample") {
-      pushSample(ev.id, ev.metric, ev.ts_ms, ev.value);
+      liveCharts.pushSample(ev.id, ev.metric, ev.ts_ms, ev.value);
     } else if (ev.kind === "topology_changed") {
       onTopologyChanged(ev.version);
     } else if (ev.kind === "setpoint") {
-      pushSetpoint(ev);
+      liveCharts.pushSetpoint(ev);
     } else if (ev.kind === "log") {
       appendLog(ev);
     }
