@@ -52,6 +52,23 @@ AsPlist! {
         health<":health">: Option<LispLabel> {= None},
         telemetry_mode<":telemetry-mode">: Option<LispLabel> {= None},
         command_mode<":command-mode">: Option<LispLabel> {= None},
+        config<":config">: Option<LispValue> {= None},
+    }
+}
+
+AsAlist! {
+    /// Per-category defaults for `(make-meter)`. Mirrors `MeterArgs`
+    /// minus per-component identity / topology (`id`, `successors`,
+    /// `hidden`).
+    #[derive(Default)]
+    pub struct MeterDefaults {
+        interval: Option<i64> {= None},
+        power: Option<f64> {= None},
+        reactive_power<"reactive-power">: Option<f64> {= None},
+        stream_jitter_pct<"stream-jitter-pct">: Option<f64> {= None},
+        health: Option<LispLabel> {= None},
+        telemetry_mode<"telemetry-mode">: Option<LispLabel> {= None},
+        command_mode<"command-mode">: Option<LispLabel> {= None},
     }
 }
 
@@ -225,41 +242,47 @@ pub fn register(ctx: &mut TulispContext, world: World) {
     });
 
     let w = world.clone();
-    ctx.defun("make-meter", move |args: Plist<MeterArgs>| {
-        let a = args.into_inner();
-        let id = id_or_next(&w, a.id);
-        let interval = ms_to_duration(a.interval, 1000);
-        let succ_ids: Vec<u64> = a
-            .successors
-            .as_ref()
-            .map(|v| v.iter().map(|h| h.id()).collect())
-            .unwrap_or_default();
-        let hidden = a.hidden.unwrap_or(false);
-        let meter = Meter::new(
-            id,
-            interval,
-            succ_ids,
-            a.power.map(|p| p as f32),
-            a.stream_jitter_pct.unwrap_or(0.0) as f32,
-            hidden,
-        );
-        let h = register_with_modes(
-            &w,
-            meter,
-            a.health.as_ref(),
-            a.telemetry_mode.as_ref(),
-            a.command_mode.as_ref(),
-        )?;
-        // Hidden meters: their *outgoing* edges (to children) are
-        // suppressed too, mirroring microsim. The handle-side filter
-        // in connect_successors elsewhere skips edges *into* hidden
-        // children — so a hidden meter is invisible in both directions
-        // while still aggregating into its parent.
-        if !hidden {
-            connect_successors(&w, id, &a.successors);
-        }
-        Ok::<_, Error>(h)
-    });
+    ctx.defun(
+        "make-meter",
+        move |ctx: &mut TulispContext, args: Plist<MeterArgs>| {
+            let a = args.into_inner();
+            let d = parse_defaults::<MeterDefaults>(ctx, a.config.as_ref())?;
+            let id = id_or_next(&w, a.id);
+            let interval = ms_to_duration(a.interval.or(d.interval), 1000);
+            let succ_ids: Vec<u64> = a
+                .successors
+                .as_ref()
+                .map(|v| v.iter().map(|h| h.id()).collect())
+                .unwrap_or_default();
+            let hidden = a.hidden.unwrap_or(false);
+            let meter = Meter::new(
+                id,
+                interval,
+                succ_ids,
+                a.power.or(d.power).map(|p| p as f32),
+                a.stream_jitter_pct
+                    .or(d.stream_jitter_pct)
+                    .unwrap_or(0.0) as f32,
+                hidden,
+            );
+            let h = register_with_modes(
+                &w,
+                meter,
+                a.health.as_ref().or(d.health.as_ref()),
+                a.telemetry_mode.as_ref().or(d.telemetry_mode.as_ref()),
+                a.command_mode.as_ref().or(d.command_mode.as_ref()),
+            )?;
+            // Hidden meters: their *outgoing* edges (to children) are
+            // suppressed too, mirroring microsim. The handle-side filter
+            // in connect_successors elsewhere skips edges *into* hidden
+            // children — so a hidden meter is invisible in both directions
+            // while still aggregating into its parent.
+            if !hidden {
+                connect_successors(&w, id, &a.successors);
+            }
+            Ok::<_, Error>(h)
+        },
+    );
 
     let w = world.clone();
     ctx.defun(
