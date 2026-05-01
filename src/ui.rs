@@ -9,15 +9,17 @@ use std::net::SocketAddr;
 
 use axum::{
     Json, Router,
+    body::Body,
     extract::{
-        Query, State,
+        Path, Query, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
-    http::StatusCode,
-    response::IntoResponse,
+    http::{HeaderValue, StatusCode, header},
+    response::{IntoResponse, Response},
     routing::{get, post},
 };
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
+use rust_embed::Embed;
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast::error::RecvError;
 
@@ -25,6 +27,14 @@ use crate::{
     lisp::Config,
     sim::{Category, history::Metric},
 };
+
+/// Embedded SPA assets. In debug builds rust-embed reads from the
+/// `ui-assets/` folder live (so `cargo run` picks up edits without
+/// rebuilding); in release builds the files are baked into the
+/// binary so distribution stays single-file.
+#[derive(Embed)]
+#[folder = "ui-assets/"]
+struct Assets;
 
 /// Spawn the UI HTTP server on `addr`. Returns once the listener is
 /// bound and accepting connections; the server itself runs to
@@ -41,7 +51,8 @@ pub async fn serve(addr: SocketAddr, config: Config) -> Result<(), std::io::Erro
 
 fn router(config: Config) -> Router {
     Router::new()
-        .route("/", get(placeholder_index))
+        .route("/", get(index))
+        .route("/assets/{*path}", get(asset))
         .route("/api/topology", get(topology))
         .route("/api/eval", post(eval))
         .route("/api/history", get(history))
@@ -49,10 +60,40 @@ fn router(config: Config) -> Router {
         .with_state(config)
 }
 
-/// Phase-1 placeholder. Replaced by the embedded SPA shell when the
-/// rust-embed assets land.
-async fn placeholder_index() -> &'static str {
-    "switchyard UI — phase 1 scaffold. SPA assets land in a later commit."
+async fn index() -> Response {
+    serve_embedded("index.html")
+}
+
+async fn asset(Path(path): Path<String>) -> Response {
+    serve_embedded(&path)
+}
+
+fn serve_embedded(path: &str) -> Response {
+    match Assets::get(path) {
+        Some(content) => {
+            let mime = mime_for(path);
+            (
+                [(header::CONTENT_TYPE, HeaderValue::from_static(mime))],
+                Body::from(content.data.into_owned()),
+            )
+                .into_response()
+        }
+        None => (StatusCode::NOT_FOUND, format!("asset not found: {path}")).into_response(),
+    }
+}
+
+fn mime_for(path: &str) -> &'static str {
+    let ext = path.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
+    match ext {
+        "html" => "text/html; charset=utf-8",
+        "css" => "text/css; charset=utf-8",
+        "js" | "mjs" => "application/javascript; charset=utf-8",
+        "json" => "application/json",
+        "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "ico" => "image/x-icon",
+        _ => "application/octet-stream",
+    }
 }
 
 #[derive(Serialize)]
@@ -325,11 +366,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn placeholder_route_responds() {
+    async fn index_serves_embedded_shell() {
         let cfg = config_with("").await;
         let (status, body) = call(cfg, get("/")).await;
         assert_eq!(status, StatusCode::OK);
-        assert!(String::from_utf8_lossy(&body).contains("switchyard UI"));
+        let s = String::from_utf8_lossy(&body);
+        assert!(s.contains("<title>switchyard</title>"));
+        assert!(s.contains("/assets/app.js"));
+    }
+
+    #[tokio::test]
+    async fn asset_route_serves_embedded_files() {
+        let cfg = config_with("").await;
+        let (status, body) = call(cfg, get("/assets/app.js")).await;
+        assert_eq!(status, StatusCode::OK);
+        // app.js's first line is a comment we wrote — anchors the
+        // test against actually serving the right file.
+        assert!(String::from_utf8_lossy(&body).contains("Phase-1 SPA entry point"));
+    }
+
+    #[tokio::test]
+    async fn asset_route_404s_unknown_path() {
+        let cfg = config_with("").await;
+        let (status, _) = call(cfg, get("/assets/does-not-exist.js")).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
