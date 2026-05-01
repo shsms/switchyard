@@ -29,6 +29,17 @@ impl std::fmt::Display for LispLabel {
     }
 }
 
+/// Round-trip back to Lisp as a string. Required by `AsPlist!` because
+/// it generates an `into_plist` direction for every field; we never
+/// actually call it for these `make-*` arg structs, but the trait bound
+/// has to hold. String is the safer choice — it preserves the stored
+/// name verbatim without depending on a `TulispContext` to intern it.
+impl From<LispLabel> for TulispObject {
+    fn from(l: LispLabel) -> Self {
+        l.0.into()
+    }
+}
+
 impl TryFrom<TulispObject> for LispLabel {
     type Error = Error;
     fn try_from(value: TulispObject) -> Result<Self, Self::Error> {
