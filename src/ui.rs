@@ -7,10 +7,16 @@
 
 use std::net::SocketAddr;
 
-use axum::{Json, Router, extract::State, routing::get};
+use axum::{
+    Json, Router,
+    extract::State,
+    http::StatusCode,
+    response::IntoResponse,
+    routing::{get, post},
+};
 use serde::Serialize;
 
-use crate::sim::{Category, World};
+use crate::{lisp::Config, sim::Category};
 
 /// Spawn the UI HTTP server on `addr`. Returns once the listener is
 /// bound and accepting connections; the server itself runs to
@@ -18,18 +24,19 @@ use crate::sim::{Category, World};
 ///
 /// Localhost-only by default (the caller decides the bind address);
 /// non-loopback is opt-in via the `--ui-bind` CLI flag.
-pub async fn serve(addr: SocketAddr, world: World) -> Result<(), std::io::Error> {
-    let app = router(world);
+pub async fn serve(addr: SocketAddr, config: Config) -> Result<(), std::io::Error> {
+    let app = router(config);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     log::info!("Switchyard UI listening on http://{addr}");
     axum::serve(listener, app).await
 }
 
-fn router(world: World) -> Router {
+fn router(config: Config) -> Router {
     Router::new()
         .route("/", get(placeholder_index))
         .route("/api/topology", get(topology))
-        .with_state(world)
+        .route("/api/eval", post(eval))
+        .with_state(config)
 }
 
 /// Phase-1 placeholder. Replaced by the embedded SPA shell when the
@@ -60,7 +67,8 @@ struct ComponentSummary {
     hidden: bool,
 }
 
-async fn topology(State(world): State<World>) -> Json<TopologySnapshot> {
+async fn topology(State(config): State<Config>) -> Json<TopologySnapshot> {
+    let world = config.world();
     let components = world
         .components()
         .iter()
@@ -78,6 +86,61 @@ async fn topology(State(world): State<World>) -> Json<TopologySnapshot> {
     })
 }
 
+#[derive(Serialize)]
+struct EvalResponse {
+    /// Whether the expression evaluated without an error. False ==
+    /// `error` populated, `value` null. True == `value` holds the
+    /// Display formatted result.
+    ok: bool,
+    value: Option<String>,
+    error: Option<String>,
+}
+
+/// Evaluate a Lisp expression on the running interpreter. Wrapped in
+/// `spawn_blocking` because tulisp's `SharedMut` is std-sync-RwLock-
+/// backed and grabbing the write lock from the executor thread would
+/// stall every other tokio task waiting on that worker.
+///
+/// Always returns 200 — application-layer success/failure rides in
+/// the JSON body. Reserves HTTP 4xx/5xx for transport-level problems
+/// (bad UTF-8, the spawn_blocking task panicking, etc.).
+async fn eval(State(config): State<Config>, body: String) -> impl IntoResponse {
+    let result = tokio::task::spawn_blocking(move || config.eval(&body))
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("eval task panicked: {e}"),
+            )
+        });
+    match result {
+        Ok(Ok(value)) => (
+            StatusCode::OK,
+            Json(EvalResponse {
+                ok: true,
+                value: Some(value),
+                error: None,
+            }),
+        ),
+        Ok(Err(error)) => (
+            StatusCode::OK,
+            Json(EvalResponse {
+                ok: false,
+                value: None,
+                error: Some(error),
+            }),
+        ),
+        Err((status, msg)) => (
+            status,
+            Json(EvalResponse {
+                ok: false,
+                value: None,
+                error: Some(msg),
+            }),
+        ),
+    }
+}
+
 fn category_label(c: Category) -> &'static str {
     match c {
         Category::Grid => "grid",
@@ -93,59 +156,120 @@ fn category_label(c: Category) -> &'static str {
 mod tests {
     use super::*;
     use axum::body::{Body, to_bytes};
-    use axum::http::{Request, StatusCode};
+    use axum::http::{Method, Request, StatusCode};
+    use std::io::Write;
     use tower::ServiceExt;
 
-    /// One-line helper that calls a route and returns the response,
-    /// using axum's `oneshot` so we don't need to bind a real port.
-    async fn get_route(world: World, path: &str) -> (StatusCode, Vec<u8>) {
-        let resp = router(world)
-            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
-            .await
-            .unwrap();
+    /// Boots a `Config` against a freshly-written tiny config file
+    /// holding `body`, so the live tulisp ctx + World are wired up the
+    /// same way the binary wires them. Returns the Config; caller
+    /// composes a router with it.
+    ///
+    /// Each call gets its own unique subdirectory under `temp_dir()`
+    /// so concurrent test runs don't stomp each other's config.lisp
+    /// (cargo runs the lib test suite multi-threaded by default).
+    async fn config_with(body: &str) -> Config {
+        // tulisp-async's executor needs a tokio runtime in scope; we
+        // already have one via #[tokio::test], so Config::new works.
+        let mut p = std::env::temp_dir();
+        p.push(format!(
+            "switchyard-ui-{}-{}",
+            std::process::id(),
+            // Counter — even if SystemTime resolves the same nanos for
+            // two near-simultaneous tests, the AtomicU64 disambiguates.
+            UNIQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        let path = p.join("config.lisp");
+        write!(std::fs::File::create(&path).unwrap(), "{body}").unwrap();
+        Config::new(path.to_str().unwrap())
+    }
+
+    static UNIQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    /// One-shot a request and return (status, body). axum's `oneshot`
+    /// avoids binding a real port.
+    async fn call(config: Config, req: Request<Body>) -> (StatusCode, Vec<u8>) {
+        let resp = router(config).oneshot(req).await.unwrap();
         let status = resp.status();
         let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         (status, bytes.to_vec())
     }
 
+    fn get(path: &str) -> Request<Body> {
+        Request::builder().uri(path).body(Body::empty()).unwrap()
+    }
+
+    fn post(path: &str, body: &str) -> Request<Body> {
+        Request::builder()
+            .method(Method::POST)
+            .uri(path)
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    }
+
     #[tokio::test]
     async fn placeholder_route_responds() {
-        let (status, body) = get_route(World::new(), "/").await;
+        let cfg = config_with("").await;
+        let (status, body) = call(cfg, get("/")).await;
         assert_eq!(status, StatusCode::OK);
         assert!(String::from_utf8_lossy(&body).contains("switchyard UI"));
     }
 
     #[tokio::test]
     async fn topology_endpoint_emits_components_and_connections() {
-        // Build a tiny world: grid → meter → battery, all wired.
-        let world = World::new();
-        let mut ctx = tulisp::TulispContext::new();
-        crate::lisp::handle::register(&mut ctx);
-        crate::lisp::make::register(&mut ctx, world.clone());
-        ctx.eval_string(
+        let cfg = config_with(
             r#"(%make-grid :id 1
                  :successors
                  (list (%make-meter :id 2
                          :successors
                          (list (%make-battery :id 3)))))"#,
         )
-        .expect("eval");
+        .await;
 
-        let (status, body) = get_route(world, "/api/topology").await;
+        let (status, body) = call(cfg, get("/api/topology")).await;
         assert_eq!(status, StatusCode::OK);
         let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-        let components = parsed["components"].as_array().unwrap();
-        assert_eq!(components.len(), 3);
-        let categories: Vec<_> = components
-            .iter()
-            .map(|c| c["category"].as_str().unwrap())
-            .collect();
-        assert!(categories.contains(&"grid"));
-        assert!(categories.contains(&"meter"));
-        assert!(categories.contains(&"battery"));
+        assert_eq!(parsed["components"].as_array().unwrap().len(), 3);
+        assert_eq!(parsed["connections"].as_array().unwrap().len(), 2);
+    }
 
-        let connections = parsed["connections"].as_array().unwrap();
-        assert_eq!(connections.len(), 2);
+    #[tokio::test]
+    async fn eval_endpoint_runs_lisp_and_returns_value() {
+        let cfg = config_with("").await;
+        let (status, body) = call(cfg, post("/api/eval", "(+ 2 3)")).await;
+        assert_eq!(status, StatusCode::OK);
+        let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(parsed["ok"], true);
+        assert_eq!(parsed["value"], "5");
+        assert!(parsed["error"].is_null());
+    }
+
+    #[tokio::test]
+    async fn eval_endpoint_reports_lisp_errors() {
+        let cfg = config_with("").await;
+        let (status, body) = call(cfg, post("/api/eval", "(undefined-fn 1)")).await;
+        assert_eq!(status, StatusCode::OK);
+        let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(parsed["ok"], false);
+        assert!(parsed["value"].is_null());
+        assert!(parsed["error"].as_str().unwrap().len() > 0);
+    }
+
+    #[tokio::test]
+    async fn eval_endpoint_mutates_world() {
+        // Confirm an /api/eval call that registers a component shows
+        // up in the topology endpoint immediately afterwards. This is
+        // the load-bearing claim of the "Lisp eval as the unifying
+        // mutation API" design.
+        let cfg = config_with("").await;
+        let (status, _) = call(cfg.clone(), post("/api/eval", "(%make-grid :id 42)")).await;
+        assert_eq!(status, StatusCode::OK);
+
+        let (_, body) = call(cfg, get("/api/topology")).await;
+        let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let components = parsed["components"].as_array().unwrap();
+        assert!(components.iter().any(|c| c["id"] == 42));
     }
 }

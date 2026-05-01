@@ -121,6 +121,22 @@ impl Config {
         self.world.clone()
     }
 
+    /// Evaluate a Lisp expression on the running interpreter and
+    /// return the result formatted via `Display`. Errors are
+    /// formatted with full trace context the same way the reload
+    /// path's logger formats them.
+    ///
+    /// Synchronous — acquires the interpreter write lock for the
+    /// duration of the eval. Callers in async contexts must wrap in
+    /// `tokio::task::spawn_blocking` to keep the executor free.
+    pub fn eval(&self, src: &str) -> Result<String, String> {
+        let mut ctx = self.ctx.borrow_mut();
+        match ctx.eval_string(src) {
+            Ok(v) => Ok(v.to_string()),
+            Err(e) => Err(e.format(&ctx)),
+        }
+    }
+
     pub fn reload(&self) {
         let start = std::time::Instant::now();
         self.world.reset();
