@@ -18,14 +18,31 @@ use tulisp::{Error, SharedMut, TulispContext};
 
 use crate::sim::World;
 
-/// Microgrid identity metadata. Kept minimal for now — the full set
-/// (delivery area, EIC, location) lands when the server needs it.
-#[derive(Debug, Clone, Default)]
+/// Microgrid identity + gateway-level settings, exposed to the Lisp
+/// config and read back by `MicrogridServer`.
+#[derive(Debug, Clone)]
 pub struct Metadata {
     pub microgrid_id: u64,
     pub enterprise_id: u64,
     pub name: String,
     pub socket_addr: String,
+    /// Fallback request lifetime when a `SetElectricalComponentPower`
+    /// caller doesn't supply `request_lifetime`. Mirrors microsim's
+    /// `retain-requests-duration-ms`. Tunable via
+    /// `(set-default-request-lifetime-ms N)`.
+    pub default_request_lifetime: Duration,
+}
+
+impl Default for Metadata {
+    fn default() -> Self {
+        Self {
+            microgrid_id: 0,
+            enterprise_id: 0,
+            name: String::new(),
+            socket_addr: "[::1]:8800".to_string(),
+            default_request_lifetime: Duration::from_secs(60),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -40,10 +57,7 @@ impl Config {
     pub fn new(filename: &str) -> Self {
         let mut ctx = TulispContext::new();
         let world = World::new();
-        let metadata = Arc::new(RwLock::new(Metadata {
-            socket_addr: "[::1]:8800".to_string(),
-            ..Default::default()
-        }));
+        let metadata = Arc::new(RwLock::new(Metadata::default()));
 
         // `Path::parent()` returns `Some("")` for bare filenames like
         // "config.lisp" — tulisp rejects empty paths, so fall back to
@@ -308,10 +322,19 @@ fn register_metadata(ctx: &mut TulispContext, metadata: Arc<RwLock<Metadata>>) {
             Ok(true)
         },
     );
+    let m = metadata.clone();
     ctx.defun(
         "set-socket-addr",
         move |addr: String| -> Result<bool, Error> {
-            metadata.write().socket_addr = addr;
+            m.write().socket_addr = addr;
+            Ok(true)
+        },
+    );
+    ctx.defun(
+        "set-default-request-lifetime-ms",
+        move |ms: i64| -> Result<bool, Error> {
+            metadata.write().default_request_lifetime =
+                Duration::from_millis(ms.max(0) as u64);
             Ok(true)
         },
     );

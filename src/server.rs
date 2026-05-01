@@ -33,11 +33,6 @@ use crate::sim::runtime::{CommandMode, Health, TelemetryMode};
 use crate::sim::{SetpointError, bounds::VecBounds};
 use crate::timeout_tracker::TimeoutTracker;
 
-/// Default lifetime when a client does not supply one. Microsim uses
-/// a configurable `retain-requests-duration-ms`; switchyard leaves the
-/// constant for now and exposes it as a knob in a follow-up.
-const DEFAULT_REQUEST_LIFETIME: Duration = Duration::from_secs(60);
-
 pub struct MicrogridServer {
     pub config: Config,
     timeout_tracker: TimeoutTracker,
@@ -246,7 +241,9 @@ impl microgrid_server::Microgrid for MicrogridServer {
         }
 
         // Track lifetime so the set-point clears if the client falls
-        // silent. Lifetime range matches microsim's 10s..15min window.
+        // silent. Range matches microsim's 10 s..15 min window when
+        // the caller supplies a value; otherwise we fall back to the
+        // server-wide default (configurable via Lisp at load time).
         let duration = if let Some(dur) = req.request_lifetime {
             if !(10..=15 * 60).contains(&dur) {
                 return Err(tonic::Status::invalid_argument(
@@ -255,7 +252,7 @@ impl microgrid_server::Microgrid for MicrogridServer {
             }
             Duration::from_secs(dur)
         } else {
-            DEFAULT_REQUEST_LIFETIME
+            self.config.metadata().default_request_lifetime
         };
         self.timeout_tracker
             .add(req.electrical_component_id, duration);
