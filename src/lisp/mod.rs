@@ -271,12 +271,19 @@ impl Config {
     }
 
     /// Append the pending log to `config.ui-overrides.<microgrid-id>
-    /// .lisp` (creating the file if needed) and clear the in-memory
-    /// log. Each persist batch is preceded by an ISO-8601 timestamp
-    /// comment. No-op when the log is empty.
+    /// .lisp` (creating the file if needed) and clear those entries
+    /// from the in-memory log. Each persist batch is preceded by an
+    /// ISO-8601 timestamp comment. No-op when the log is empty.
+    ///
+    /// Snapshots the entries first, writes + flushes the file, and
+    /// only then removes the persisted ids from the log. An IO
+    /// failure (permission denied, disk full, parent dir gone)
+    /// returns the error with the pending entries still in memory —
+    /// the user can retry. A concurrent push during the write
+    /// survives because we remove by id, not by clearing the log.
     pub fn persist_pending(&self) -> std::io::Result<PersistResult> {
-        let entries = std::mem::take(&mut *self.pending_log.lock());
         let path = self.overrides_path();
+        let entries: Vec<PendingEntry> = self.pending_log.lock().clone();
         if entries.is_empty() {
             return Ok(PersistResult {
                 persisted: 0,
@@ -291,6 +298,14 @@ impl Config {
         for entry in &entries {
             writeln!(file, "{}", entry.source)?;
         }
+        file.flush()?;
+        // Only now is it safe to drop these entries — persisted to
+        // disk. Concurrent pushes under different ids are preserved.
+        let persisted_ids: std::collections::HashSet<u64> =
+            entries.iter().map(|e| e.id).collect();
+        self.pending_log
+            .lock()
+            .retain(|e| !persisted_ids.contains(&e.id));
         Ok(PersistResult {
             persisted: entries.len(),
             path: path.to_string_lossy().into_owned(),
@@ -791,4 +806,57 @@ fn register_grid_state(ctx: &mut TulispContext, world: World) {
             Ok(true)
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static UNIQ: AtomicU64 = AtomicU64::new(0);
+
+    /// Build a Config from a tiny config.lisp body in a unique temp
+    /// dir; returns the Config + the dir so tests can mess with the
+    /// per-microgrid override path.
+    fn config_with(body: &str) -> (Config, std::path::PathBuf) {
+        let mut dir = std::env::temp_dir();
+        dir.push(format!(
+            "switchyard-cfg-{}-{}",
+            std::process::id(),
+            UNIQ.fetch_add(1, Ordering::Relaxed),
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.lisp");
+        std::fs::write(&path, body).unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let cfg = rt.block_on(async { Config::new(path.to_str().unwrap()) });
+        // Drop the runtime — Config keeps its own handles to whatever
+        // tulisp-async spawned during init.
+        std::mem::forget(rt);
+        (cfg, dir)
+    }
+
+    /// persist_pending must NOT clear the in-memory log on IO error,
+    /// or pending edits vanish without ever reaching disk. Force the
+    /// failure by pre-creating the override path as a directory:
+    /// open(append) on a directory returns EISDIR.
+    #[test]
+    fn persist_io_error_keeps_pending_log_intact() {
+        let (cfg, dir) = config_with("(set-microgrid-id 9)");
+        let override_path = dir.join("config.ui-overrides.9.lisp");
+        std::fs::create_dir_all(&override_path).unwrap();
+
+        // Push an entry into the log.
+        cfg.eval("(set-microgrid-name \"x\")").unwrap();
+        assert_eq!(cfg.pending().len(), 1);
+
+        // Persist must error and the entry must still be there.
+        let res = cfg.persist_pending();
+        assert!(res.is_err(), "expected IO error, got {res:?}");
+        assert_eq!(
+            cfg.pending().len(),
+            1,
+            "pending entry vanished on IO failure"
+        );
+    }
 }
