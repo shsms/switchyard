@@ -52,4 +52,14 @@ pub enum WorldEvent {
         /// the client received.
         reason: Option<String>,
     },
+    /// One captured log record. Fanned out from `ui_log::LogTap` via
+    /// the WS handler — the handler subscribes to LOG_TAP separately
+    /// and re-emits as this variant so the SPA's single WS stream
+    /// covers everything.
+    Log {
+        ts_ms: i64,
+        level: String,
+        target: String,
+        message: String,
+    },
 }

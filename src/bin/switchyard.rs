@@ -3,21 +3,35 @@
 
 use std::path::PathBuf;
 
-use simplelog::{ColorChoice, Config as LogConfig, LevelFilter, TermLogger, TerminalMode};
+use simplelog::{
+    ColorChoice, CombinedLogger, Config as LogConfig, LevelFilter, TermLogger, TerminalMode,
+};
 use switchyard::{
     lisp::Config, proto::microgrid::microgrid_server::MicrogridServer as MicrogridGrpcServer,
-    server::MicrogridServer, sim::World, ui,
+    server::MicrogridServer, sim::World, ui, ui_log,
 };
 use tonic::transport::Server;
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() {
-    TermLogger::init(
-        LevelFilter::Info,
-        LogConfig::default(),
-        TerminalMode::Mixed,
-        ColorChoice::Auto,
-    )
+    // Combined logger: terminal output (existing UX) + a tap that
+    // captures records into a ring buffer + broadcasts them on a
+    // tokio channel. The UI server reads both: /api/logs returns the
+    // ring for backfill on page load, /ws/events forwards the live
+    // stream so the SPA's log panel updates in real time.
+    let log_tap = ui_log::LogTap::new(500, LevelFilter::Info);
+    ui_log::LOG_TAP
+        .set(log_tap.clone())
+        .unwrap_or_else(|_| panic!("LOG_TAP already initialised"));
+    CombinedLogger::init(vec![
+        TermLogger::new(
+            LevelFilter::Info,
+            LogConfig::default(),
+            TerminalMode::Mixed,
+            ColorChoice::Auto,
+        ),
+        Box::new(log_tap),
+    ])
     .unwrap();
 
     let cfg_path = std::env::args()

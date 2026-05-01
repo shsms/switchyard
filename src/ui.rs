@@ -62,6 +62,7 @@ fn router(config: Config) -> Router {
         .route("/api/pending/{id}", axum::routing::delete(pending_remove))
         .route("/api/persist", post(persist))
         .route("/api/discard", post(discard))
+        .route("/api/logs", get(logs_backfill))
         .route("/api/scenarios", get(scenarios_list))
         .route("/api/scenarios/save", post(scenarios_save))
         .route("/api/scenarios/load", post(scenarios_load))
@@ -476,6 +477,17 @@ struct ScenariosListResponse {
     names: Vec<String>,
 }
 
+/// Backfill recent log lines from the LogTap ring buffer. Returns
+/// an empty list when the binary didn't initialise a tap (test path).
+async fn logs_backfill() -> Json<Vec<crate::ui_log::LogEvent>> {
+    Json(
+        crate::ui_log::LOG_TAP
+            .get()
+            .map(|t| t.snapshot())
+            .unwrap_or_default(),
+    )
+}
+
 async fn scenarios_list(
     State(config): State<Config>,
 ) -> Result<Json<ScenariosListResponse>, (StatusCode, String)> {
@@ -554,6 +566,11 @@ async fn events_ws(ws: WebSocketUpgrade, State(config): State<Config>) -> impl I
 
 async fn event_pump(mut socket: WebSocket, config: Config) {
     let mut rx = config.world().subscribe_events();
+    // Optional: log tap. Only set when running through the binary;
+    // tests hit this path with no tap initialised, so subscribe via
+    // `Option<broadcast::Receiver>` and skip the branch when absent.
+    let mut log_rx = crate::ui_log::LOG_TAP.get().map(|t| t.subscribe());
+
     loop {
         tokio::select! {
             ev = rx.recv() => match ev {
@@ -566,23 +583,43 @@ async fn event_pump(mut socket: WebSocket, config: Config) {
                         }
                     };
                     if socket.send(Message::Text(json.into())).await.is_err() {
-                        // Client closed.
-                        break;
+                        break; // client closed
                     }
                 }
                 Err(RecvError::Lagged(n)) => {
-                    // Subscriber fell behind; the receiver auto-skips
-                    // ahead. Tell the client so it can re-sync.
                     log::warn!("ws: subscriber lagged by {n} events");
                     let msg = serde_json::json!({"kind": "lagged", "skipped": n}).to_string();
                     if socket.send(Message::Text(msg.into())).await.is_err() {
                         break;
                     }
                 }
-                Err(RecvError::Closed) => break, // shutting down
+                Err(RecvError::Closed) => break,
+            },
+            // Log tap branch — only fires when LOG_TAP was initialised
+            // (i.e. running under the binary, not in a unit test).
+            log = async {
+                match log_rx.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => match log {
+                Ok(line) => {
+                    let event = crate::sim::events::WorldEvent::Log {
+                        ts_ms: line.ts_ms,
+                        level: line.level,
+                        target: line.target,
+                        message: line.message,
+                    };
+                    if let Ok(json) = serde_json::to_string(&event) {
+                        if socket.send(Message::Text(json.into())).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+                Err(RecvError::Lagged(_)) => continue,
+                Err(RecvError::Closed) => log_rx = None,
             },
             msg = socket.recv() => match msg {
-                // Drain client frames so we notice a dropped socket.
                 Some(Ok(_)) => {}
                 Some(Err(_)) | None => break,
             },
