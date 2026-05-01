@@ -224,17 +224,22 @@ impl Config {
         self.pending_log.lock().clone()
     }
 
-    /// Approximate count of overrides already persisted to
-    /// `config.ui-overrides.<microgrid-id>.lisp`. Implemented as
-    /// "number of persist-batch markers" (each Persist click writes
-    /// one `;; ── <ts> ──` header) — under-counts a batch with
-    /// multiple entries. Cheap, exact for the common case (one edit
-    /// per Persist), and good enough for the chrome's "N overrides"
-    /// pill to be a confidence signal.
+    /// Exact count of overrides already persisted to
+    /// `config.ui-overrides.<microgrid-id>.lisp`. Parses the file
+    /// via `TulispContext::parse_file` and counts the resulting
+    /// top-level forms. Returns 0 if the file is missing or
+    /// malformed (a parse error here doesn't propagate — the chrome
+    /// would have nothing useful to show, and load-overrides will
+    /// surface the same error on the next reload).
     pub fn persisted_count(&self) -> usize {
         let path = self.overrides_path();
-        match fs::read_to_string(&path) {
-            Ok(content) => content.lines().filter(|l| l.starts_with(";; ──")).count(),
+        if !path.exists() {
+            return 0;
+        }
+        let path_str = path.to_string_lossy();
+        let mut ctx = self.ctx.borrow_mut();
+        match ctx.parse_file(&path_str) {
+            Ok(forms) => forms.base_iter().count(),
             Err(_) => 0,
         }
     }
