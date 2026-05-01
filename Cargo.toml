@@ -28,6 +28,11 @@ serde_json = "1"
 [build-dependencies]
 tonic-prost-build = { version = "0.14", features = ["cleanup-markdown"] }
 
+[dev-dependencies]
+# axum oneshot testing pattern — no live port needed
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+
 [lib]
 name = "switchyard"
 path = "src/lib.rs"

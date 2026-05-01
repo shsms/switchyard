@@ -48,8 +48,9 @@ async fn main() {
     // UI server. Localhost-only for now; --ui-bind / --ui-port land
     // in a follow-up commit.
     let ui_addr = "127.0.0.1:8801".parse().unwrap();
+    let ui_world = config.world();
     tokio::spawn(async move {
-        if let Err(e) = ui::serve(ui_addr).await {
+        if let Err(e) = ui::serve(ui_addr, ui_world).await {
             log::error!("UI server exited: {e}");
         }
     });
