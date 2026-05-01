@@ -502,8 +502,46 @@ function escapeHtml(s) {
   return String(s).replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" })[c]);
 }
 
+async function showPendingDialog() {
+  const dlg = document.getElementById("pending-dialog");
+  const content = document.getElementById("pending-dialog-content");
+  content.innerHTML = '<p class="hint">loading…</p>';
+  dlg.showModal();
+  try {
+    const data = await (await fetch("/api/pending")).json();
+    if (!data.entries.length) {
+      content.innerHTML = '<p class="hint">no pending changes</p>';
+      return;
+    }
+    content.innerHTML = data.entries
+      .map(
+        (e, i) =>
+          `<div class="pending-entry">
+            <div class="pending-num">#${i + 1}</div>
+            <pre>${escapeHtml(e)}</pre>
+          </div>`,
+      )
+      .join("");
+  } catch (err) {
+    content.innerHTML = `<p class="hint">failed to load: ${escapeHtml(err.message)}</p>`;
+  }
+}
+
+function setupPendingDialog() {
+  const dlg = document.getElementById("pending-dialog");
+  document
+    .getElementById("pending-dialog-close")
+    .addEventListener("click", () => dlg.close());
+  // Click on the backdrop (target === dialog itself, not inner card)
+  // closes the dialog. Keeps click-outside-to-dismiss working.
+  dlg.addEventListener("click", (e) => {
+    if (e.target === dlg) dlg.close();
+  });
+}
+
 function setupPersistControls() {
   const pill = document.getElementById("pending-pill");
+  pill.addEventListener("click", showPendingDialog);
   const count = document.getElementById("pending-count");
   const persistBtn = document.getElementById("persist-btn");
   const discardBtn = document.getElementById("discard-btn");
@@ -891,6 +929,7 @@ async function init() {
   setupDefaultsToggle();
   setupScenariosToggle();
   setupSplitter();
+  setupPendingDialog();
   const refreshPending = setupPersistControls();
   await refreshTopology();
   await refreshPending();

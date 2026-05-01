@@ -345,6 +345,7 @@ async fn defaults(State(config): State<Config>) -> Json<DefaultsResponse> {
                     // parseable (shouldn't happen for an alist read
                     // back from the interpreter).
                     let formatted = tulisp_fmt::format_with_width(&value, 50)
+                        .map(|f| f.trim_end().to_string())
                         .unwrap_or(value);
                     out.push(DefaultsEntry {
                         category: cat,
@@ -370,9 +371,21 @@ struct PendingResponse {
 }
 
 async fn pending(State(config): State<Config>) -> Json<PendingResponse> {
-    Json(PendingResponse {
-        entries: config.pending(),
-    })
+    // Format each entry via tulisp-fmt so the modal shows tidy Lisp
+    // (multi-line for nested forms) instead of one-liner source.
+    // .trim_end() drops the formatter's file-style trailing newline
+    // — the modal renders each entry in its own <pre>, an extra blank
+    // line at the bottom would just look noisy.
+    let entries = config
+        .pending()
+        .into_iter()
+        .map(|src| {
+            tulisp_fmt::format_with_width(&src, 60)
+                .map(|f| f.trim_end().to_string())
+                .unwrap_or(src)
+        })
+        .collect();
+    Json(PendingResponse { entries })
 }
 
 #[derive(Serialize)]
