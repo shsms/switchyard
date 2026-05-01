@@ -13,7 +13,7 @@ tokio = { version = "1.43.1", features = ["rt", "rt-multi-thread", "macros", "sy
 tokio-stream = "0.1.15"
 tulisp = { git = "https://github.com/shsms/tulisp", branch = "fmt", features = ["sync"] }
 tulisp-fmt = { git = "https://github.com/shsms/tulisp", branch = "fmt" }
-tulisp-async = { path = "../tulisp-async" }
+tulisp-async = { git = "https://github.com/tulisp/tulisp-async" }
 notify = "6.1.1"
 futures = "0.3.30"
 log = "0.4.22"
