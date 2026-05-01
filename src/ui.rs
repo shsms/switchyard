@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::{
-    lisp::Config,
+    lisp::{Config, PendingEntry},
     sim::{Category, history::Metric, setpoints::SetpointEvent},
 };
 
@@ -59,6 +59,7 @@ fn router(config: Config) -> Router {
         .route("/api/defaults", get(defaults))
         .route("/api/setpoints", get(setpoints))
         .route("/api/pending", get(pending))
+        .route("/api/pending/{id}", axum::routing::delete(pending_remove))
         .route("/api/persist", post(persist))
         .route("/api/discard", post(discard))
         .route("/api/scenarios", get(scenarios_list))
@@ -180,8 +181,21 @@ struct EvalResponse {
 /// Always returns 200 — application-layer success/failure rides in
 /// the JSON body. Reserves HTTP 4xx/5xx for transport-level problems
 /// (bad UTF-8, the spawn_blocking task panicking, etc.).
-async fn eval(State(config): State<Config>, body: String) -> impl IntoResponse {
-    let result = tokio::task::spawn_blocking(move || config.eval(&body))
+#[derive(Deserialize)]
+struct EvalQuery {
+    /// Component id this eval targets, if known. Tagged on the
+    /// resulting pending entry so the inspector can show "current
+    /// overrides on component X" without parsing the source.
+    affects: Option<u64>,
+}
+
+async fn eval(
+    State(config): State<Config>,
+    Query(q): Query<EvalQuery>,
+    body: String,
+) -> impl IntoResponse {
+    let affects = q.affects;
+    let result = tokio::task::spawn_blocking(move || config.eval_with_affects(&body, affects))
         .await
         .map_err(|e| {
             (
@@ -363,11 +377,34 @@ async fn defaults(State(config): State<Config>) -> Json<DefaultsResponse> {
     Json(DefaultsResponse { entries })
 }
 
+/// One entry as the UI sees it: structured metadata plus the
+/// formatted source (tulisp-fmt at width 60). The id is the
+/// PendingEntry id from Config — used for `DELETE /api/pending/:id`.
+#[derive(Serialize)]
+struct PendingEntryView {
+    id: u64,
+    ts: chrono::DateTime<chrono::Utc>,
+    affects: Option<u64>,
+    source: String,
+}
+
 #[derive(Serialize)]
 struct PendingResponse {
     /// Successful eval expressions accumulated since the last persist
     /// (or process start). Oldest first.
-    entries: Vec<String>,
+    entries: Vec<PendingEntryView>,
+}
+
+fn format_entry(e: PendingEntry) -> PendingEntryView {
+    let formatted = tulisp_fmt::format_with_width(&e.source, 60)
+        .map(|f| f.trim_end().to_string())
+        .unwrap_or_else(|_| e.source.clone());
+    PendingEntryView {
+        id: e.id,
+        ts: e.ts,
+        affects: e.affects,
+        source: formatted,
+    }
 }
 
 async fn pending(State(config): State<Config>) -> Json<PendingResponse> {
@@ -376,16 +413,22 @@ async fn pending(State(config): State<Config>) -> Json<PendingResponse> {
     // .trim_end() drops the formatter's file-style trailing newline
     // — the modal renders each entry in its own <pre>, an extra blank
     // line at the bottom would just look noisy.
-    let entries = config
-        .pending()
-        .into_iter()
-        .map(|src| {
-            tulisp_fmt::format_with_width(&src, 60)
-                .map(|f| f.trim_end().to_string())
-                .unwrap_or(src)
-        })
-        .collect();
+    let entries = config.pending().into_iter().map(format_entry).collect();
     Json(PendingResponse { entries })
+}
+
+async fn pending_remove(
+    State(config): State<Config>,
+    axum::extract::Path(id): axum::extract::Path<u64>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let removed = tokio::task::spawn_blocking(move || config.remove_pending(id))
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("task panicked: {e}")))?;
+    if removed {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err((StatusCode::NOT_FOUND, format!("no pending entry with id {id}")))
+    }
 }
 
 #[derive(Serialize)]
@@ -746,8 +789,76 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let entries = parsed["entries"].as_array().unwrap();
         assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0], "(+ 1 2)");
-        assert_eq!(entries[1], "(set-microgrid-name \"foo\")");
+        assert_eq!(entries[0]["source"], "(+ 1 2)");
+        assert_eq!(entries[1]["source"], "(set-microgrid-name \"foo\")");
+        // Each entry now carries a stable id for delete-by-id.
+        assert!(entries[0]["id"].as_u64().is_some());
+        assert!(entries[1]["id"].as_u64().is_some());
+    }
+
+    #[tokio::test]
+    async fn pending_remove_only_entry_bumps_world_version() {
+        // Regression: removing the only pending entry used to leave
+        // the WS topology event unfired — `reload` happens but no
+        // surviving entries replay, so no eval_with_affects
+        // bump_version call. UI consumers stuck showing stale state.
+        let cfg = config_with("(set-microgrid-id 7) (%make-grid :id 1)").await;
+        call(cfg.clone(), post("/api/eval", "(world-rename-component 1 \"x\")")).await;
+        let v_before = cfg.world().version();
+        let (_, body) = call(cfg.clone(), get("/api/pending")).await;
+        let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let id = parsed["entries"][0]["id"].as_u64().unwrap();
+
+        let req = axum::http::Request::builder()
+            .method(axum::http::Method::DELETE)
+            .uri(format!("/api/pending/{id}"))
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let (status, _) = call(cfg.clone(), req).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+
+        // World version must have advanced — that's how the WS event
+        // tells the SPA to re-fetch /api/topology + /api/pending.
+        assert!(cfg.world().version() > v_before);
+    }
+
+    #[tokio::test]
+    async fn pending_remove_drops_one_entry_and_replays_rest() {
+        let cfg = config_with("(set-microgrid-id 7) (%make-grid :id 1)").await;
+        call(cfg.clone(), post("/api/eval", "(world-rename-component 1 \"a\")")).await;
+        call(cfg.clone(), post("/api/eval", "(world-rename-component 1 \"b\")")).await;
+        // Pending log has two entries; current name is "b" (last write wins).
+        let (_, body) = call(cfg.clone(), get("/api/pending")).await;
+        let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let id_b = parsed["entries"][1]["id"].as_u64().unwrap();
+
+        // Remove the second entry → reload + replay drops "b", leaves "a".
+        let req = axum::http::Request::builder()
+            .method(axum::http::Method::DELETE)
+            .uri(format!("/api/pending/{id_b}"))
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let (status, _) = call(cfg.clone(), req).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+
+        let (_, body) = call(cfg.clone(), get("/api/pending")).await;
+        let after: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let entries = after["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0]["source"]
+            .as_str()
+            .unwrap()
+            .contains("\"a\""));
+
+        let (_, body) = call(cfg, get("/api/topology")).await;
+        let topo: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let grid = topo["components"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["id"] == 1)
+            .unwrap();
+        assert_eq!(grid["name"], "a");
     }
 
     #[tokio::test]

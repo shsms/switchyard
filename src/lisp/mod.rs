@@ -72,13 +72,32 @@ pub struct Config {
     /// override file (`config.ui-overrides.<id>.lisp`) and cleared.
     /// On `/api/discard` it's cleared without writing — discard also
     /// triggers a reload so World state matches what's on disk.
-    pending_log: Arc<Mutex<Vec<String>>>,
+    pending_log: Arc<Mutex<Vec<PendingEntry>>>,
+    /// Monotonic counter for `PendingEntry.id`. Survives clears so
+    /// the UI can use the id as a stable handle for "delete entry N"
+    /// without worrying about reuse.
+    next_pending_id: Arc<std::sync::atomic::AtomicU64>,
 }
 
 #[derive(Debug, serde::Serialize)]
 pub struct PersistResult {
     pub persisted: usize,
     pub path: String,
+}
+
+/// One successfully-evaluated UI mutation. `id` is a monotonic
+/// counter scoped to the Config — stable across the entry's lifetime
+/// in the pending log so the UI can address it for delete. `affects`
+/// is the component id the eval targets, if known (the UI tags its
+/// own evals via the /api/eval `?affects=N` query param so the
+/// inspector can show "current overrides for this component" without
+/// parsing the source string).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PendingEntry {
+    pub id: u64,
+    pub ts: chrono::DateTime<Utc>,
+    pub source: String,
+    pub affects: Option<u64>,
 }
 
 impl Config {
@@ -122,6 +141,7 @@ impl Config {
             metadata,
             extra_watches,
             pending_log: Arc::new(Mutex::new(Vec::new())),
+            next_pending_id: Arc::new(std::sync::atomic::AtomicU64::new(1)),
         }
     }
 
@@ -152,6 +172,18 @@ impl Config {
     /// change shouldn't leave a re-erroring expression on disk.
     /// Either way the World version bumps so UI subscribers refetch.
     pub fn eval(&self, src: &str) -> Result<String, String> {
+        self.eval_with_affects(src, None)
+    }
+
+    /// Like `eval`, but tags the resulting pending entry with the
+    /// component id it affects. The UI's per-component "current
+    /// overrides" list filters on this. Set to `None` for
+    /// non-component-specific evals (defaults edits, REPL one-offs).
+    pub fn eval_with_affects(
+        &self,
+        src: &str,
+        affects: Option<u64>,
+    ) -> Result<String, String> {
         let result = {
             let mut ctx = self.ctx.borrow_mut();
             match ctx.eval_string(src) {
@@ -160,7 +192,15 @@ impl Config {
             }
         };
         if result.is_ok() {
-            self.pending_log.lock().push(src.to_string());
+            let id = self
+                .next_pending_id
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.pending_log.lock().push(PendingEntry {
+                id,
+                ts: Utc::now(),
+                source: src.to_string(),
+                affects,
+            });
         }
         self.world.bump_version();
         result
@@ -180,8 +220,39 @@ impl Config {
 
     /// Snapshot of the in-memory pending log. Each entry is one
     /// successfully-evaluated UI expression, oldest first.
-    pub fn pending(&self) -> Vec<String> {
+    pub fn pending(&self) -> Vec<PendingEntry> {
         self.pending_log.lock().clone()
+    }
+
+    /// Drop one pending entry by id and re-derive World state by
+    /// reloading config.lisp + the override file, then re-evalling
+    /// every remaining pending entry in order. Side effect: per-tick
+    /// physics state (SoC integration, ramp positions) reset on
+    /// reload — same trade-off `Discard` has. Returns true if an
+    /// entry with that id was found and removed.
+    pub fn remove_pending(&self, id: u64) -> bool {
+        let removed = {
+            let mut log = self.pending_log.lock();
+            let before = log.len();
+            log.retain(|e| e.id != id);
+            log.len() < before
+        };
+        if !removed {
+            return false;
+        }
+        // Clone the surviving entries before reload — reload triggers
+        // any timers + config evaluation that could touch the log,
+        // and we want to control re-application explicitly.
+        let surviving: Vec<PendingEntry> = std::mem::take(&mut *self.pending_log.lock());
+        self.reload();
+        for e in surviving {
+            // Re-eval, preserving original affects/id semantics. We
+            // re-use `eval_with_affects` so the entries land in the
+            // log again — but with fresh ids (the old id pointed to
+            // the now-removed entry).
+            let _ = self.eval_with_affects(&e.source, e.affects);
+        }
+        true
     }
 
     /// Append the pending log to `config.ui-overrides.<microgrid-id>
@@ -203,7 +274,7 @@ impl Config {
             .open(&path)?;
         writeln!(file, "\n;; ── {} ──", Utc::now().to_rfc3339())?;
         for entry in &entries {
-            writeln!(file, "{entry}")?;
+            writeln!(file, "{}", entry.source)?;
         }
         Ok(PersistResult {
             persisted: entries.len(),
@@ -277,7 +348,7 @@ impl Config {
             .open(&path)?;
         writeln!(file, "\n;; ── {} ──", Utc::now().to_rfc3339())?;
         for entry in &entries {
-            writeln!(file, "{entry}")?;
+            writeln!(file, "{}", entry.source)?;
         }
         Ok(PersistResult {
             persisted: entries.len(),
@@ -303,11 +374,18 @@ impl Config {
     pub fn reload(&self) {
         let start = std::time::Instant::now();
         self.world.reset();
-        let mut ctx = self.ctx.borrow_mut();
-        if let Err(e) = ctx.eval_file(&self.filename) {
-            log::error!("Tulisp error:\n{}", e.format(&ctx));
-            return;
+        {
+            let mut ctx = self.ctx.borrow_mut();
+            if let Err(e) = ctx.eval_file(&self.filename) {
+                log::error!("Tulisp error:\n{}", e.format(&ctx));
+                return;
+            }
         }
+        // Tell UI subscribers the World rebuilt. Catches the
+        // "removed the only pending entry" case where remove_pending
+        // reloads but has no surviving entries to bump-version
+        // through eval_with_affects.
+        self.world.bump_version();
         log::info!(
             "Reloaded config in {:.1}ms",
             start.elapsed().as_secs_f64() * 1000.0
