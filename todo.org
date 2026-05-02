@@ -1,0 +1,61 @@
+#+TITLE: Switchyard — deferred work
+
+Items not landing right now but worth revisiting.
+
+* Bugs / dubious decisions
+
+** d1. Rethink ~file-exists-p~ resolving against the config's load dir
+
+The current ~register_fs_helpers~ in ~src/lisp/mod.rs~ resolves
+relative paths in ~(file-exists-p PATH)~ against the config file's
+load directory (the same base ~(load PATH)~ uses). The motivation
+was to keep ~load-overrides~'s gate
+
+#+begin_src elisp
+(when (file-exists-p "config.ui-overrides.7.lisp")
+  (load "config.ui-overrides.7.lisp"))
+#+end_src
+
+answering the same question both halves of that ~when~ ask — the
+two used to disagree when the process CWD differed from the config
+dir, which broke the override-replay path inside
+~remove_persisted_override~ and the test that exercises it.
+
+That's still a real coordination problem, but the fix is a little
+heavy-handed:
+
+- *Emacs divergence.* Real Elisp's ~file-exists-p~ resolves against
+  ~default-directory~, not the load path. Anyone porting code from
+  Emacs (or eyeballing the docstring) would expect CWD-relative
+  resolution; ours quietly rebases.
+- *Surprises for non-override paths.* ~(file-exists-p
+  "telemetry.csv")~ etc. now also rebases — fine if the user
+  always means "next to config.lisp" but wrong if they meant CWD.
+- *Coupling to ~load_dir~ at registration time.* The closure
+  captures the path on ~Config::new~, so a later ~set_load_path~
+  on the ctx (if we ever expose one to Lisp) wouldn't be visible
+  to ~file-exists-p~. ~(load PATH)~ in tulisp reads ~ctx.load_path~
+  on every call.
+
+*Better directions to consider:*
+
+1. Drop the special handling in ~file-exists-p~ and instead change
+   the Lisp side: ~load-overrides~ in ~sim/common.lisp~ could build
+   an absolute path before the gate, eg. by exposing the
+   override-file path as a Rust-side defun (~(overrides-path)~
+   already exists; make it return an absolute path).
+2. Land a tulisp-level fix: add a ~ctx.load_path~ getter (currently
+   ~pub(crate)~) so a closure can resolve at call time, mirroring
+   ~(load PATH)~.
+3. Push a ~file-exists-p~ change upstream into tulisp itself,
+   matching ~(load)~'s resolution.
+
+(2) or (3) is probably the right answer; (1) is the smallest patch
+on the switchyard side.
+
+*Where the workaround lives today:* ~register_fs_helpers~ closes over
+~load_dir: PathBuf~, captured in ~register_runtime~ and propagated
+from ~Config::new~. The matching test
+(~ui::tests::persisted_remove_drops_form_immediately~) inlines a
+local ~load-overrides~ defun and relies on this resolution to find
+the override file.

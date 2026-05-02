@@ -77,12 +77,6 @@ pub struct Config {
     /// the UI can use the id as a stable handle for "delete entry N"
     /// without worrying about reuse.
     next_pending_id: Arc<std::sync::atomic::AtomicU64>,
-    /// Indices into the on-disk override file that the user has
-    /// marked × on but hasn't persisted yet. On the next persist
-    /// the file is rewritten without those forms; on discard the
-    /// set is cleared. Indices are file-position-stable until the
-    /// next persist (which renumbers everything).
-    pending_removals: Arc<Mutex<HashSet<usize>>>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -136,7 +130,7 @@ impl Config {
         ctx.set_load_path(Some(&load_dir))
             .unwrap_or_else(|e| panic!("set_load_path({}): {:?}", load_dir.display(), e));
 
-        register_runtime(&mut ctx, &world, metadata.clone());
+        register_runtime(&mut ctx, &world, metadata.clone(), load_dir.clone());
         register_watches(&mut ctx, load_dir.clone(), extra_watches.clone());
 
         // tulisp-async gives the config DSL access to run-with-timer,
@@ -167,7 +161,6 @@ impl Config {
             extra_watches,
             pending_log: Arc::new(Mutex::new(Vec::new())),
             next_pending_id: Arc::new(std::sync::atomic::AtomicU64::new(1)),
-            pending_removals: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -297,22 +290,60 @@ impl Config {
     /// Snapshot of indices the user has marked × on but hasn't
     /// persisted yet. Indices match `persisted_overrides()` until
     /// the next persist rewrites the file.
-    pub fn pending_removals(&self) -> HashSet<usize> {
-        self.pending_removals.lock().clone()
-    }
-
-    /// Mark a persisted-override index for removal on the next
-    /// persist. Idempotent — re-marking the same idx is a no-op.
-    /// Bumps World::version so the chrome's pill/dialog refresh.
-    pub fn mark_persisted_for_removal(&self, idx: usize) {
-        self.pending_removals.lock().insert(idx);
+    /// Drop one persisted-override entry by its file-position idx
+    /// and re-derive World state. Atomic: the override file is
+    /// rewritten without that form (temp + rename), then `reload()`
+    /// re-runs config.lisp + load-overrides on the new file (so
+    /// the deleted form's effects vanish via the World reset
+    /// inside reload), then the in-memory pending log replays so
+    /// its mutations apply on top.
+    ///
+    /// Returns `Ok(true)` if `idx` was a valid index, `Ok(false)`
+    /// if the file had no form at that idx, or an IO error if the
+    /// file rewrite failed (in which case the world state is left
+    /// untouched — same data-loss safeguard as `persist_pending`).
+    pub fn remove_persisted_override(&self, idx: usize) -> std::io::Result<bool> {
+        let entries = self.persisted_overrides();
+        if !entries.iter().any(|o| o.idx == idx) {
+            return Ok(false);
+        }
+        let kept: Vec<String> = entries
+            .into_iter()
+            .filter(|o| o.idx != idx)
+            .map(|o| o.source)
+            .collect();
+        let path = self.overrides_path();
+        let tmp = path.with_extension("lisp.tmp");
+        {
+            let mut file = fs::OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .write(true)
+                .open(&tmp)?;
+            writeln!(file, ";; ── {} ──", Utc::now().to_rfc3339())?;
+            writeln!(file)?;
+            for src in &kept {
+                let fmt = tulisp_fmt::format_with_width(src, 80)
+                    .unwrap_or_else(|_| format!("{}\n", src));
+                file.write_all(fmt.as_bytes())?;
+                writeln!(file)?;
+            }
+            file.flush()?;
+        }
+        fs::rename(&tmp, &path)?;
+        let pending_snapshot: Vec<PendingEntry> = self.pending_log.lock().clone();
+        self.reload();
+        for entry in &pending_snapshot {
+            let _ = {
+                let mut ctx = self.ctx.borrow_mut();
+                ctx.eval_string(&entry.source)
+            };
+        }
+        // reload() bumps version once; the replay pass doesn't, so
+        // the second bump signals subscribers to refetch with the
+        // pending log re-applied on top.
         self.world.bump_version();
-    }
-
-    /// Undo a pending × on a persisted override. Idempotent.
-    pub fn unmark_persisted_for_removal(&self, idx: usize) {
-        self.pending_removals.lock().remove(&idx);
-        self.world.bump_version();
+        Ok(true)
     }
 
     /// Drop one pending entry by id and re-derive World state by
@@ -360,17 +391,16 @@ impl Config {
         true
     }
 
-    /// Rewrite `config.ui-overrides.<microgrid-id>.lisp` to reflect
-    /// the desired post-persist state: the on-disk forms minus any
-    /// indices the user × marked, plus the in-memory pending log.
-    /// Both queues clear on success. No-op when both are empty.
+    /// Append the in-memory pending log to
+    /// `config.ui-overrides.<microgrid-id>.lisp` and clear the log.
+    /// On-disk persisted forms are kept verbatim — × on a persisted
+    /// entry is a separate, immediate path through
+    /// `remove_persisted_override`. No-op when the log is empty.
     ///
     /// Atomicity: writes to a sibling `.tmp` then renames over the
-    /// target. An IO failure (permission denied, disk full, parent
-    /// dir gone) returns the error with the pending log + removal
-    /// markers still intact — the user can retry. A concurrent push
-    /// to the pending log during the write survives because we
-    /// remove by id afterwards rather than clearing.
+    /// target. An IO failure leaves the pending log intact for
+    /// retry. Concurrent pushes during the write survive because
+    /// the post-write clear filters by id rather than truncating.
     ///
     /// `persisted` in the result counts the rewritten file's form
     /// total (kept on-disk + newly-flushed pending), which is what
@@ -378,8 +408,7 @@ impl Config {
     pub fn persist_pending(&self) -> std::io::Result<PersistResult> {
         let path = self.overrides_path();
         let entries: Vec<PendingEntry> = self.pending_log.lock().clone();
-        let removals = self.pending_removals.lock().clone();
-        if entries.is_empty() && removals.is_empty() {
+        if entries.is_empty() {
             return Ok(PersistResult {
                 persisted: self.persisted_count(),
                 path: path.to_string_lossy().into_owned(),
@@ -388,7 +417,6 @@ impl Config {
         let kept: Vec<String> = self
             .persisted_overrides()
             .into_iter()
-            .filter(|o| !removals.contains(&o.idx))
             .map(|o| o.source)
             .collect();
         let total = kept.len() + entries.len();
@@ -430,19 +458,17 @@ impl Config {
         self.pending_log
             .lock()
             .retain(|e| !persisted_ids.contains(&e.id));
-        self.pending_removals.lock().clear();
         Ok(PersistResult {
             persisted: total,
             path: path.to_string_lossy().into_owned(),
         })
     }
 
-    /// Drop the pending log + any × marks on persisted entries and
-    /// trigger a reload — World state goes back to whatever the
-    /// on-disk config + override file describe.
+    /// Drop the pending log and trigger a reload — World state
+    /// returns to whatever the on-disk config + override file
+    /// describe.
     pub fn discard_pending(&self) {
         self.pending_log.lock().clear();
-        self.pending_removals.lock().clear();
         self.reload();
     }
 
@@ -656,7 +682,12 @@ impl Config {
 }
 
 /// Register every Rust function the config DSL needs.
-fn register_runtime(ctx: &mut TulispContext, world: &World, metadata: Arc<RwLock<Metadata>>) {
+fn register_runtime(
+    ctx: &mut TulispContext,
+    world: &World,
+    metadata: Arc<RwLock<Metadata>>,
+    load_dir: PathBuf,
+) {
     add_log_functions(ctx);
     handle::register(ctx);
     make::register(ctx, world.clone());
@@ -669,7 +700,7 @@ fn register_runtime(ctx: &mut TulispContext, world: &World, metadata: Arc<RwLock
     register_reactive_setters(ctx, world.clone());
     register_setpoints(ctx, world.clone(), metadata);
     register_world_ops(ctx, world.clone());
-    register_fs_helpers(ctx);
+    register_fs_helpers(ctx, load_dir);
     csv_profile::register(ctx);
 }
 
@@ -739,13 +770,20 @@ fn register_world_ops(ctx: &mut TulispContext, world: World) {
 }
 
 /// Filesystem helpers the override-file loader needs.
-fn register_fs_helpers(ctx: &mut TulispContext) {
-    // Resolves relative to the current working directory, same as
-    // tulisp's (load PATH). Returns t/nil — used by load-overrides
-    // to no-op on a fresh checkout where the override file doesn't
-    // exist yet.
-    ctx.defun("file-exists-p", |path: String| -> bool {
-        Path::new(&path).exists()
+fn register_fs_helpers(ctx: &mut TulispContext, load_dir: PathBuf) {
+    // Path resolution mirrors tulisp's `(load PATH)`: relative paths
+    // are joined onto the config file's load dir, absolutes pass
+    // through. `load-overrides` gates `(load <override-file>)` with
+    // a `(file-exists-p …)` check; same base path keeps both calls
+    // looking at the same file regardless of the process CWD.
+    ctx.defun("file-exists-p", move |path: String| -> bool {
+        let p = Path::new(&path);
+        let resolved = if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            load_dir.join(p)
+        };
+        resolved.exists()
     });
 }
 

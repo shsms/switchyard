@@ -282,23 +282,37 @@ async fn persist_writes_overrides_file_and_clears_log() {
 }
 
 #[tokio::test]
-async fn persisted_mark_remove_excludes_form_on_next_persist() {
-    // Persist two evals → file has 2 forms. Mark idx 0 for
-    // removal → /api/pending shows it as marked_removal:true.
-    // Persist again → file has only the second form.
-    let cfg = config_with("(set-microgrid-id 7) (%make-grid :id 1)").await;
+async fn persisted_remove_drops_form_immediately() {
+    // Persist two evals → file has 2 forms. DELETE /api/persisted/0
+    // rewrites the file without that form, reloads, and replays the
+    // pending log; the world reflects only the second rename, and
+    // the file no longer contains the first.
+    //
+    // The config inlines a load-overrides defun so the reload
+    // triggered inside `Config::remove_persisted_override` actually
+    // re-reads the rewritten file. Real configs get this for free
+    // via `sim/common.lisp`; tests rely on a minimal body so we
+    // declare it locally.
+    let cfg = config_with(
+        "(set-microgrid-id 7)
+         (%make-grid :id 1)
+         (defun load-overrides ()
+           (when (file-exists-p \"config.ui-overrides.7.lisp\")
+             (load \"config.ui-overrides.7.lisp\")))
+         (load-overrides)",
+    )
+    .await;
     call(cfg.clone(), post("/api/eval", "(world-rename-component 1 \"a\")")).await;
     call(cfg.clone(), post("/api/eval", "(world-rename-component 1 \"b\")")).await;
     let (status, _) = call(cfg.clone(), post("/api/persist", "")).await;
     assert_eq!(status, StatusCode::OK);
 
-    // Confirm both forms are on disk.
+    // Both forms on disk; world's name reflects the last write.
     let (_, body) = call(cfg.clone(), get("/api/pending")).await;
     let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let persisted = parsed["persisted"].as_array().unwrap();
-    assert_eq!(persisted.len(), 2);
+    assert_eq!(parsed["persisted"].as_array().unwrap().len(), 2);
 
-    // Mark idx 0 for removal.
+    // × idx 0 → file shrinks to 1 form, world's name is now "b".
     let req = axum::http::Request::builder()
         .method(axum::http::Method::DELETE)
         .uri("/api/persisted/0")
@@ -307,27 +321,30 @@ async fn persisted_mark_remove_excludes_form_on_next_persist() {
     let (status, _) = call(cfg.clone(), req).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 
-    // /api/pending should reflect the mark.
     let (_, body) = call(cfg.clone(), get("/api/pending")).await;
-    let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(parsed["persisted"][0]["marked_removal"], true);
-    assert_eq!(parsed["persisted"][1]["marked_removal"], false);
-
-    // Persist → file rewritten without the marked form.
-    let (status, body) = call(cfg.clone(), post("/api/persist", "")).await;
-    assert_eq!(status, StatusCode::OK);
-    let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let path = parsed["path"].as_str().unwrap();
-    let written = std::fs::read_to_string(path).unwrap();
-    assert!(written.contains("\"b\""));
-    assert!(!written.contains("\"a\""));
-
-    // Removal set cleared.
-    let (_, body) = call(cfg, get("/api/pending")).await;
     let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
     let persisted = parsed["persisted"].as_array().unwrap();
     assert_eq!(persisted.len(), 1);
-    assert_eq!(persisted[0]["marked_removal"], false);
+    assert!(persisted[0]["source"].as_str().unwrap().contains("\"b\""));
+
+    let (_, body) = call(cfg.clone(), get("/api/topology")).await;
+    let topo: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let grid = topo["components"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == 1)
+        .unwrap();
+    assert_eq!(grid["name"], "b");
+
+    // 404 on out-of-range idx.
+    let req = axum::http::Request::builder()
+        .method(axum::http::Method::DELETE)
+        .uri("/api/persisted/99")
+        .body(axum::body::Body::empty())
+        .unwrap();
+    let (status, _) = call(cfg, req).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

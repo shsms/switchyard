@@ -234,8 +234,7 @@ dialog#help-dialog header button:hover { color: var(--fg); }
   font-size: 13px;
 }
 .pending-del,
-.persisted-del,
-.persisted-restore {
+.persisted-del {
   font-size: 14px;
   padding: 2px 6px;
 }
@@ -248,10 +247,6 @@ dialog#help-dialog header button:hover { color: var(--fg); }
 }
 #pending-dialog-content h3:not(:first-child) {
   margin-top: 1rem;
-}
-.pending-entry.marked-removal pre {
-  text-decoration: line-through;
-  color: var(--muted);
 }
 
 .hdr-btn {

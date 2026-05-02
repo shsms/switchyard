@@ -1173,19 +1173,14 @@ function renderPendingDialog(content, data) {
   const sections = [];
   if (data.persisted && data.persisted.length) {
     const rows = data.persisted
-      .map((o) => {
-        const cls = o.marked_removal
-          ? "pending-entry persisted marked-removal"
-          : "pending-entry persisted";
-        const action = o.marked_removal
-          ? `<button class="link-btn persisted-restore" data-idx="${o.idx}" title="Undo removal">⟲</button>`
-          : `<button class="link-btn persisted-del" data-idx="${o.idx}" title="Mark for removal on next persist">✕</button>`;
-        return `<div class="${cls}">
-          <div class="pending-num">#${o.idx + 1}</div>
-          <pre>${escapeHtml(o.source)}</pre>
-          ${action}
-        </div>`;
-      })
+      .map(
+        (o) =>
+          `<div class="pending-entry persisted">
+            <div class="pending-num">#${o.idx + 1}</div>
+            <pre>${escapeHtml(o.source)}</pre>
+            <button class="link-btn persisted-del" data-idx="${o.idx}" title="Drop this override now (rewrites the file and reloads)">✕</button>
+          </div>`,
+      )
       .join("");
     sections.push(`<h3>On disk</h3>${rows}`);
   }
@@ -1225,18 +1220,7 @@ function renderPendingDialog(content, data) {
       if (res.ok) {
         pendingState.refresh();
       } else {
-        notify(`Mark failed: ${res.status} ${await res.text()}`);
-      }
-    });
-  }
-  for (const btn of content.querySelectorAll(".persisted-restore")) {
-    btn.addEventListener("click", async () => {
-      const idx = btn.dataset.idx;
-      const res = await fetch(`/api/persisted/${idx}`, { method: "POST" });
-      if (res.ok) {
-        pendingState.refresh();
-      } else {
-        notify(`Restore failed: ${res.status} ${await res.text()}`);
+        notify(`Remove failed: ${res.status} ${await res.text()}`);
       }
     });
   }
@@ -1281,14 +1265,15 @@ function setupPersistControls() {
   pendingState.subscribe((data) => {
     const pending = data.entries.length;
     const persisted = data.persisted || [];
-    const removals = persisted.filter((o) => o.marked_removal).length;
     const total = pending + persisted.length;
-    const unsaved = pending > 0 || removals > 0;
+    // Persisted-side × is now immediate (the file is rewritten and
+    // the world reloads on click), so the only thing that counts as
+    // "unsaved" is the in-memory pending log.
     count.textContent = total;
-    dirty.textContent = unsaved ? "*" : "";
+    dirty.textContent = pending > 0 ? "*" : "";
     pill.hidden = total === 0;
-    persistBtn.disabled = !unsaved;
-    discardBtn.disabled = !unsaved;
+    persistBtn.disabled = pending === 0;
+    discardBtn.disabled = pending === 0;
   });
 
   persistBtn.addEventListener("click", async () => {

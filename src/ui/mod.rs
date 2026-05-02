@@ -62,8 +62,7 @@ fn router(config: Config) -> Router {
         .route("/api/pending/{id}", axum::routing::delete(pending_remove))
         .route(
             "/api/persisted/{idx}",
-            axum::routing::delete(persisted_mark_remove)
-                .post(persisted_unmark_remove),
+            axum::routing::delete(persisted_remove),
         )
         .route("/api/persist", post(persist))
         .route("/api/discard", post(discard))
@@ -398,10 +397,6 @@ struct PendingEntryView {
 struct PersistedOverrideView {
     idx: usize,
     source: String,
-    /// True when the user has × marked this entry but not yet
-    /// persisted. The chrome shows it visually struck-through and
-    /// counts it toward the "unsaved" dirty marker.
-    marked_removal: bool,
 }
 
 #[derive(Serialize)]
@@ -435,7 +430,6 @@ async fn pending(State(config): State<Config>) -> Json<PendingResponse> {
     // .trim_end() drops the formatter's file-style trailing newline
     // — the modal renders each entry in its own <pre>, an extra blank
     // line at the bottom would just look noisy.
-    let removals = config.pending_removals();
     let persisted: Vec<PersistedOverrideView> = config
         .persisted_overrides()
         .into_iter()
@@ -444,7 +438,6 @@ async fn pending(State(config): State<Config>) -> Json<PendingResponse> {
             source: tulisp_fmt::format_with_width(&o.source, 60)
                 .map(|f| f.trim_end().to_string())
                 .unwrap_or(o.source),
-            marked_removal: removals.contains(&o.idx),
         })
         .collect();
     let persisted_count = persisted.len();
@@ -470,25 +463,26 @@ async fn pending_remove(
     }
 }
 
-/// Mark a persisted-override index for removal on the next persist.
-/// Idempotent — the chrome's × button hits this on click and re-fetches
-/// /api/pending. The actual file rewrite happens when the user clicks
-/// Persist (or is undone via POST /api/persisted/:idx + Discard).
-async fn persisted_mark_remove(
+/// Drop a persisted-override entry by its file-position idx.
+/// Rewrites the override file without that form, reloads, and
+/// replays the in-memory pending log on top — see
+/// `Config::remove_persisted_override`. The chrome's × button on
+/// a persisted entry hits this and re-fetches /api/pending.
+async fn persisted_remove(
     State(config): State<Config>,
     axum::extract::Path(idx): axum::extract::Path<usize>,
-) -> StatusCode {
-    config.mark_persisted_for_removal(idx);
-    StatusCode::NO_CONTENT
-}
-
-/// Undo a pending × on a persisted-override index. Idempotent.
-async fn persisted_unmark_remove(
-    State(config): State<Config>,
-    axum::extract::Path(idx): axum::extract::Path<usize>,
-) -> StatusCode {
-    config.unmark_persisted_for_removal(idx);
-    StatusCode::NO_CONTENT
+) -> Result<StatusCode, (StatusCode, String)> {
+    let result = tokio::task::spawn_blocking(move || config.remove_persisted_override(idx))
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("task panicked: {e}")))?;
+    match result {
+        Ok(true) => Ok(StatusCode::NO_CONTENT),
+        Ok(false) => Err((
+            StatusCode::NOT_FOUND,
+            format!("no persisted override at idx {idx}"),
+        )),
+        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, format!("write failed: {e}"))),
+    }
 }
 
 #[derive(Serialize)]
