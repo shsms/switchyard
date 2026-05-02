@@ -28,6 +28,7 @@ use crate::sim::{
 AsPlist! {
     pub struct GridArgs {
         id: Option<i64> {= None},
+        name: Option<String> {= None},
         rated_fuse_current<":rated-fuse-current">: Option<i64> {= None},
         successors: Option<Vec<ComponentHandle>> {= None},
         stream_jitter_pct<":stream-jitter-pct">: Option<f64> {= None},
@@ -58,6 +59,7 @@ AsAlist! {
 AsPlist! {
     pub struct MeterArgs {
         id: Option<i64> {= None},
+        name: Option<String> {= None},
         interval: Option<i64> {= None},
         power: Option<f64> {= None},
         successors: Option<Vec<ComponentHandle>> {= None},
@@ -92,6 +94,7 @@ AsAlist! {
 AsPlist! {
     pub struct BatteryArgs {
         id: Option<i64> {= None},
+        name: Option<String> {= None},
         interval: Option<i64> {= None},
         capacity_wh<":capacity">: Option<f64> {= None},
         initial_soc<":initial-soc">: Option<f64> {= None},
@@ -139,6 +142,7 @@ AsAlist! {
 AsPlist! {
     pub struct BatteryInverterArgs {
         id: Option<i64> {= None},
+        name: Option<String> {= None},
         interval: Option<i64> {= None},
         successors: Option<Vec<ComponentHandle>> {= None},
         rated_lower<":rated-lower">: Option<f64> {= None},
@@ -192,6 +196,7 @@ AsAlist! {
 AsPlist! {
     pub struct SolarInverterArgs {
         id: Option<i64> {= None},
+        name: Option<String> {= None},
         interval: Option<i64> {= None},
         sunlight_pct<":sunlight%">: Option<f64> {= None},
         rated_lower<":rated-lower">: Option<f64> {= None},
@@ -244,6 +249,7 @@ AsAlist! {
 AsPlist! {
     pub struct EvChargerArgs {
         id: Option<i64> {= None},
+        name: Option<String> {= None},
         interval: Option<i64> {= None},
         rated_lower<":rated-lower">: Option<f64> {= None},
         rated_upper<":rated-upper">: Option<f64> {= None},
@@ -291,6 +297,7 @@ AsAlist! {
 AsPlist! {
     pub struct ChpArgs {
         id: Option<i64> {= None},
+        name: Option<String> {= None},
         stream_jitter_pct<":stream-jitter-pct">: Option<f64> {= None},
         health<":health">: Option<Health> {= None},
         telemetry_mode<":telemetry-mode">: Option<TelemetryMode> {= None},
@@ -337,6 +344,7 @@ pub fn register(ctx: &mut TulispContext, world: World) {
                 a.telemetry_mode.or(d.telemetry_mode),
                 a.command_mode.or(d.command_mode),
             )?;
+            apply_initial_name(&w, id, a.name);
             connect_successors(&w, id, &a.successors);
             Ok::<_, Error>(h)
         },
@@ -383,6 +391,7 @@ pub fn register(ctx: &mut TulispContext, world: World) {
                 a.telemetry_mode.or(d.telemetry_mode),
                 a.command_mode.or(d.command_mode),
             )?;
+            apply_initial_name(&w, id, a.name);
             // Hidden meters: their *outgoing* edges (to children) are
             // suppressed too, mirroring microsim. The handle-side filter
             // in connect_successors elsewhere skips edges *into* hidden
@@ -431,13 +440,15 @@ pub fn register(ctx: &mut TulispContext, world: World) {
             if let Some(v) = a.stream_jitter_pct.or(d.stream_jitter_pct) {
                 cfg.stream_jitter_pct = v as f32;
             }
-            register_with_modes(
+            let h = register_with_modes(
                 &w,
                 Battery::new(id, interval, cfg),
                 a.health.or(d.health),
                 a.telemetry_mode.or(d.telemetry_mode),
                 a.command_mode.or(d.command_mode),
-            )
+            )?;
+            apply_initial_name(&w, id, a.name);
+            Ok::<_, Error>(h)
         },
     );
 
@@ -509,6 +520,7 @@ pub fn register(ctx: &mut TulispContext, world: World) {
                 a.telemetry_mode.or(d.telemetry_mode),
                 a.command_mode.or(d.command_mode),
             )?;
+            apply_initial_name(&w, id, a.name);
             connect_successors(&w, id, &a.successors);
             Ok::<_, Error>(h)
         },
@@ -562,13 +574,15 @@ pub fn register(ctx: &mut TulispContext, world: World) {
             if let Some(v) = a.reactive_ramp_rate.or(d.reactive_ramp_rate) {
                 cfg.reactive_ramp_rate_var_per_s = v as f32;
             }
-            register_with_modes(
+            let h = register_with_modes(
                 &w,
                 SolarInverter::new(id, interval, cfg),
                 a.health.or(d.health),
                 a.telemetry_mode.or(d.telemetry_mode),
                 a.command_mode.or(d.command_mode),
-            )
+            )?;
+            apply_initial_name(&w, id, a.name);
+            Ok::<_, Error>(h)
         },
     );
 
@@ -611,13 +625,15 @@ pub fn register(ctx: &mut TulispContext, world: World) {
             if let Some(v) = a.stream_jitter_pct.or(d.stream_jitter_pct) {
                 cfg.stream_jitter_pct = v as f32;
             }
-            register_with_modes(
+            let h = register_with_modes(
                 &w,
                 EvCharger::new(id, interval, cfg),
                 a.health.or(d.health),
                 a.telemetry_mode.or(d.telemetry_mode),
                 a.command_mode.or(d.command_mode),
-            )
+            )?;
+            apply_initial_name(&w, id, a.name);
+            Ok::<_, Error>(h)
         },
     );
 
@@ -632,13 +648,15 @@ pub fn register(ctx: &mut TulispContext, world: World) {
                 .stream_jitter_pct
                 .or(d.stream_jitter_pct)
                 .unwrap_or(0.0) as f32;
-            register_with_modes(
+            let h = register_with_modes(
                 &w,
                 Chp::new(id, jitter),
                 a.health.or(d.health),
                 a.telemetry_mode.or(d.telemetry_mode),
                 a.command_mode.or(d.command_mode),
-            )
+            )?;
+            apply_initial_name(&w, id, a.name);
+            Ok::<_, Error>(h)
         },
     );
 }
@@ -708,6 +726,16 @@ fn register_with_modes<C: crate::sim::SimulatedComponent + 'static>(
     Ok(h)
 }
 
+/// Apply a `:name "…"` plist arg after registration. Stores it as a
+/// display-name override so the gRPC `ListElectricalComponents`
+/// response and the UI's topology endpoint both pick it up. No-op
+/// when the user didn't pass `:name`.
+fn apply_initial_name(world: &World, id: u64, name: Option<String>) {
+    if let Some(n) = name {
+        world.rename(id, n);
+    }
+}
+
 /// Apply initial runtime mode args from a plist constructor. Each
 /// `make-*` calls this immediately after `world.register(...)` so a
 /// component declared with `:health 'error` is broken from the very
@@ -745,6 +773,19 @@ mod tests {
         register(&mut ctx, world.clone());
         ctx.eval_string(src).expect("eval lisp source");
         world
+    }
+
+    /// `:name "..."` on any %make-* lands as a display-name override
+    /// — same path as `(world-rename-component …)` — so the gRPC
+    /// listing and the UI's topology endpoint both pick it up.
+    /// Omitting `:name` falls through to the component's
+    /// auto-generated default (`category-id`).
+    #[test]
+    fn name_arg_sets_display_name() {
+        let world = run(r#"(%make-battery :id 200 :name "main-batt")"#);
+        assert_eq!(world.display_name(200).as_deref(), Some("main-batt"));
+        let world = run(r#"(%make-battery :id 201)"#);
+        assert_eq!(world.display_name(201).as_deref(), Some("bat-201"));
     }
 
     #[test]
