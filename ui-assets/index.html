@@ -19,10 +19,8 @@
       <button id="scenarios-btn" class="hdr-btn">Scenarios</button>
       <button id="defaults-btn" class="hdr-btn">Defaults</button>
       <span id="pending-pill" class="pending-pill" hidden>
-        <span id="pending-count">0</span> overrides<span id="pending-dirty"></span>
+        <span id="pending-count">0</span> overrides
       </span>
-      <button id="discard-btn" class="hdr-btn" disabled>Discard</button>
-      <button id="persist-btn" class="hdr-btn primary" disabled>Persist</button>
     </header>
     <main id="app">
       <div id="topology"></div>
@@ -95,11 +93,9 @@
         <h4>Side panel + chrome</h4>
         <ul class="help-list">
           <li><strong>Add component</strong> (lower side panel) — pick a category, click <em>Create</em>; an auto-id'd component appears. Wire it via <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+drag.</li>
-          <li><strong>Defaults</strong> — per-category defaults (Lisp values); edits ride the pending log.</li>
-          <li><strong>Scenarios</strong> — save the current pending log as a named recipe; load to replay it.</li>
-          <li><strong>Overrides pill</strong> — total active overrides (on disk + unsaved). <code>*</code> means unsaved. Click to inspect / × individual entries.</li>
-          <li><strong>Persist</strong> — flush pending edits + honored × marks to <code>config.ui-overrides.&lt;microgrid-id&gt;.lisp</code>.</li>
-          <li><strong>Discard</strong> — drop the pending log + × marks; reload from disk.</li>
+          <li><strong>Defaults</strong> — per-category defaults (Lisp values); edits write to the override file.</li>
+          <li><strong>Scenarios</strong> — snapshot the override file as a named recipe; load to replay it on top of the current state.</li>
+          <li><strong>Overrides pill</strong> — count of forms in <code>config.ui-overrides.&lt;microgrid-id&gt;.lisp</code>. Every successful canvas / REPL edit appends to that file immediately. Click the pill to open the dialog: tick the rows you want gone, hit <em>Delete selected</em>; the file rewrites and the world reloads in one round trip.</li>
         </ul>
         <h4>REPL</h4>
         <ul class="help-list">

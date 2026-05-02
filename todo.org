@@ -2,6 +2,53 @@
 
 Items not landing right now but worth revisiting.
 
+* Features
+
+** f1. Promote override file into ~config.lisp~
+
+Currently every successful eval lands in the per-microgrid override
+file (~config.ui-overrides.<id>.lisp~). The next step in that
+flow: a UI action that takes the override file's contents and
+appends them to ~config.lisp~ (somewhere — see "Open questions"
+below), then empties the override file. After the action the
+world is unchanged but the source-of-truth has shifted from
+"runtime edit" to "canonical config" and the entry is no longer
+editable from the UI overrides dialog.
+
+*Where it'd land:* a button in the chrome (probably called Persist
+or Promote), a server-side endpoint that does the file munging,
+and an entry in this UI dialog that confirms the move.
+
+*Open questions to settle before coding:*
+
+- Where in ~config.lisp~ does the appended content go? End of
+  file? Before a designated marker comment? Inside the
+  ~(unless (boundp 'switchyard-loaded) …)~ guard? Mid-topology?
+  Most user configs have a structure (timers near the top,
+  topology in the middle, ~(load-overrides)~ at the bottom) —
+  blindly appending at the end works mechanically but loses
+  semantic grouping.
+- Does the action try to dedup against existing forms in
+  ~config.lisp~? eg. if the override is
+  ~(world-rename-component 1 "alpha")~ and config.lisp already
+  ~(world-rename-component 1 "main-grid")~, do we replace the
+  existing call, append after it, or just append at the end and
+  let last-write-win semantics carry the day?
+- Does the action run ~tulisp-fmt~ over the merged config.lisp,
+  or preserve the existing whitespace / comments verbatim and
+  only format the appended block?
+- After the move, the override file is empty and config.lisp
+  grew. Reloading should yield the same world (same forms, just
+  relocated). Worth a test that round-trips
+  add → promote → reload → state-equal.
+
+*Why deferred:* the immediate-write override file (item lands
+right after this todo file is updated) makes the override file
+the pending log. Promote-to-config.lisp is a one-way commit gate
+on top of that, but the interesting design choices above need a
+real config sample to test against — easier to settle once a
+heavy switchyard config has accumulated some real overrides.
+
 * Bugs / dubious decisions
 
 ** d1. Rethink ~file-exists-p~ resolving against the config's load dir

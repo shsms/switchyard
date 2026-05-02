@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::{
-    lisp::{Config, PendingEntry},
+    lisp::{Config, PersistResult},
     sim::{Category, history::Metric, setpoints::SetpointEvent},
 };
 
@@ -58,14 +58,12 @@ fn router(config: Config) -> Router {
         .route("/api/history", get(history))
         .route("/api/defaults", get(defaults))
         .route("/api/setpoints", get(setpoints))
-        .route("/api/pending", get(pending))
-        .route("/api/pending/{id}", axum::routing::delete(pending_remove))
+        .route("/api/overrides", get(overrides_list))
         .route(
             "/api/persisted/{idx}",
             axum::routing::delete(persisted_remove),
         )
-        .route("/api/persist", post(persist))
-        .route("/api/discard", post(discard))
+        .route("/api/persisted/delete", post(persisted_bulk_remove))
         .route("/api/logs", get(logs_backfill))
         .route("/api/scenarios", get(scenarios_list))
         .route("/api/scenarios/save", post(scenarios_save))
@@ -186,21 +184,8 @@ struct EvalResponse {
 /// Always returns 200 — application-layer success/failure rides in
 /// the JSON body. Reserves HTTP 4xx/5xx for transport-level problems
 /// (bad UTF-8, the spawn_blocking task panicking, etc.).
-#[derive(Deserialize)]
-struct EvalQuery {
-    /// Component id this eval targets, if known. Tagged on the
-    /// resulting pending entry so the inspector can show "current
-    /// overrides on component X" without parsing the source.
-    affects: Option<u64>,
-}
-
-async fn eval(
-    State(config): State<Config>,
-    Query(q): Query<EvalQuery>,
-    body: String,
-) -> impl IntoResponse {
-    let affects = q.affects;
-    let result = tokio::task::spawn_blocking(move || config.eval_with_affects(&body, affects))
+async fn eval(State(config): State<Config>, body: String) -> impl IntoResponse {
+    let result = tokio::task::spawn_blocking(move || config.eval(&body))
         .await
         .map_err(|e| {
             (
@@ -382,17 +367,6 @@ async fn defaults(State(config): State<Config>) -> Json<DefaultsResponse> {
     Json(DefaultsResponse { entries })
 }
 
-/// One entry as the UI sees it: structured metadata plus the
-/// formatted source (tulisp-fmt at width 60). The id is the
-/// PendingEntry id from Config — used for `DELETE /api/pending/:id`.
-#[derive(Serialize)]
-struct PendingEntryView {
-    id: u64,
-    ts: chrono::DateTime<chrono::Utc>,
-    affects: Option<u64>,
-    source: String,
-}
-
 #[derive(Serialize)]
 struct PersistedOverrideView {
     idx: usize,
@@ -400,36 +374,22 @@ struct PersistedOverrideView {
 }
 
 #[derive(Serialize)]
-struct PendingResponse {
-    /// Successful eval expressions accumulated since the last persist
-    /// (or process start). Oldest first.
-    entries: Vec<PendingEntryView>,
-    /// Top-level forms in the on-disk override file, one per entry.
-    /// Each `idx` is stable until the next persist rewrites the file.
+struct OverridesResponse {
+    /// Top-level forms in the on-disk override file, one per
+    /// entry. Each `idx` is stable until the next bulk-delete
+    /// rewrites the file.
     persisted: Vec<PersistedOverrideView>,
     /// Convenience for the chrome's "N overrides" pill — equals
     /// `persisted.len()`.
-    persisted_count: usize,
+    count: usize,
 }
 
-fn format_entry(e: PendingEntry) -> PendingEntryView {
-    let formatted = tulisp_fmt::format_with_width(&e.source, 60)
-        .map(|f| f.trim_end().to_string())
-        .unwrap_or_else(|_| e.source.clone());
-    PendingEntryView {
-        id: e.id,
-        ts: e.ts,
-        affects: e.affects,
-        source: formatted,
-    }
-}
-
-async fn pending(State(config): State<Config>) -> Json<PendingResponse> {
-    // Format each entry via tulisp-fmt so the modal shows tidy Lisp
-    // (multi-line for nested forms) instead of one-liner source.
-    // .trim_end() drops the formatter's file-style trailing newline
-    // — the modal renders each entry in its own <pre>, an extra blank
-    // line at the bottom would just look noisy.
+async fn overrides_list(State(config): State<Config>) -> Json<OverridesResponse> {
+    // Format each form via tulisp-fmt so the dialog shows tidy
+    // Lisp (multi-line for nested forms) instead of one-liner
+    // source. .trim_end() drops the formatter's file-style
+    // trailing newline so adjacent <pre>s don't accumulate blank
+    // lines.
     let persisted: Vec<PersistedOverrideView> = config
         .persisted_overrides()
         .into_iter()
@@ -440,103 +400,58 @@ async fn pending(State(config): State<Config>) -> Json<PendingResponse> {
                 .unwrap_or(o.source),
         })
         .collect();
-    let persisted_count = persisted.len();
-    let entries = config.pending().into_iter().map(format_entry).collect();
-    Json(PendingResponse {
-        entries,
-        persisted,
-        persisted_count,
-    })
+    let count = persisted.len();
+    Json(OverridesResponse { persisted, count })
 }
 
-async fn pending_remove(
-    State(config): State<Config>,
-    axum::extract::Path(id): axum::extract::Path<u64>,
-) -> Result<StatusCode, (StatusCode, String)> {
-    let removed = tokio::task::spawn_blocking(move || config.remove_pending(id))
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("task panicked: {e}")))?;
-    if removed {
-        Ok(StatusCode::NO_CONTENT)
-    } else {
-        Err((StatusCode::NOT_FOUND, format!("no pending entry with id {id}")))
-    }
-}
-
-/// Drop a persisted-override entry by its file-position idx.
-/// Rewrites the override file without that form, reloads, and
-/// replays the in-memory pending log on top — see
-/// `Config::remove_persisted_override`. The chrome's × button on
-/// a persisted entry hits this and re-fetches /api/pending.
+/// Drop a single persisted-override entry by its file-position
+/// idx. Rewrites the override file without that form and reloads
+/// — see `Config::remove_persisted_overrides`. The bulk-delete
+/// endpoint below is the more common path; this one stays for
+/// parity / single-shot scripted use.
 async fn persisted_remove(
     State(config): State<Config>,
     axum::extract::Path(idx): axum::extract::Path<usize>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    let result = tokio::task::spawn_blocking(move || config.remove_persisted_override(idx))
+    let result = tokio::task::spawn_blocking(move || config.remove_persisted_overrides(&[idx]))
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("task panicked: {e}")))?;
     match result {
-        Ok(true) => Ok(StatusCode::NO_CONTENT),
-        Ok(false) => Err((
+        Ok(0) => Err((
             StatusCode::NOT_FOUND,
             format!("no persisted override at idx {idx}"),
         )),
+        Ok(_) => Ok(StatusCode::NO_CONTENT),
         Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, format!("write failed: {e}"))),
     }
 }
 
-#[derive(Serialize)]
-struct PersistResponse {
-    persisted: usize,
-    path: String,
-}
-
-async fn persist(State(config): State<Config>) -> Result<Json<PersistResponse>, (StatusCode, String)> {
-    // File I/O on the executor thread isn't quite as bad as a long
-    // eval, but spawn_blocking here keeps us consistent with the
-    // policy /api/eval already follows.
-    tokio::task::spawn_blocking(move || config.persist_pending())
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("persist task panicked: {e}"),
-            )
-        })?
-        .map(|r| {
-            Json(PersistResponse {
-                persisted: r.persisted,
-                path: r.path,
-            })
-        })
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("write failed: {e}")))
+#[derive(Deserialize)]
+struct BulkRemoveBody {
+    indices: Vec<usize>,
 }
 
 #[derive(Serialize)]
-struct DiscardResponse {
-    discarded: usize,
+struct BulkRemoveResponse {
+    removed: usize,
 }
 
-async fn discard(
+/// Drop several persisted-override entries in one shot. Rewrites
+/// the override file once and reloads once — the chrome's
+/// checkbox-toolbar Delete button hits this, so a 5-item delete
+/// is one round trip and one re-render rather than five.
+async fn persisted_bulk_remove(
     State(config): State<Config>,
-) -> Result<Json<DiscardResponse>, (StatusCode, String)> {
-    // Take the count and the discard inside the same spawn_blocking
-    // so a concurrent push between them can't race the response, and
-    // so the JoinError from a panicking discard task surfaces as 5xx
-    // instead of being silently swallowed.
-    let count = tokio::task::spawn_blocking(move || {
-        let n = config.pending().len();
-        config.discard_pending();
-        n
-    })
-    .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("discard task panicked: {e}"),
-        )
-    })?;
-    Ok(Json(DiscardResponse { discarded: count }))
+    Json(body): Json<BulkRemoveBody>,
+) -> Result<Json<BulkRemoveResponse>, (StatusCode, String)> {
+    let result =
+        tokio::task::spawn_blocking(move || config.remove_persisted_overrides(&body.indices))
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("task panicked: {e}")))?;
+    match result {
+        Ok(removed) => Ok(Json(BulkRemoveResponse { removed })),
+        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, format!("write failed: {e}"))),
+    }
 }
 
 #[derive(Serialize)]
@@ -569,16 +484,22 @@ struct ScenarioName {
     name: String,
 }
 
+#[derive(Serialize)]
+struct ScenarioSavedResponse {
+    persisted: usize,
+    path: String,
+}
+
 async fn scenarios_save(
     State(config): State<Config>,
     Query(q): Query<ScenarioName>,
-) -> Result<Json<PersistResponse>, (StatusCode, String)> {
+) -> Result<Json<ScenarioSavedResponse>, (StatusCode, String)> {
     let name = sanitize_scenario_name(&q.name)?;
     tokio::task::spawn_blocking(move || config.save_scenario(&name))
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("save panicked: {e}")))?
-        .map(|r| {
-            Json(PersistResponse {
+        .map(|r: PersistResult| {
+            Json(ScenarioSavedResponse {
                 persisted: r.persisted,
                 path: r.path,
             })

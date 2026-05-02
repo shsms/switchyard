@@ -173,146 +173,56 @@ async fn history_endpoint_returns_empty_for_unknown_component() {
 }
 
 #[tokio::test]
-async fn pending_endpoint_lists_logged_evals() {
-    let cfg = config_with("(set-microgrid-id 7)").await;
-    // Two successful evals + one error. Errors don't log.
-    call(cfg.clone(), post("/api/eval", "(+ 1 2)")).await;
+async fn overrides_endpoint_lists_appended_evals() {
+    let cfg = config_with("(set-microgrid-id 7) (%make-grid :id 1)").await;
+    // Two successful evals + one error. Errors don't append.
+    call(cfg.clone(), post("/api/eval", "(world-rename-component 1 \"a\")")).await;
     call(cfg.clone(), post("/api/eval", "(undefined-fn 1)")).await;
     call(cfg.clone(), post("/api/eval", "(set-microgrid-name \"foo\")")).await;
-    let (status, body) = call(cfg, get("/api/pending")).await;
+    let (status, body) = call(cfg, get("/api/overrides")).await;
     assert_eq!(status, StatusCode::OK);
     let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let entries = parsed["entries"].as_array().unwrap();
+    let entries = parsed["persisted"].as_array().unwrap();
     assert_eq!(entries.len(), 2);
-    assert_eq!(entries[0]["source"], "(+ 1 2)");
-    assert_eq!(entries[1]["source"], "(set-microgrid-name \"foo\")");
-    // Each entry now carries a stable id for delete-by-id.
-    assert!(entries[0]["id"].as_u64().is_some());
-    assert!(entries[1]["id"].as_u64().is_some());
+    assert!(
+        entries
+            .iter()
+            .any(|e| e["source"].as_str().unwrap().contains("rename"))
+    );
+    assert!(
+        entries
+            .iter()
+            .any(|e| e["source"].as_str().unwrap().contains("set-microgrid-name"))
+    );
+    assert_eq!(parsed["count"], 2);
 }
 
-#[tokio::test]
-async fn pending_remove_only_entry_bumps_world_version() {
-    // Regression: removing the only pending entry used to leave
-    // the WS topology event unfired — `reload` happens but no
-    // surviving entries replay, so no eval_with_affects
-    // bump_version call. UI consumers stuck showing stale state.
-    let cfg = config_with("(set-microgrid-id 7) (%make-grid :id 1)").await;
-    call(cfg.clone(), post("/api/eval", "(world-rename-component 1 \"x\")")).await;
-    let v_before = cfg.world().version();
-    let (_, body) = call(cfg.clone(), get("/api/pending")).await;
-    let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let id = parsed["entries"][0]["id"].as_u64().unwrap();
-
-    let req = axum::http::Request::builder()
-        .method(axum::http::Method::DELETE)
-        .uri(format!("/api/pending/{id}"))
-        .body(axum::body::Body::empty())
-        .unwrap();
-    let (status, _) = call(cfg.clone(), req).await;
-    assert_eq!(status, StatusCode::NO_CONTENT);
-
-    // World version must have advanced — that's how the WS event
-    // tells the SPA to re-fetch /api/topology + /api/pending.
-    assert!(cfg.world().version() > v_before);
-}
-
-#[tokio::test]
-async fn pending_remove_drops_one_entry_and_replays_rest() {
-    let cfg = config_with("(set-microgrid-id 7) (%make-grid :id 1)").await;
-    call(cfg.clone(), post("/api/eval", "(world-rename-component 1 \"a\")")).await;
-    call(cfg.clone(), post("/api/eval", "(world-rename-component 1 \"b\")")).await;
-    // Pending log has two entries; current name is "b" (last write wins).
-    let (_, body) = call(cfg.clone(), get("/api/pending")).await;
-    let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let id_b = parsed["entries"][1]["id"].as_u64().unwrap();
-
-    // Remove the second entry → reload + replay drops "b", leaves "a".
-    let req = axum::http::Request::builder()
-        .method(axum::http::Method::DELETE)
-        .uri(format!("/api/pending/{id_b}"))
-        .body(axum::body::Body::empty())
-        .unwrap();
-    let (status, _) = call(cfg.clone(), req).await;
-    assert_eq!(status, StatusCode::NO_CONTENT);
-
-    let (_, body) = call(cfg.clone(), get("/api/pending")).await;
-    let after: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let entries = after["entries"].as_array().unwrap();
-    assert_eq!(entries.len(), 1);
-    assert!(entries[0]["source"]
-        .as_str()
-        .unwrap()
-        .contains("\"a\""));
-
-    let (_, body) = call(cfg, get("/api/topology")).await;
-    let topo: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let grid = topo["components"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|c| c["id"] == 1)
-        .unwrap();
-    assert_eq!(grid["name"], "a");
-}
-
-#[tokio::test]
-async fn persist_writes_overrides_file_and_clears_log() {
-    let cfg = config_with("(set-microgrid-id 7)").await;
-    call(cfg.clone(), post("/api/eval", "(+ 1 2)")).await;
-    call(cfg.clone(), post("/api/eval", "(set-microgrid-name \"foo\")")).await;
-
-    let (status, body) = call(cfg.clone(), post("/api/persist", "")).await;
-    assert_eq!(status, StatusCode::OK);
-    let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(parsed["persisted"], 2);
-    let path = parsed["path"].as_str().unwrap();
-    let written = std::fs::read_to_string(path).unwrap();
-    // Both expressions present + a header timestamp comment.
-    assert!(written.contains("(+ 1 2)"));
-    assert!(written.contains("(set-microgrid-name \"foo\")"));
-    assert!(written.contains(";; ──"));
-    // Filename parameterised by microgrid-id.
-    assert!(path.ends_with("config.ui-overrides.7.lisp"));
-
-    // Pending log cleared after persist.
-    let (_, body) = call(cfg, get("/api/pending")).await;
-    let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert!(parsed["entries"].as_array().unwrap().is_empty());
-}
+/// Minimal local `load-overrides` defun for tests — real configs
+/// get this from `sim/common.lisp`, but `config_with` writes a
+/// bare-bones config that doesn't pull in the helper file.
+const LOAD_OVERRIDES_HELPER: &str =
+    "(defun load-overrides ()
+       (when (file-exists-p \"config.ui-overrides.7.lisp\")
+         (load \"config.ui-overrides.7.lisp\")))
+     (load-overrides)";
 
 #[tokio::test]
 async fn persisted_remove_drops_form_immediately() {
-    // Persist two evals → file has 2 forms. DELETE /api/persisted/0
-    // rewrites the file without that form, reloads, and replays the
-    // pending log; the world reflects only the second rename, and
+    // Two evals append two forms to the override file. DELETE
+    // /api/persisted/0 rewrites the file without that form and
+    // reloads; the world reflects only the second rename, and
     // the file no longer contains the first.
-    //
-    // The config inlines a load-overrides defun so the reload
-    // triggered inside `Config::remove_persisted_override` actually
-    // re-reads the rewritten file. Real configs get this for free
-    // via `sim/common.lisp`; tests rely on a minimal body so we
-    // declare it locally.
-    let cfg = config_with(
-        "(set-microgrid-id 7)
-         (%make-grid :id 1)
-         (defun load-overrides ()
-           (when (file-exists-p \"config.ui-overrides.7.lisp\")
-             (load \"config.ui-overrides.7.lisp\")))
-         (load-overrides)",
-    )
-    .await;
+    let body = format!(
+        "(set-microgrid-id 7) (%make-grid :id 1) {LOAD_OVERRIDES_HELPER}",
+    );
+    let cfg = config_with(&body).await;
     call(cfg.clone(), post("/api/eval", "(world-rename-component 1 \"a\")")).await;
     call(cfg.clone(), post("/api/eval", "(world-rename-component 1 \"b\")")).await;
-    let (status, _) = call(cfg.clone(), post("/api/persist", "")).await;
-    assert_eq!(status, StatusCode::OK);
 
-    // Both forms on disk; world's name reflects the last write.
-    let (_, body) = call(cfg.clone(), get("/api/pending")).await;
+    let (_, body) = call(cfg.clone(), get("/api/overrides")).await;
     let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(parsed["persisted"].as_array().unwrap().len(), 2);
 
-    // × idx 0 → file shrinks to 1 form, world's name is now "b".
     let req = axum::http::Request::builder()
         .method(axum::http::Method::DELETE)
         .uri("/api/persisted/0")
@@ -321,7 +231,7 @@ async fn persisted_remove_drops_form_immediately() {
     let (status, _) = call(cfg.clone(), req).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 
-    let (_, body) = call(cfg.clone(), get("/api/pending")).await;
+    let (_, body) = call(cfg.clone(), get("/api/overrides")).await;
     let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
     let persisted = parsed["persisted"].as_array().unwrap();
     assert_eq!(persisted.len(), 1);
@@ -348,36 +258,54 @@ async fn persisted_remove_drops_form_immediately() {
 }
 
 #[tokio::test]
-async fn discard_clears_log_and_reloads() {
-    // Config that boots with one component; eval adds another;
-    // discard reloads → only the original survives.
-    let cfg = config_with("(set-microgrid-id 7) (%make-grid :id 1)").await;
-    call(cfg.clone(), post("/api/eval", "(%make-meter :id 99)")).await;
-    // Verify the meter is live before discard.
-    let (_, body) = call(cfg.clone(), get("/api/topology")).await;
-    let pre: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(pre["components"].as_array().unwrap().len(), 2);
+async fn persisted_bulk_remove_drops_indices_in_one_reload() {
+    let body = format!(
+        "(set-microgrid-id 7) (%make-grid :id 1) {LOAD_OVERRIDES_HELPER}",
+    );
+    let cfg = config_with(&body).await;
+    call(cfg.clone(), post("/api/eval", "(world-rename-component 1 \"a\")")).await;
+    call(cfg.clone(), post("/api/eval", "(world-rename-component 1 \"b\")")).await;
+    call(cfg.clone(), post("/api/eval", "(world-rename-component 1 \"c\")")).await;
 
-    let (status, body) = call(cfg.clone(), post("/api/discard", "")).await;
+    // Drop idx 0 + 2 → only "b" survives, world reflects "b".
+    let req = axum::http::Request::builder()
+        .method(axum::http::Method::POST)
+        .uri("/api/persisted/delete")
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(r#"{"indices":[0,2]}"#))
+        .unwrap();
+    let (status, body) = call(cfg.clone(), req).await;
     assert_eq!(status, StatusCode::OK);
     let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(parsed["discarded"], 1);
+    assert_eq!(parsed["removed"], 2);
 
-    // Post-discard: pending empty + topology back to one component.
-    let (_, body) = call(cfg.clone(), get("/api/pending")).await;
-    let p: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert!(p["entries"].as_array().unwrap().is_empty());
+    let (_, body) = call(cfg.clone(), get("/api/overrides")).await;
+    let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let persisted = parsed["persisted"].as_array().unwrap();
+    assert_eq!(persisted.len(), 1);
+    assert!(persisted[0]["source"].as_str().unwrap().contains("\"b\""));
+
     let (_, body) = call(cfg, get("/api/topology")).await;
-    let post_t: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(post_t["components"].as_array().unwrap().len(), 1);
+    let topo: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let grid = topo["components"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == 1)
+        .unwrap();
+    assert_eq!(grid["name"], "b");
 }
 
 #[tokio::test]
 async fn scenarios_round_trip_save_list_load() {
-    // Add two pending entries → save scenario "foo" → list shows
-    // it → discard clears pending → load "foo" puts the saved
-    // forms back into the pending log.
-    let cfg = config_with("(set-microgrid-id 7) (%make-grid :id 1)").await;
+    // Two evals → save scenario "foo" snapshots the override file
+    // → list shows "foo" → load appends the snapshot back into the
+    // override file (so the file ends up with all four entries:
+    // the original two + the two replays).
+    let body = format!(
+        "(set-microgrid-id 7) (%make-grid :id 1) {LOAD_OVERRIDES_HELPER}",
+    );
+    let cfg = config_with(&body).await;
     call(cfg.clone(), post("/api/eval", "(world-rename-component 1 \"a\")")).await;
     call(cfg.clone(), post("/api/eval", "(world-rename-component 1 \"b\")")).await;
 
@@ -395,11 +323,6 @@ async fn scenarios_round_trip_save_list_load() {
     assert!(written.contains("\"a\""));
     assert!(written.contains("\"b\""));
 
-    // save_scenario clears the pending log.
-    let (_, body) = call(cfg.clone(), get("/api/pending")).await;
-    let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert!(parsed["entries"].as_array().unwrap().is_empty());
-
     let (status, body) = call(cfg.clone(), get("/api/scenarios")).await;
     assert_eq!(status, StatusCode::OK);
     let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
@@ -413,12 +336,12 @@ async fn scenarios_round_trip_save_list_load() {
     .await;
     assert_eq!(status, StatusCode::OK);
     let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    // Round-trip: 2 forms saved → 2 pending entries on load.
     assert_eq!(parsed["entries_added"], 2);
 
-    let (_, body) = call(cfg, get("/api/pending")).await;
+    // Override file now holds the original two appends + two replays.
+    let (_, body) = call(cfg, get("/api/overrides")).await;
     let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(parsed["entries"].as_array().unwrap().len(), 2);
+    assert_eq!(parsed["persisted"].as_array().unwrap().len(), 4);
 }
 
 #[tokio::test]

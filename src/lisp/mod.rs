@@ -67,16 +67,6 @@ pub struct Config {
     /// the entry-point config. Set semantics — duplicate registrations
     /// (from re-runs of the config during reload) are no-ops.
     extra_watches: Arc<Mutex<HashSet<PathBuf>>>,
-    /// In-memory log of successful UI evals since the last persist.
-    /// On `/api/persist` this gets appended to the per-microgrid
-    /// override file (`config.ui-overrides.<id>.lisp`) and cleared.
-    /// On `/api/discard` it's cleared without writing — discard also
-    /// triggers a reload so World state matches what's on disk.
-    pending_log: Arc<Mutex<Vec<PendingEntry>>>,
-    /// Monotonic counter for `PendingEntry.id`. Survives clears so
-    /// the UI can use the id as a stable handle for "delete entry N"
-    /// without worrying about reuse.
-    next_pending_id: Arc<std::sync::atomic::AtomicU64>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -85,31 +75,16 @@ pub struct PersistResult {
     pub path: String,
 }
 
-/// One successfully-evaluated UI mutation. `id` is a monotonic
-/// counter scoped to the Config — stable across the entry's lifetime
-/// in the pending log so the UI can address it for delete. `affects`
-/// is the component id the eval targets, if known (the UI tags its
-/// own evals via the /api/eval `?affects=N` query param so the
-/// inspector can show "current overrides for this component" without
-/// parsing the source string).
 /// One top-level form found in the per-microgrid override file. The
 /// `idx` is the form's 0-based position; stable until the next
-/// `persist_pending` rewrites the file. `source` is the form
-/// rendered via tulisp's `Display` impl — round-trips through eval
-/// but doesn't preserve the original spelling (comments stripped,
-/// whitespace normalized).
+/// `remove_persisted_overrides` rewrites the file. `source` is the
+/// form rendered via tulisp's `Display` impl — round-trips through
+/// eval but doesn't preserve the original spelling (comments
+/// stripped, whitespace normalized).
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PersistedOverride {
     pub idx: usize,
     pub source: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct PendingEntry {
-    pub id: u64,
-    pub ts: chrono::DateTime<Utc>,
-    pub source: String,
-    pub affects: Option<u64>,
 }
 
 impl Config {
@@ -159,8 +134,6 @@ impl Config {
             world,
             metadata,
             extra_watches,
-            pending_log: Arc::new(Mutex::new(Vec::new())),
-            next_pending_id: Arc::new(std::sync::atomic::AtomicU64::new(1)),
         }
     }
 
@@ -199,24 +172,19 @@ impl Config {
     /// duration of the eval. Callers in async contexts must wrap in
     /// `tokio::task::spawn_blocking` to keep the executor free.
     ///
-    /// On success the source is appended to the pending log so the
-    /// UI's Persist button can flush it to the per-microgrid override
-    /// file. Errored evals are skipped — a half-applied topology
-    /// change shouldn't leave a re-erroring expression on disk.
-    /// Either way the World version bumps so UI subscribers refetch.
+    /// On success the source is appended to the per-microgrid
+    /// override file (`config.ui-overrides.<id>.lisp`) so the
+    /// edit survives a reload. Errored evals are skipped — a
+    /// half-applied topology change shouldn't leave a re-erroring
+    /// expression on disk. Either way the World version bumps so
+    /// UI subscribers refetch.
+    ///
+    /// Append uses the source verbatim — no formatter pass — to
+    /// keep the per-eval cost predictable. `remove_persisted_overrides`
+    /// already runs `tulisp-fmt` over the file's surviving forms
+    /// when it rewrites, so the file gets re-tidied whenever the
+    /// user prunes the list from the UI.
     pub fn eval(&self, src: &str) -> Result<String, String> {
-        self.eval_with_affects(src, None)
-    }
-
-    /// Like `eval`, but tags the resulting pending entry with the
-    /// component id it affects. The UI's per-component "current
-    /// overrides" list filters on this. Set to `None` for
-    /// non-component-specific evals (defaults edits, REPL one-offs).
-    pub fn eval_with_affects(
-        &self,
-        src: &str,
-        affects: Option<u64>,
-    ) -> Result<String, String> {
         let result = {
             let mut ctx = self.ctx.borrow_mut();
             match ctx.eval_string(src) {
@@ -224,25 +192,23 @@ impl Config {
                 Err(e) => Err(e.format(&ctx)),
             }
         };
-        if result.is_ok() {
-            let id = self
-                .next_pending_id
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            self.pending_log.lock().push(PendingEntry {
-                id,
-                ts: Utc::now(),
-                source: src.to_string(),
-                affects,
-            });
+        if result.is_ok()
+            && let Err(e) = self.append_to_overrides_file(src)
+        {
+            log::error!(
+                "Failed to append override to {}: {e}",
+                self.overrides_path().display(),
+            );
         }
         self.world.bump_version();
         result
     }
 
     /// Read-only eval — same machinery as `eval` but the result is
-    /// NOT appended to the pending log and the world version does NOT
-    /// bump. For UI introspection (e.g. "what's the current value of
-    /// battery-defaults?") that shouldn't surface as a persisted edit.
+    /// NOT appended to the override file and the world version does
+    /// NOT bump. For UI introspection (e.g. "what's the current
+    /// value of battery-defaults?") that shouldn't surface as a
+    /// persisted edit.
     pub fn eval_silent(&self, src: &str) -> Result<String, String> {
         let mut ctx = self.ctx.borrow_mut();
         match ctx.eval_string(src) {
@@ -251,10 +217,18 @@ impl Config {
         }
     }
 
-    /// Snapshot of the in-memory pending log. Each entry is one
-    /// successfully-evaluated UI expression, oldest first.
-    pub fn pending(&self) -> Vec<PendingEntry> {
-        self.pending_log.lock().clone()
+    fn append_to_overrides_file(&self, src: &str) -> std::io::Result<()> {
+        let path = self.overrides_path();
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)?;
+        // Trailing blank line keeps multi-line `let*` paste shapes
+        // visually separable from the next form a future eval
+        // appends.
+        writeln!(file, "{src}")?;
+        writeln!(file)?;
+        file.flush()
     }
 
     /// One entry per top-level form in the per-microgrid override
@@ -287,31 +261,34 @@ impl Config {
         self.persisted_overrides().len()
     }
 
-    /// Snapshot of indices the user has marked × on but hasn't
-    /// persisted yet. Indices match `persisted_overrides()` until
-    /// the next persist rewrites the file.
-    /// Drop one persisted-override entry by its file-position idx
-    /// and re-derive World state. Atomic: the override file is
-    /// rewritten without that form (temp + rename), then `reload()`
-    /// re-runs config.lisp + load-overrides on the new file (so
-    /// the deleted form's effects vanish via the World reset
-    /// inside reload), then the in-memory pending log replays so
-    /// its mutations apply on top.
+    /// Drop a set of persisted-override entries (by their
+    /// file-position idx) and re-derive World state. Atomic: the
+    /// override file is rewritten without those forms (temp +
+    /// rename, with a `tulisp-fmt` pretty-print pass over the
+    /// surviving forms), then `reload()` re-runs config.lisp +
+    /// `load-overrides` on the new file so the deleted forms'
+    /// effects vanish via the World reset inside reload.
     ///
-    /// Returns `Ok(true)` if `idx` was a valid index, `Ok(false)`
-    /// if the file had no form at that idx, or an IO error if the
-    /// file rewrite failed (in which case the world state is left
-    /// untouched — same data-loss safeguard as `persist_pending`).
-    pub fn remove_persisted_override(&self, idx: usize) -> std::io::Result<bool> {
+    /// Returns the count of forms actually dropped — out-of-range
+    /// indices are silently ignored. An IO error during rewrite
+    /// leaves the world state untouched (the file was renamed
+    /// atomically only on success).
+    ///
+    /// Bulk shape so the UI's checkbox-toolbar can prune N entries
+    /// in one round trip with one reload, instead of N round trips
+    /// with N reloads.
+    pub fn remove_persisted_overrides(&self, indices: &[usize]) -> std::io::Result<usize> {
+        let drop: HashSet<usize> = indices.iter().copied().collect();
         let entries = self.persisted_overrides();
-        if !entries.iter().any(|o| o.idx == idx) {
-            return Ok(false);
-        }
         let kept: Vec<String> = entries
-            .into_iter()
-            .filter(|o| o.idx != idx)
-            .map(|o| o.source)
+            .iter()
+            .filter(|o| !drop.contains(&o.idx))
+            .map(|o| o.source.clone())
             .collect();
+        let dropped = entries.len() - kept.len();
+        if dropped == 0 {
+            return Ok(0);
+        }
         let path = self.overrides_path();
         let tmp = path.with_extension("lisp.tmp");
         {
@@ -322,6 +299,12 @@ impl Config {
                 .open(&tmp)?;
             writeln!(file, ";; ── {} ──", Utc::now().to_rfc3339())?;
             writeln!(file)?;
+            // Hand each surviving form to tulisp-fmt so the file
+            // stays readable. format_with_width returns the same
+            // source on failure; we fall back to the raw text
+            // rather than dropping a form. Blank line between
+            // forms keeps multi-line `let*` paste shapes visually
+            // separable.
             for src in &kept {
                 let fmt = tulisp_fmt::format_with_width(src, 80)
                     .unwrap_or_else(|_| format!("{}\n", src));
@@ -331,145 +314,8 @@ impl Config {
             file.flush()?;
         }
         fs::rename(&tmp, &path)?;
-        let pending_snapshot: Vec<PendingEntry> = self.pending_log.lock().clone();
         self.reload();
-        for entry in &pending_snapshot {
-            let _ = {
-                let mut ctx = self.ctx.borrow_mut();
-                ctx.eval_string(&entry.source)
-            };
-        }
-        // reload() bumps version once; the replay pass doesn't, so
-        // the second bump signals subscribers to refetch with the
-        // pending log re-applied on top.
-        self.world.bump_version();
-        Ok(true)
-    }
-
-    /// Drop one pending entry by id and re-derive World state by
-    /// reloading config.lisp + the override file, then re-evalling
-    /// every remaining pending entry in order. Side effect: per-tick
-    /// physics state (SoC integration, ramp positions) reset on
-    /// reload — same trade-off `Discard` has. Returns true if an
-    /// entry with that id was found and removed.
-    ///
-    /// Surviving entries keep their original ids and timestamps.
-    /// Earlier passes re-used `eval_with_affects` and got fresh ids
-    /// each time, which broke "user opens modal → sees ids → clicks
-    /// × on id N" because by the time a click landed, id N had been
-    /// recycled to a different entry.
-    pub fn remove_pending(&self, id: u64) -> bool {
-        let surviving: Vec<PendingEntry> = {
-            let mut log = self.pending_log.lock();
-            let len_before = log.len();
-            let kept: Vec<PendingEntry> = log.drain(..).filter(|e| e.id != id).collect();
-            if kept.len() == len_before {
-                // Nothing matched — restore the log untouched.
-                *log = kept;
-                return false;
-            }
-            kept
-        };
-        // Reload re-runs config.lisp + the override file from scratch
-        // — that's how we "remove" the deleted entry's effect.
-        self.reload();
-        // Re-apply each surviving entry directly: eval the source on
-        // the interpreter (no eval_with_affects so the ids don't get
-        // bumped), then push the original PendingEntry back into the
-        // log. This preserves both id and timestamp.
-        for entry in &surviving {
-            let _ = {
-                let mut ctx = self.ctx.borrow_mut();
-                ctx.eval_string(&entry.source)
-            };
-        }
-        *self.pending_log.lock() = surviving;
-        // reload() already bumped the version, but the pending log
-        // changed shape on top — bump again so subscribers refetch
-        // /api/pending and see the new (smaller) list.
-        self.world.bump_version();
-        true
-    }
-
-    /// Append the in-memory pending log to
-    /// `config.ui-overrides.<microgrid-id>.lisp` and clear the log.
-    /// On-disk persisted forms are kept verbatim — × on a persisted
-    /// entry is a separate, immediate path through
-    /// `remove_persisted_override`. No-op when the log is empty.
-    ///
-    /// Atomicity: writes to a sibling `.tmp` then renames over the
-    /// target. An IO failure leaves the pending log intact for
-    /// retry. Concurrent pushes during the write survive because
-    /// the post-write clear filters by id rather than truncating.
-    ///
-    /// `persisted` in the result counts the rewritten file's form
-    /// total (kept on-disk + newly-flushed pending), which is what
-    /// the UI's "N overrides" pill wants to land on.
-    pub fn persist_pending(&self) -> std::io::Result<PersistResult> {
-        let path = self.overrides_path();
-        let entries: Vec<PendingEntry> = self.pending_log.lock().clone();
-        if entries.is_empty() {
-            return Ok(PersistResult {
-                persisted: self.persisted_count(),
-                path: path.to_string_lossy().into_owned(),
-            });
-        }
-        let kept: Vec<String> = self
-            .persisted_overrides()
-            .into_iter()
-            .map(|o| o.source)
-            .collect();
-        let total = kept.len() + entries.len();
-        let tmp = path.with_extension("lisp.tmp");
-        {
-            let mut file = fs::OpenOptions::new()
-                .create(true)
-                .truncate(true)
-                .write(true)
-                .open(&tmp)?;
-            writeln!(file, ";; ── {} ──", Utc::now().to_rfc3339())?;
-            writeln!(file)?;
-            // Hand each form to tulisp-fmt before writing so the file
-            // stays readable to a human eyeballing it. format_with_width
-            // returns the same source on failure; we fall back to the
-            // raw text rather than dropping a form. A blank line
-            // between forms keeps the multi-line `let*` paste shapes
-            // visually separable from each other.
-            for src in &kept {
-                let fmt = tulisp_fmt::format_with_width(src, 80)
-                    .unwrap_or_else(|_| format!("{}\n", src));
-                file.write_all(fmt.as_bytes())?;
-                writeln!(file)?;
-            }
-            for entry in &entries {
-                let fmt = tulisp_fmt::format_with_width(&entry.source, 80)
-                    .unwrap_or_else(|_| format!("{}\n", entry.source));
-                file.write_all(fmt.as_bytes())?;
-                writeln!(file)?;
-            }
-            file.flush()?;
-        }
-        fs::rename(&tmp, &path)?;
-        // Only now is it safe to drop the pending state — file is
-        // committed. Remove pending entries by id so a concurrent
-        // push under a different id survives.
-        let persisted_ids: std::collections::HashSet<u64> =
-            entries.iter().map(|e| e.id).collect();
-        self.pending_log
-            .lock()
-            .retain(|e| !persisted_ids.contains(&e.id));
-        Ok(PersistResult {
-            persisted: total,
-            path: path.to_string_lossy().into_owned(),
-        })
-    }
-
-    /// Drop the pending log and trigger a reload — World state
-    /// returns to whatever the on-disk config + override file
-    /// describe.
-    pub fn discard_pending(&self) {
-        self.pending_log.lock().clear();
-        self.reload();
+        Ok(dropped)
     }
 
     fn overrides_path(&self) -> PathBuf {
@@ -515,17 +361,12 @@ impl Config {
         Ok(names)
     }
 
-    /// Save the current pending log to `scenarios/<name>.lisp` +
-    /// clear the log. Like `persist_pending` but the destination is
-    /// a named scenario file instead of the per-microgrid override.
-    /// Useful for capturing a recent series of edits as a reusable
-    /// recipe ("EV-fault-during-cloud-cover", "battery-bypass", …).
-    ///
-    /// Snapshots the entries first, writes + flushes, only then
-    /// removes them from the log. An IO error leaves the pending log
-    /// intact — same data-loss safeguard as `persist_pending`.
+    /// Snapshot every form currently in the per-microgrid override
+    /// file to `scenarios/<name>.lisp`. Useful for capturing a
+    /// recent series of edits as a reusable recipe — load it later
+    /// to drop the same forms back into the override file.
     pub fn save_scenario(&self, name: &str) -> std::io::Result<PersistResult> {
-        let entries: Vec<PendingEntry> = self.pending_log.lock().clone();
+        let entries = self.persisted_overrides();
         let dir = self.scenarios_dir();
         fs::create_dir_all(&dir)?;
         let path = dir.join(format!("{name}.lisp"));
@@ -542,22 +383,22 @@ impl Config {
             writeln!(file)?;
         }
         file.flush()?;
-        let persisted_ids: HashSet<u64> = entries.iter().map(|e| e.id).collect();
-        self.pending_log
-            .lock()
-            .retain(|e| !persisted_ids.contains(&e.id));
         Ok(PersistResult {
             persisted: entries.len(),
             path: path.to_string_lossy().into_owned(),
         })
     }
 
-    /// Load `scenarios/<name>.lisp` into the pending log. Atomic
-    /// (parse failures and eval failures both leave the pending log
-    /// untouched), and round-trips with `save_scenario`: a save of N
-    /// pending entries → file with N forms → load → N new pending
-    /// entries (one per top-level form), so a subsequent Persist
-    /// rewrites them individually.
+    /// Replay `scenarios/<name>.lisp` on top of the current world
+    /// state. Each form evaluates and appends to the override file,
+    /// so a save → load round-trip ends with N new override entries
+    /// (one per scenario form).
+    ///
+    /// Atomicity: the whole scenario evals as one progn, so a
+    /// mid-file failure leaves no half-applied state. On parse or
+    /// eval error the override file is left untouched and the
+    /// world reloads to drop any in-progress mutation tulisp may
+    /// have committed before the error fired.
     pub fn load_scenario(&self, name: &str) -> Result<usize, String> {
         let path = self.scenarios_dir().join(format!("{name}.lisp"));
         if !path.exists() {
@@ -576,10 +417,6 @@ impl Config {
             return Ok(0);
         }
 
-        // Eval as one progn. tulisp doesn't roll world state back on
-        // a mid-progn error (the first form's mutation sticks), so we
-        // cover that ourselves: on error, reload the base config +
-        // override file and replay the pre-load pending entries.
         let combined = sources.join("\n");
         let eval_err = {
             let mut ctx = self.ctx.borrow_mut();
@@ -588,28 +425,20 @@ impl Config {
                 .map(|e| format!("eval {}: {}", path.display(), e.format(&ctx)))
         };
         if let Some(err) = eval_err {
-            let surviving = self.pending_log.lock().clone();
+            // tulisp doesn't roll back partial-progn mutations on
+            // its own; reloading drops them by re-running the base
+            // config + load-overrides on the un-augmented file.
             self.reload();
-            for entry in &surviving {
-                let _ = self.ctx.borrow_mut().eval_string(&entry.source);
-            }
             return Err(err);
         }
 
-        let now = Utc::now();
-        let mut log = self.pending_log.lock();
         for src in &sources {
-            let id = self
-                .next_pending_id
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            log.push(PendingEntry {
-                id,
-                ts: now,
-                source: src.clone(),
-                affects: None,
-            });
+            if let Err(e) = self.append_to_overrides_file(src) {
+                log::error!(
+                    "Failed to append scenario form to override file: {e}",
+                );
+            }
         }
-        drop(log);
         self.world.bump_version();
         Ok(sources.len())
     }
@@ -1134,73 +963,22 @@ mod tests {
         assert!(res.is_err(), "expected error, got {res:?}");
     }
 
-    /// remove_pending must keep the surviving entries' ids stable.
-    /// Earlier code re-evalled survivors via eval_with_affects which
-    /// assigned fresh ids — the UI tracks entries by id, so a stale
-    /// click on a recycled id would error or hit the wrong row.
+    /// Every successful eval appends to the override file
+    /// immediately — that's how an edit survives a reload (the
+    /// override file is the source of truth, not an in-memory log).
     #[test]
-    fn remove_pending_preserves_surviving_ids() {
-        let (cfg, _dir) = config_with("(set-microgrid-id 9) (%make-grid :id 1)");
+    fn eval_appends_each_successful_form_to_override_file() {
+        let (cfg, dir) = config_with("(set-microgrid-id 9) (%make-grid :id 1)");
         cfg.eval("(world-rename-component 1 \"a\")").unwrap();
         cfg.eval("(world-rename-component 1 \"b\")").unwrap();
-        cfg.eval("(world-rename-component 1 \"c\")").unwrap();
-        let before: Vec<u64> = cfg.pending().iter().map(|e| e.id).collect();
-        assert_eq!(before.len(), 3);
-
-        // Remove the middle entry.
-        assert!(cfg.remove_pending(before[1]));
-        let after: Vec<u64> = cfg.pending().iter().map(|e| e.id).collect();
-        assert_eq!(after.len(), 2);
-        assert_eq!(after, vec![before[0], before[2]]);
-    }
-
-    /// Regression: deleting a setpoint pending entry (eg. a
-    /// `(set-active-power …)` call from the REPL) shouldn't take
-    /// out the unrelated component the user created right before
-    /// it. Replay re-evals the surviving `(make-…)` entry, so the
-    /// new component should reappear with its id intact.
-    #[test]
-    fn remove_pending_setpoint_does_not_drop_make_entry() {
-        let (cfg, _dir) = config_with(
-            "(set-microgrid-id 9)
-             (setq b1 (%make-battery :id 1 :rated-lower -5000.0 :rated-upper 5000.0))
-             (%make-battery-inverter :id 2 :rated-lower -5000.0 :rated-upper 5000.0
-                                       :successors (list b1))",
-        );
-        // Add a battery via /api/eval-style flow, then arm a setpoint
-        // on the inverter that already exists.
-        cfg.eval("(%make-battery)").unwrap();
-        let new_battery_ids: Vec<u64> = cfg
-            .world()
-            .components()
-            .iter()
-            .map(|c| c.id())
-            .filter(|id| *id >= 1000)
-            .collect();
-        assert_eq!(new_battery_ids.len(), 1, "expected one new battery");
-        let new_id = new_battery_ids[0];
-        cfg.eval("(set-active-power 2 1500.0 30000)").unwrap();
-
-        // Pull the setpoint pending-entry id and × it.
-        let pending = cfg.pending();
-        assert_eq!(pending.len(), 2);
-        let setpoint_id = pending
-            .iter()
-            .find(|e| e.source.contains("set-active-power"))
-            .unwrap()
-            .id;
-        assert!(cfg.remove_pending(setpoint_id));
-
-        // The pending log should now hold just the make-battery
-        // entry; the new battery should still be in the world with
-        // the same id (deterministic id allocation across reload).
-        let pending = cfg.pending();
-        assert_eq!(pending.len(), 1);
-        assert!(pending[0].source.contains("%make-battery"));
-        assert!(
-            cfg.world().get(new_id).is_some(),
-            "new battery (id {new_id}) should have survived setpoint removal",
-        );
+        let path = dir.join("config.ui-overrides.9.lisp");
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(body.contains("(world-rename-component 1 \"a\")"));
+        assert!(body.contains("(world-rename-component 1 \"b\")"));
+        // Errored eval doesn't land in the file.
+        assert!(cfg.eval("(undefined-fn 1)").is_err());
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(!body.contains("undefined-fn"));
     }
 
     /// load_scenario must propagate Lisp errors. The previous
@@ -1222,8 +1000,9 @@ mod tests {
     }
 
     /// A scenario with a good form followed by a bad form must roll
-    /// back atomically — neither the good form's pending entry nor
-    /// its world-state mutation can stick after the load fails.
+    /// back atomically — the first form's world-state mutation
+    /// can't stick after the load fails, and nothing lands in the
+    /// override file.
     #[test]
     fn load_scenario_partial_failure_is_atomic() {
         let (cfg, dir) = config_with("(set-microgrid-id 9)");
@@ -1237,34 +1016,13 @@ mod tests {
 
         let res = cfg.load_scenario("mixed");
         assert!(res.is_err(), "expected error, got {res:?}");
-        assert!(cfg.pending().is_empty(), "pending log should be untouched");
         assert!(
             cfg.world().get(99).is_none(),
             "first form must not have been applied",
         );
-    }
-
-    /// persist_pending must NOT clear the in-memory log on IO error,
-    /// or pending edits vanish without ever reaching disk. Force the
-    /// failure by pre-creating the override path as a directory:
-    /// open(append) on a directory returns EISDIR.
-    #[test]
-    fn persist_io_error_keeps_pending_log_intact() {
-        let (cfg, dir) = config_with("(set-microgrid-id 9)");
-        let override_path = dir.join("config.ui-overrides.9.lisp");
-        std::fs::create_dir_all(&override_path).unwrap();
-
-        // Push an entry into the log.
-        cfg.eval("(set-microgrid-name \"x\")").unwrap();
-        assert_eq!(cfg.pending().len(), 1);
-
-        // Persist must error and the entry must still be there.
-        let res = cfg.persist_pending();
-        assert!(res.is_err(), "expected IO error, got {res:?}");
-        assert_eq!(
-            cfg.pending().len(),
-            1,
-            "pending entry vanished on IO failure"
+        assert!(
+            cfg.persisted_overrides().is_empty(),
+            "override file shouldn't have grown",
         );
     }
 }
