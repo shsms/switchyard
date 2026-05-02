@@ -512,6 +512,14 @@ const visOptions = {
       enabled: true,
       direction: "LR",
       sortMethod: "directed",
+      // Group by *minimum* depth from a root, not maximum. Default
+      // `"leaves"` shoves leaf nodes to the rightmost column, so
+      // shorter chains (eg. pv-meter → pv-inverter, with no battery
+      // under the inverter) end up sharing a column with longer
+      // chains' interior nodes — pv_meter lands next to bat_inverter.
+      // `"roots"` keeps each role in its own column: meters at L1,
+      // inverters at L2, batteries at L3.
+      shakeTowards: "roots",
       nodeSpacing: 120,
       levelSeparation: 180,
       treeSpacing: 140,
