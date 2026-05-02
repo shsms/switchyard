@@ -242,12 +242,17 @@ function nodeStyleFor(c) {
       face: "ui-monospace, monospace",
       size: 14,
     },
-    margin: { top: 9, right: 16, bottom: 9, left: 16 },
-    // Minimum oval size so short-label nodes (grid-1, meter-2) don't
-    // shrink below the readable threshold. Long-label nodes still
-    // grow to fit via the margin.
+    // Tight vertical padding because the ellipse already adds its
+    // own √2-ish inflation to fit the inscribed text rectangle —
+    // any extra top/bottom margin compounds and produces fat ovals
+    // that overlap at our nodeSpacing of 60.
+    margin: { top: 4, right: 16, bottom: 4, left: 16 },
+    // Width floor keeps short-label nodes (grid-1, meter-2) from
+    // shrinking below the readable threshold. Height floor stays
+    // small — long labels grow on their own; we don't need to
+    // pad short-label heights.
     widthConstraint: { minimum: 78 },
-    heightConstraint: { minimum: 34 },
+    heightConstraint: { minimum: 24 },
   };
 }
 
@@ -520,9 +525,16 @@ const visOptions = {
       // `"roots"` keeps each role in its own column: meters at L1,
       // inverters at L2, batteries at L3.
       shakeTowards: "roots",
-      nodeSpacing: 120,
+      // Center-to-center within-level (vertical for LR). Tight
+      // enough to fit denser graphs on one screen while leaving
+      // room to grow node height — nodes are ~34px today, so 60px
+      // spacing leaves a ~26px gap.
+      nodeSpacing: 60,
       levelSeparation: 180,
-      treeSpacing: 140,
+      // Same axis as nodeSpacing but applied between disconnected
+      // sub-trees. Drop in lockstep so a multi-microgrid layout
+      // doesn't look stretchy compared to within-tree gaps.
+      treeSpacing: 70,
     },
   },
   physics: { enabled: false },
