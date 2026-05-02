@@ -438,23 +438,21 @@ const topology = (() => {
     rearrangeVerticallyForShortArrows();
   }
 
-  // Sugiyama-style barycenter sweeps over the level layers: each
-  // pass reorders one level's nodes by the mean y of their
-  // neighbours in an *adjacent* layer (down-sweep looks at the
-  // previous layer, up-sweep at the next), and a final all-neighbour
-  // pass smooths out anything the directional sweeps couldn't reach.
-  // Reassignment is a within-level permutation onto the level's own
-  // existing y-slots, so the layer's vertical extent and spacing
-  // stay put — only ordering within a layer changes. Effect: arrows
-  // shorten and crossings drop.
+  // Pull each node's y toward its neighbours' barycenter, then push
+  // sibling nodes apart by `MIN_SPACING` if the barycenter put them
+  // on top of each other. Sweeps top-down (each level's y comes from
+  // its predecessors' y) and bottom-up (parents pull toward their
+  // children's centroid). Letting the level's vertical extent grow
+  // when needed — instead of permuting onto vis-network's
+  // count-dependent slot grid — keeps an L_n+1 child at the same y
+  // as its L_n parent, so a chain renders as a horizontal line
+  // regardless of how many siblings sit at each level.
   function rearrangeVerticallyForShortArrows() {
     if (!network || !edgesDS || !nodesDS) return;
     const positions = network.getPositions();
     const ids = Object.keys(positions);
     if (ids.length <= 1) return;
 
-    // Group ids by level (rounded x), and remember the level of each
-    // node so the per-direction filter is O(1).
     const levelOf = new Map();
     const levels = new Map();
     for (const id of ids) {
@@ -465,11 +463,9 @@ const topology = (() => {
     }
     const sortedLevels = [...levels.keys()].sort((a, b) => a - b);
 
-    // Two adjacency maps: predecessors (smaller-x neighbour) and
-    // successors (larger-x neighbour). Edges in vis are directed but
-    // a node sits between its parent and its children regardless of
-    // the arrow direction, so we key by level comparison rather than
-    // edge direction.
+    // Two adjacency maps split by level direction. Same-level edges
+    // are ignored — they don't tell us anything about top-down or
+    // bottom-up alignment.
     const preds = new Map();
     const succs = new Map();
     for (const id of ids) {
@@ -488,55 +484,53 @@ const topology = (() => {
       } else if (lf > lt) {
         succs.get(t).push(f);
         preds.get(f).push(t);
-      } else {
-        // Same-level edge: treat as both predecessor and successor
-        // so it pulls in the all-neighbours smoothing pass below.
-        succs.get(f).push(t);
-        succs.get(t).push(f);
       }
     }
 
-    function reorder(levelIds, neighborMap) {
-      if (levelIds.length <= 1) return false;
-      const desired = levelIds.map((id) => {
+    // Matches the visOptions `nodeSpacing` so siblings respect the
+    // same gap vis-network would have used in its initial layout.
+    const MIN_SPACING = 60;
+
+    function snap(levelIds, neighborMap) {
+      // Move each node toward the mean y of its neighbours in the
+      // chosen direction; nodes with zero neighbours keep their
+      // current y.
+      for (const id of levelIds) {
         const ns = neighborMap.get(id);
-        if (!ns.length) return positions[id].y;
+        if (!ns.length) continue;
         let sum = 0;
         for (const n of ns) sum += positions[n].y;
-        return sum / ns.length;
-      });
-      const slotYs = levelIds
-        .map((id) => positions[id].y)
-        .sort((a, b) => a - b);
-      const order = levelIds
-        .map((_, i) => i)
-        .sort((a, b) => desired[a] - desired[b]);
-      let moved = false;
-      for (let slot = 0; slot < order.length; slot++) {
-        const id = levelIds[order[slot]];
-        const newY = slotYs[slot];
-        if (Math.abs(positions[id].y - newY) > 0.5) {
-          positions[id].y = newY;
-          moved = true;
-        }
+        positions[id].y = sum / ns.length;
       }
-      return moved;
+      // Spread overlapping siblings around their group mean. Sort
+      // by current y to preserve the top-down order the snap
+      // produced; recentre on the mean so the level doesn't drift.
+      if (levelIds.length <= 1) return;
+      levelIds.sort((a, b) => positions[a].y - positions[b].y);
+      const meanY =
+        levelIds.reduce((s, id) => s + positions[id].y, 0) / levelIds.length;
+      const span = (levelIds.length - 1) * MIN_SPACING;
+      const startY = meanY - span / 2;
+      for (let i = 0; i < levelIds.length; i++) {
+        positions[levelIds[i]].y = startY + i * MIN_SPACING;
+      }
     }
 
-    const ITERATIONS = 24;
+    const ITERATIONS = 12;
     for (let iter = 0; iter < ITERATIONS; iter++) {
-      let moved = false;
-      // Down-sweep: roots stay put, each subsequent level orders
-      // by predecessor barycenter.
+      const before = ids.map((id) => positions[id].y);
+      // Down-sweep: align each level with its predecessors.
       for (let i = 1; i < sortedLevels.length; i++) {
-        if (reorder(levels.get(sortedLevels[i]), preds)) moved = true;
+        snap(levels.get(sortedLevels[i]).slice(), preds);
       }
-      // Up-sweep: leaves stay put, each predecessor level orders
-      // by successor barycenter.
+      // Up-sweep: pull predecessor levels toward their children's
+      // centroid. Helps when an L_n node has multiple children at
+      // L_n+1 with different y's — the parent re-centres on them.
       for (let i = sortedLevels.length - 2; i >= 0; i--) {
-        if (reorder(levels.get(sortedLevels[i]), succs)) moved = true;
+        snap(levels.get(sortedLevels[i]).slice(), succs);
       }
-      if (!moved) break;
+      const after = ids.map((id) => positions[id].y);
+      if (before.every((y, i) => Math.abs(y - after[i]) < 0.5)) break;
     }
 
     for (const id of ids) {
