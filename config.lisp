@@ -138,7 +138,7 @@
     ;; consumer-curve timer above via id 100. `%make-meter` bypasses
     ;; meter-defaults so the explicit :power isn't combined with a
     ;; default :stream-jitter-pct on a hidden component.
-    (%make-meter :id 100 :hidden t :power 1000.0)))))
+    (%make-meter :id 100 :name "consumer" :hidden t :power 1000.0)))))
 
 ;; Apply UI-driven edits the user has clicked Persist on. The override
 ;; filename is parameterised by microgrid-id so multiple sims sharing
