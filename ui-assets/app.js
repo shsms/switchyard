@@ -516,21 +516,65 @@ const topology = (() => {
       }
     }
 
+    // Hidden components sit out of the barycenter — they bias the
+    // visible layout toward themselves otherwise (a hidden meter
+    // pulled into L1 would consume a slot and shift its visible
+    // siblings to make room). We snap them to a row underneath the
+    // visible canvas after the sweeps converge.
+    const hiddenIds = ids.filter((id) => {
+      const c = componentById.get(Number(id));
+      return c && c.hidden;
+    });
+    const visibleLevels = new Map();
+    for (const [lvl, lvlIds] of levels) {
+      const visibleAtLvl = lvlIds.filter((id) => {
+        const c = componentById.get(Number(id));
+        return c && !c.hidden;
+      });
+      if (visibleAtLvl.length) visibleLevels.set(lvl, visibleAtLvl);
+    }
+    const visibleSortedLevels = [...visibleLevels.keys()].sort((a, b) => a - b);
+
     const ITERATIONS = 12;
     for (let iter = 0; iter < ITERATIONS; iter++) {
       const before = ids.map((id) => positions[id].y);
       // Down-sweep: align each level with its predecessors.
-      for (let i = 1; i < sortedLevels.length; i++) {
-        snap(levels.get(sortedLevels[i]).slice(), preds);
+      for (let i = 1; i < visibleSortedLevels.length; i++) {
+        snap(visibleLevels.get(visibleSortedLevels[i]).slice(), preds);
       }
       // Up-sweep: pull predecessor levels toward their children's
       // centroid. Helps when an L_n node has multiple children at
       // L_n+1 with different y's — the parent re-centres on them.
-      for (let i = sortedLevels.length - 2; i >= 0; i--) {
-        snap(levels.get(sortedLevels[i]).slice(), succs);
+      for (let i = visibleSortedLevels.length - 2; i >= 0; i--) {
+        snap(visibleLevels.get(visibleSortedLevels[i]).slice(), succs);
       }
       const after = ids.map((id) => positions[id].y);
       if (before.every((y, i) => Math.abs(y - after[i]) < 0.5)) break;
+    }
+
+    if (hiddenIds.length) {
+      // Stash hidden nodes in a row directly below the lowest
+      // visible node. Each keeps its natural x (so the dashed
+      // edge to its parent reads top-down), but they all share a
+      // y — separated only when two hidden nodes happen to share
+      // an x, in which case we stack them on min-spacing.
+      const visibleIds = ids.filter((id) => !hiddenIds.includes(id));
+      const maxVisibleY = visibleIds.length
+        ? Math.max(...visibleIds.map((id) => positions[id].y))
+        : 0;
+      const baseY = maxVisibleY + MIN_SPACING * 2;
+      const byX = new Map();
+      for (const id of hiddenIds) {
+        const x = Math.round(positions[id].x);
+        if (!byX.has(x)) byX.set(x, []);
+        byX.get(x).push(id);
+      }
+      for (const group of byX.values()) {
+        group.sort((a, b) => positions[a].y - positions[b].y);
+        for (let i = 0; i < group.length; i++) {
+          positions[group[i]].y = baseY + i * MIN_SPACING;
+        }
+      }
     }
 
     for (const id of ids) {
