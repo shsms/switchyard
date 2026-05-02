@@ -23,7 +23,13 @@
      default saturated set; oval text uses --bg for contrast. */
   --cat-grid: #d4b948;
   --cat-meter: #79b8ff;
+  /* Two shades of green for the inverter subtypes: a deeper
+     leaf-green for battery-inverters (DC storage), a sunnier
+     yellow-green for solar inverters. --cat-inverter is kept as
+     a fallback for unknown subtypes. */
   --cat-inverter: #6fbf73;
+  --cat-inverter-battery: #6fbf73;
+  --cat-inverter-solar: #a8d35a;
   --cat-battery: #f1955b;
   --cat-ev-charger: #b18ed3;
   --cat-chp: #d27a85;

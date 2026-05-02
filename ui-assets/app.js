@@ -83,6 +83,20 @@ const CATEGORY_COLOR = {
   chp: getCss("--cat-chp"),
 };
 
+// Inverters get a subtype-aware shade so battery-inverters and
+// solar-inverters read as related-but-distinct on the canvas.
+const INVERTER_SUBTYPE_COLOR = {
+  battery: getCss("--cat-inverter-battery"),
+  solar: getCss("--cat-inverter-solar"),
+};
+
+function colorFor(c) {
+  if (c.category === "inverter") {
+    return INVERTER_SUBTYPE_COLOR[c.subtype] || CATEGORY_COLOR.inverter;
+  }
+  return CATEGORY_COLOR[c.category] || "#888";
+}
+
 // Charts to render when a component of this category is selected.
 // One uPlot per metric — multi-series (e.g. P + bound envelope on one
 // chart) lands when we tackle the merge-by-shared-timestamp problem.
@@ -217,7 +231,7 @@ function nodeStyleFor(c) {
     error: "#e58275",   // toned-down red, matches --bad
   }[c.health || "ok"];
   const healthWidth = c.health === "ok" ? 1 : 3;
-  const bg = CATEGORY_COLOR[c.category] || "#888";
+  const bg = colorFor(c);
   return {
     id: c.id,
     label: c.name,
