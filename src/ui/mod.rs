@@ -111,10 +111,15 @@ fn mime_for(path: &str) -> &'static str {
 #[derive(Serialize)]
 struct TopologySnapshot {
     components: Vec<ComponentSummary>,
-    /// Parent → child edges. Hidden children are still listed in
-    /// `components` (so the UI knows they exist) but their edges are
-    /// excluded, matching the gRPC `ListConnections` semantic.
+    /// Visible parent → child edges, matching the gRPC
+    /// `ListConnections` semantic.
     connections: Vec<(u64, u64)>,
+    /// Parent → child edges where the child is hidden. Surfaced
+    /// separately so the UI can render them dashed without
+    /// polluting the gRPC graph. Aggregator components
+    /// (Meter, BatteryInverter) cache their hidden children for
+    /// aggregation; we read those here.
+    hidden_connections: Vec<(u64, u64)>,
 }
 
 #[derive(Serialize)]
@@ -160,9 +165,18 @@ async fn topology(State(config): State<Config>) -> Json<TopologySnapshot> {
             }
         })
         .collect();
+    let hidden_connections: Vec<(u64, u64)> = world
+        .components()
+        .iter()
+        .flat_map(|c| {
+            let pid = c.id();
+            c.hidden_successors().into_iter().map(move |cid| (pid, cid))
+        })
+        .collect();
     Json(TopologySnapshot {
         components,
         connections: world.connections(),
+        hidden_connections,
     })
 }
 

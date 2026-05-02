@@ -123,6 +123,17 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
         false
     }
 
+    /// Children of this component that aren't reachable through the
+    /// public connections graph (gRPC ListConnections /
+    /// `World::connections`). Aggregator-style components
+    /// (Meter, BatteryInverter) cache hidden children at
+    /// make-time so they can still aggregate / push DC power; the
+    /// UI uses this list to draw dashed edges to those children.
+    /// Default empty for components that don't aggregate.
+    fn hidden_successors(&self) -> Vec<u64> {
+        Vec::new()
+    }
+
     // ── lifecycle ────────────────────────────────────────────────────
 
     /// Telemetry stream interval requested by the component. The

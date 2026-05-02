@@ -158,6 +158,10 @@ impl SimulatedComponent for Meter {
         self.aggregate_reactive(world)
     }
 
+    fn hidden_successors(&self) -> Vec<u64> {
+        self.hidden_successors.clone()
+    }
+
     fn set_active_power_override(&self, p: f32) {
         self.set_fixed_power(p);
     }

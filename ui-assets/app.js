@@ -229,7 +229,11 @@ function nodeStyleFor(c) {
     standby: "#c4ad55", // toned-down yellow
     error: "#e58275",   // toned-down red, matches --bad
   }[c.health || "ok"];
-  const healthWidth = c.health === "ok" ? 1 : 3;
+  // Hidden meters draw with a dashed border + a thicker stroke so
+  // the dash pattern reads cleanly. Health-error / standby still
+  // win the colour since "this is faulted" is more urgent than
+  // "this is hidden". borderDashes accepts an [on, off] array.
+  const healthWidth = c.health === "ok" ? (c.hidden ? 2 : 1) : 3;
   const bg = colorFor(c);
   return {
     id: c.id,
@@ -245,6 +249,7 @@ function nodeStyleFor(c) {
     },
     borderWidth: healthWidth,
     borderWidthSelected: 4,
+    borderDashes: c.hidden ? [4, 3] : false,
     // vis-network's default `chosen` behaviour bolds the label on
     // selection (and on hover). Drop the label part — color
     // changes (selected border, hover border) carry the signal,
@@ -286,21 +291,34 @@ const topology = (() => {
 
   function buildVisData(data) {
     componentById.clear();
-    const visible = data.components.filter((c) => !c.hidden);
-    const nodes = visible.map((c) => {
+    const nodes = data.components.map((c) => {
       componentById.set(c.id, c);
       return nodeStyleFor(c);
     });
-    const edges = data.connections.map(([p, c]) => ({
+    const visibleEdges = data.connections.map(([p, c]) => ({
       id: `${p}-${c}`,
       from: p,
       to: c,
       arrows: "to",
     }));
-    return { nodes, edges };
+    // Hidden edges (parent → hidden child) render dashed so the
+    // user can see the link without confusing them with the public
+    // gRPC topology — same visual cue the hidden node itself uses.
+    const hiddenEdges = (data.hidden_connections || []).map(([p, c]) => ({
+      id: `${p}-${c}`,
+      from: p,
+      to: c,
+      arrows: "to",
+      dashes: true,
+    }));
+    return { nodes, edges: [...visibleEdges, ...hiddenEdges] };
   }
 
   function apply(data) {
+    // The chrome status pill keeps showing the gRPC-visible count,
+    // which is what most operators care about when reasoning about
+    // their topology. Hidden meters render on the canvas (dashed)
+    // for context but don't bump the official tally.
     const visibleCount = data.components.filter((c) => !c.hidden).length;
     setStatus(
       `${visibleCount} components, ${data.connections.length} connections`,

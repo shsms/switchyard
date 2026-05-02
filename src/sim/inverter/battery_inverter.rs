@@ -248,6 +248,10 @@ impl SimulatedComponent for BatteryInverter {
         self.reactive.published()
     }
 
+    fn hidden_successors(&self) -> Vec<u64> {
+        self.hidden_successors.clone()
+    }
+
     fn rated_active_bounds(&self) -> Option<(f32, f32)> {
         Some((self.cfg.rated_lower_w, self.cfg.rated_upper_w))
     }
