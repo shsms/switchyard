@@ -47,8 +47,8 @@
           </div>
           <p class="hint">
             Uses category defaults; auto-assigns id. Wire it up by
-            holding <kbd>Shift</kbd> and dragging from one node to
-            another, or from the REPL.
+            holding <kbd>Ctrl</kbd>/<kbd>Cmd</kbd> and dragging from
+            one node to another, or from the REPL.
           </p>
         </div>
       </aside>
@@ -85,15 +85,16 @@
         <h4>Topology canvas</h4>
         <ul class="help-list">
           <li><kbd>Click</kbd> a node — inspect it (charts + overrides + knobs in the side panel).</li>
-          <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Click</kbd> — toggle a node into the multi-selection. <kbd>Drag</kbd> on empty canvas — rubber-band a multi-selection.</li>
+          <li><kbd>Shift</kbd>+<kbd>Drag</kbd> on empty canvas — rubber-band a selection rectangle; nodes inside the box are selected.</li>
+          <li><kbd>Shift</kbd>+<kbd>Click</kbd> a node — toggle that node into / out of the current selection (after a rubber-band, or to build one a node at a time).</li>
+          <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+hold + drag from one node to another — create an edge between them.</li>
           <li><kbd>Right-click</kbd> — context menu. With a selection: <em>Copy</em>, <em>Cut</em>, <em>Delete</em>. With nothing selected and a non-empty clipboard: <em>Paste</em>. Right-clicking a node not in the current selection resets the selection to that node first.</li>
-          <li><kbd>Shift</kbd> hold — drag from one node to another to create an edge.</li>
           <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>C</kbd> — copy selection. <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>V</kbd> — paste. <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>X</kbd> — cut. Each paste re-uses the last copy; clipboard captures structure only (categories + internal edges), so clones use category defaults.</li>
           <li><kbd>Del</kbd> / <kbd>Backspace</kbd> — delete selection. <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>A</kbd> — select all visible. <kbd>Esc</kbd> — deselect.</li>
         </ul>
         <h4>Side panel + chrome</h4>
         <ul class="help-list">
-          <li><strong>Add component</strong> (lower side panel) — pick a category, click <em>Create</em>; an auto-id'd component appears. Wire it via Shift-drag.</li>
+          <li><strong>Add component</strong> (lower side panel) — pick a category, click <em>Create</em>; an auto-id'd component appears. Wire it via <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+drag.</li>
           <li><strong>Defaults</strong> — per-category defaults (Lisp values); edits ride the pending log.</li>
           <li><strong>Scenarios</strong> — save the current pending log as a named recipe; load to replay it.</li>
           <li><strong>Overrides pill</strong> — total active overrides (on disk + unsaved). <code>*</code> means unsaved. Click to inspect / × individual entries.</li>

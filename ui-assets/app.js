@@ -283,6 +283,7 @@ const topology = (() => {
   const componentById = new Map();
   let onSelect = null;
   let onDeselect = null;
+  let selectionAtMousedown = [];
 
   function buildVisData(data) {
     componentById.clear();
@@ -316,10 +317,26 @@ const topology = (() => {
         visOptions,
       );
       network.on("click", (params) => {
+        const shiftKey = params.event?.srcEvent?.shiftKey;
         if (params.nodes.length) {
           const id = params.nodes[0];
-          if (onSelect) onSelect(componentById.get(id));
-        } else if (onDeselect) {
+          if (shiftKey) {
+            // Shift-click toggles this node in / out of the
+            // selection that existed when the mousedown landed.
+            // Reading getSelectedNodes() here would see vis-network's
+            // single-click auto-select that already ran for this
+            // event, so we use the mousedown snapshot instead.
+            const sel = new Set(selectionAtMousedown);
+            if (sel.has(id)) sel.delete(id);
+            else sel.add(id);
+            const ids = [...sel];
+            network.selectNodes(ids);
+            if (ids.length && onSelect) onSelect(componentById.get(id));
+            else if (!ids.length && onDeselect) onDeselect();
+          } else if (onSelect) {
+            onSelect(componentById.get(id));
+          }
+        } else if (!shiftKey && onDeselect) {
           onDeselect();
         }
       });
@@ -342,16 +359,34 @@ const topology = (() => {
         }
         showContextMenu(params.event.clientX, params.event.clientY);
       });
-      // Shift toggles vis-network's addEdge mode. Hold Shift, drag
-      // from one node to another to wire them. The addEdge callback
-      // (defined in visOptions) POSTs world-connect and the WS
-      // topology refresh redraws.
+      // Ctrl/Cmd toggles vis-network's addEdge mode. Hold Ctrl
+      // (Cmd on Mac), drag from one node to another to wire them.
+      // The addEdge callback (defined in visOptions) POSTs
+      // world-connect and the WS topology refresh redraws.
       document.addEventListener("keydown", (e) => {
-        if (e.key === "Shift" && network) network.addEdgeMode();
+        if ((e.key === "Control" || e.key === "Meta") && network) {
+          network.addEdgeMode();
+        }
       });
       document.addEventListener("keyup", (e) => {
-        if (e.key === "Shift" && network) network.disableEditMode();
+        if ((e.key === "Control" || e.key === "Meta") && network) {
+          network.disableEditMode();
+        }
       });
+      // Capture the selection state at mousedown — vis-network's
+      // single-click selection runs before our `click` handler, so
+      // by the time we read getSelectedNodes() it's already been
+      // overwritten. Snap it here and the alt-click toggle in the
+      // click handler can compute against the pre-click set.
+      document
+        .getElementById("topology")
+        .addEventListener(
+          "mousedown",
+          () => {
+            selectionAtMousedown = network ? network.getSelectedNodes() : [];
+          },
+          true,
+        );
     } else {
       // Diff the DataSets — preserves selection, layout positions,
       // and any in-flight drag interactions, instead of tearing
@@ -555,9 +590,11 @@ const visOptions = {
   interaction: {
     hover: true,
     dragNodes: true,
-    // Ctrl/Cmd-click toggles a node into the existing selection, and
-    // a drag on empty canvas rubber-bands a multi-selection — both
-    // back the Cmd+D duplicate-selected flow.
+    // Vis-network handles Shift+drag rubber-band on empty canvas
+    // when this is on. Its Ctrl-click multi-add normally also
+    // triggers here, but the Ctrl-keydown handler that enters
+    // addEdgeMode (further below) preempts that branch in favour
+    // of edge creation while Ctrl is held.
     multiselect: true,
     selectConnectedEdges: false,
     navigationButtons: false,
