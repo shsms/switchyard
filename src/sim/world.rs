@@ -143,6 +143,41 @@ struct WorldInner {
 /// `Arc<dyn Fn>` so World's API doesn't depend on tulisp.
 pub type PreTickHook = Arc<dyn Fn(&World) + Send + Sync + 'static>;
 
+/// Compute mean / median / integer-bucketed mode over a battery
+/// SoC sample set. Returns `None` for an empty input.
+fn compute_soc_stats(socs: &[f32]) -> Option<SocStats> {
+    if socs.is_empty() {
+        return None;
+    }
+    let mean_pct =
+        socs.iter().map(|v| *v as f64).sum::<f64>() / socs.len() as f64;
+    let mut sorted: Vec<f32> = socs.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let median_pct = sorted[sorted.len() / 2 - usize::from(sorted.len() % 2 == 0)] as f64;
+    // Mode: integer-bucketed, lowest-bucket on tie.
+    let mut histogram = [0u32; 101];
+    for v in socs {
+        let bucket = v.clamp(0.0, 100.0).round() as usize;
+        histogram[bucket] += 1;
+    }
+    // Pick the lowest bucket on a count tie. `max_by_key` keeps
+    // the LAST max seen; iterate ascending and update only on
+    // strictly greater so the lowest bucket wins.
+    let mut mode_pct: u8 = 0;
+    let mut best_count: u32 = 0;
+    for (idx, count) in histogram.iter().enumerate() {
+        if *count > best_count {
+            best_count = *count;
+            mode_pct = idx as u8;
+        }
+    }
+    Some(SocStats {
+        mean_pct,
+        median_pct,
+        mode_pct: Some(mode_pct),
+    })
+}
+
 /// Snapshot of `ScenarioJournal` lifecycle state for `/api/scenario`.
 /// Excludes the events themselves — those live behind a paginated
 /// `/api/scenario/events` endpoint with a `since=` cursor.
@@ -157,8 +192,6 @@ pub struct ScenarioSummary {
 }
 
 /// Snapshot of scenario-scoped metrics for `/api/scenario/report`.
-/// Grows in subsequent roadmap items (B4 = SoC stats + 15-min
-/// window peaks).
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ScenarioReport {
     pub scenario_elapsed_s: f64,
@@ -169,6 +202,13 @@ pub struct ScenarioReport {
     pub total_pv_produced_wh: f64,
     pub per_battery: Vec<PerBatteryReport>,
     pub per_pv: Vec<PerPvReport>,
+    /// Stats over the *current* SoC of every registered battery.
+    /// Computed lazily on each report fetch — cheap O(N) over a
+    /// handful of batteries. None when no batteries are registered.
+    pub soc_stats: Option<SocStats>,
+    /// Per-15-minute UTC-aligned window peak of main-meter active
+    /// power. Sorted oldest-first.
+    pub main_meter_window_peaks: Vec<WindowPeakEntry>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -182,6 +222,23 @@ pub struct PerBatteryReport {
 pub struct PerPvReport {
     pub id: u64,
     pub produced_wh: f64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SocStats {
+    /// Arithmetic mean of every battery's current SoC.
+    pub mean_pct: f64,
+    /// Median (lower of the two middle values for an even count).
+    pub median_pct: f64,
+    /// Mode bucketed to integer percent. If multiple buckets tie,
+    /// returns the lowest. None for an empty set.
+    pub mode_pct: Option<u8>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct WindowPeakEntry {
+    pub window_start: DateTime<Utc>,
+    pub peak_w: f64,
 }
 
 impl World {
@@ -284,9 +341,10 @@ impl World {
     }
 
     /// Aggregate metrics for `/api/scenario/report`. Returns a
-    /// snapshot — the same struct B4 will grow with SoC stats and
-    /// 15-min window peaks.
+    /// snapshot. SoC stats are computed at fetch time from each
+    /// battery's current telemetry — cheap, no accumulator needed.
     pub fn scenario_report(&self, now: DateTime<Utc>) -> ScenarioReport {
+        use crate::sim::Category;
         let g = self.inner.scenario.read();
         let mut total_charged = 0.0;
         let mut total_discharged = 0.0;
@@ -315,15 +373,41 @@ impl World {
                 }
             })
             .collect();
+        let main_meter_window_peaks: Vec<WindowPeakEntry> = g
+            .window_peaks()
+            .iter()
+            .map(|(secs, peak)| WindowPeakEntry {
+                window_start: DateTime::<Utc>::from_timestamp(*secs, 0)
+                    .unwrap_or_else(Utc::now),
+                peak_w: *peak,
+            })
+            .collect();
+        drop(g);
+
+        // SoC stats: walk every registered battery, read its
+        // current SoC. Out-of-band of the journal because it's
+        // current state, not an accumulator.
+        let mut socs: Vec<f32> = Vec::new();
+        for c in self.inner.components.read().iter() {
+            if c.category() == Category::Battery
+                && let Some(s) = c.telemetry(self).soc_pct
+            {
+                socs.push(s);
+            }
+        }
+        let soc_stats = compute_soc_stats(&socs);
+
         ScenarioReport {
-            scenario_elapsed_s: g.elapsed_s(now),
-            peak_main_meter_w: g.peak_main_meter_active_w(),
+            scenario_elapsed_s: self.inner.scenario.read().elapsed_s(now),
+            peak_main_meter_w: self.inner.scenario.read().peak_main_meter_active_w(),
             main_meter_id: *self.inner.main_meter_id.read(),
             total_battery_charged_wh: total_charged,
             total_battery_discharged_wh: total_discharged,
             total_pv_produced_wh: total_pv,
             per_battery,
             per_pv,
+            soc_stats,
+            main_meter_window_peaks,
         }
     }
 
@@ -695,7 +779,7 @@ impl World {
         {
             let mut journal = self.inner.scenario.write();
             for (id, metric, value) in &emitted {
-                journal.record_sample(*id, *metric, *value, main_id);
+                journal.record_sample(*id, *metric, *value, main_id, now);
             }
             for (id, dc_power_w) in &battery_samples {
                 journal.record_battery_sample(*id, *dc_power_w, now);
@@ -797,6 +881,32 @@ impl Default for World {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn soc_stats_compute_on_typical_set() {
+        let s = compute_soc_stats(&[20.0, 40.0, 60.0, 80.0]).unwrap();
+        // Mean of 20, 40, 60, 80 = 50.
+        assert!((s.mean_pct - 50.0).abs() < 1e-6);
+        // Median (lower of middle two on even count) = 40.
+        assert!((s.median_pct - 40.0).abs() < 1e-6);
+        // No clear mode — all equal counts at distinct buckets;
+        // returns the lowest tied bucket (20).
+        assert_eq!(s.mode_pct, Some(20));
+    }
+
+    #[test]
+    fn soc_stats_mode_picks_repeated_bucket() {
+        let s = compute_soc_stats(&[50.0, 50.4, 50.6, 25.0, 80.0]).unwrap();
+        // Three SoCs round to 50 (50, 50, 51 — actually 50.6
+        // rounds to 51, so mode is 50 with 2 buckets, vs 51, 25,
+        // 80 each at 1).
+        assert_eq!(s.mode_pct, Some(50));
+    }
+
+    #[test]
+    fn soc_stats_empty_returns_none() {
+        assert!(compute_soc_stats(&[]).is_none());
+    }
 
     /// Two meters can list the same inverter as a successor and both
     /// edges land in the connections graph (a parallel-meter

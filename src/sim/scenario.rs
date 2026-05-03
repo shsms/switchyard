@@ -27,6 +27,16 @@ use crate::sim::history::Metric;
 /// `since=` cursor will see a gap.
 const SCENARIO_EVENT_CAPACITY: usize = 4096;
 
+/// Window length for the main-meter peak ring (15 minutes in
+/// seconds, UTC-aligned).
+pub const WINDOW_PEAK_LENGTH_S: i64 = 15 * 60;
+
+/// Cap on retained 15-minute windows. 96 covers a full UTC day —
+/// most scenarios don't run that long, and the BTreeMap drops
+/// the oldest by key so a multi-day run keeps only the most
+/// recent day.
+const WINDOW_PEAK_CAPACITY: usize = 96;
+
 /// Single entry in the scenario journal. `id` is monotonic and
 /// stable across the journal's lifetime — it does not reset on
 /// `scenario_start`. Clients use it as the `since=` cursor for
@@ -78,6 +88,12 @@ pub struct ScenarioJournal {
     per_battery: BTreeMap<u64, BatteryIntegrals>,
     /// Per-solar-inverter produced-energy integrals.
     per_pv: BTreeMap<u64, PvIntegrals>,
+    /// Peak main-meter active-power per 15-minute UTC-aligned
+    /// window. Key is the window-start unix timestamp (seconds);
+    /// value is the maximum sample seen inside the window. Bounded
+    /// at WINDOW_PEAK_CAPACITY most-recent windows so a multi-day
+    /// scenario doesn't grow without bound.
+    window_peaks: BTreeMap<i64, f64>,
     /// Wall-clock timestamp of the previous integration sample —
     /// used to compute `dt` for the energy integrals. `None` until
     /// `start` runs; updated at the end of each
@@ -98,6 +114,7 @@ impl ScenarioJournal {
         self.peak_main_meter_active_w = 0.0;
         self.per_battery.clear();
         self.per_pv.clear();
+        self.window_peaks.clear();
         // Seed the integration cursor at start so the first
         // snapshot's dt covers `now → snapshot_ts`.
         self.prev_sample_ts = Some(now);
@@ -105,21 +122,36 @@ impl ScenarioJournal {
 
     /// Hand a freshly-recorded telemetry sample to the reporter.
     /// Skipped before `start` and after `stop`, so the peaks reflect
-    /// only the active scenario window.
+    /// only the active scenario window. `now` is used to bucket
+    /// the value into a 15-minute UTC-aligned window for the per-
+    /// window peak ring.
     pub fn record_sample(
         &mut self,
         id: u64,
         metric: Metric,
         value: f32,
         main_meter_id: Option<u64>,
+        now: DateTime<Utc>,
     ) {
-        if self.started_at.is_none() || self.ended_at.is_some() {
+        if !self.is_running() {
             return;
         }
         if Some(id) == main_meter_id && metric == Metric::ActivePowerW {
             let v = value as f64;
             if v > self.peak_main_meter_active_w {
                 self.peak_main_meter_active_w = v;
+            }
+            let window_start =
+                (now.timestamp() / WINDOW_PEAK_LENGTH_S) * WINDOW_PEAK_LENGTH_S;
+            let entry = self.window_peaks.entry(window_start).or_insert(f64::NEG_INFINITY);
+            if v > *entry {
+                *entry = v;
+            }
+            // Cap retained windows by dropping the oldest.
+            while self.window_peaks.len() > WINDOW_PEAK_CAPACITY {
+                if let Some(&oldest) = self.window_peaks.keys().next() {
+                    self.window_peaks.remove(&oldest);
+                }
             }
         }
     }
@@ -192,6 +224,10 @@ impl ScenarioJournal {
 
     pub fn per_pv(&self) -> &BTreeMap<u64, PvIntegrals> {
         &self.per_pv
+    }
+
+    pub fn window_peaks(&self) -> &BTreeMap<i64, f64> {
+        &self.window_peaks
     }
 
     /// Mark the scenario as ended. Idempotent; subsequent calls
@@ -384,6 +420,44 @@ mod tests {
         j.start("second".into(), ts(100));
         assert!(j.per_battery().is_empty());
         assert!(j.per_pv().is_empty());
+        assert!(j.window_peaks().is_empty());
+    }
+
+    /// Main-meter samples bucket into 15-minute UTC-aligned
+    /// windows. Each window keeps the maximum value seen.
+    #[test]
+    fn window_peaks_track_max_per_bucket() {
+        let mut j = ScenarioJournal::default();
+        // Use timestamps aligned to the 900 s grid so windows are
+        // 0..900 and 900..1800. First window peak = 5000, second
+        // window peak = 9000.
+        j.start("p".into(), ts(0));
+        j.record_sample(7, Metric::ActivePowerW, 3000.0, Some(7), ts(100));
+        j.record_sample(7, Metric::ActivePowerW, 5000.0, Some(7), ts(300));
+        j.record_sample(7, Metric::ActivePowerW, 4000.0, Some(7), ts(800));
+        j.record_sample(7, Metric::ActivePowerW, 6000.0, Some(7), ts(900));
+        j.record_sample(7, Metric::ActivePowerW, 9000.0, Some(7), ts(1500));
+
+        let peaks = j.window_peaks();
+        assert_eq!(peaks.len(), 2);
+        assert!((peaks[&0] - 5000.0).abs() < 1e-6);
+        assert!((peaks[&900] - 9000.0).abs() < 1e-6);
+    }
+
+    /// Samples on non-main meters and non-active-power metrics
+    /// don't bump the window-peak ring.
+    #[test]
+    fn window_peaks_ignore_non_main_meter() {
+        let mut j = ScenarioJournal::default();
+        j.start("p".into(), ts(1700000000));
+        // Different id.
+        j.record_sample(99, Metric::ActivePowerW, 12345.0, Some(7), ts(1700000100));
+        // Right id, wrong metric.
+        j.record_sample(7, Metric::SocPct, 50.0, Some(7), ts(1700000100));
+        // No main flagged.
+        j.record_sample(7, Metric::ActivePowerW, 12345.0, None, ts(1700000100));
+
+        assert!(j.window_peaks().is_empty());
     }
 
     #[test]

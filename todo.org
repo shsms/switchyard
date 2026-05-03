@@ -147,7 +147,7 @@ Per-tick accumulation:
 Acceptance: lambda-driven battery setpoint of +10 kW for 60 sim-seconds
 yields ≈ 167 Wh discharged (within rounding).
 
-*** TODO B4. SoC distribution + 15-min window peaks
+*** DONE B4. SoC distribution + 15-min window peaks
 
 Two cheap-on-fetch additions:
 
