@@ -48,7 +48,7 @@ Goal: introduce the hook with no behavior change. Foundation for A2 / A3.
 Acceptance: =cargo test= passes; lock contention measured via a
 =/api/diag= counter (optional).
 
-*** TODO A2. Reactive =:power= on meters
+*** DONE A2. Reactive =:power= on meters
 
 Goal: =(make-meter :power (lambda () 1234.5))= and
 =(make-meter :power 'consumer-power)= work alongside the existing

@@ -15,6 +15,7 @@ use crate::lisp::value::LispValue;
 use crate::sim::{
     Battery, BatteryInverter, Chp, ComponentHandle, EvCharger, Grid, Meter, SolarInverter, World,
     battery::BatteryConfig,
+    dynamic_scalar::DynamicScalar,
     ev_charger::EvChargerConfig,
     inverter::battery_inverter::BatteryInverterConfig,
     inverter::solar_inverter::SolarInverterConfig,
@@ -61,7 +62,10 @@ AsPlist! {
         id: Option<i64> {= None},
         name: Option<String> {= None},
         interval: Option<i64> {= None},
-        power: Option<f64> {= None},
+        /// Constant, lambda, or symbol. Resolved into a
+        /// [`DynamicScalar`] in the constructor — see
+        /// [`crate::sim::dynamic_scalar::DynamicScalar::from_lisp`].
+        power: Option<LispValue> {= None},
         successors: Option<Vec<ComponentHandle>> {= None},
         hidden: Option<bool> {= None},
         stream_jitter_pct<":stream-jitter-pct">: Option<f64> {= None},
@@ -374,11 +378,20 @@ pub fn register(ctx: &mut TulispContext, world: World) {
                         .collect()
                 })
                 .unwrap_or_default();
+            // :power may be a number, a lambda, or a symbol. The
+            // numeric default from the per-category alist is the
+            // fallback; a per-component lambda / symbol takes
+            // precedence.
+            let default_power = d.power.map(|p| p as f32).unwrap_or(0.0);
+            let power_source = match a.power {
+                Some(v) => DynamicScalar::from_lisp(v.as_inner(), default_power),
+                None => d.power.map(|p| DynamicScalar::constant(p as f32)),
+            };
             let meter = Meter::new(
                 id,
                 interval,
                 cached_succ_ids,
-                a.power.or(d.power).map(|p| p as f32),
+                power_source,
                 a.stream_jitter_pct
                     .or(d.stream_jitter_pct)
                     .unwrap_or(0.0) as f32,
@@ -767,12 +780,19 @@ mod tests {
     /// Builds a context wired to a fresh World, evaluates `src`, and
     /// returns the World so the test can introspect what got registered.
     fn run(src: &str) -> World {
+        run_with_ctx(src).0
+    }
+
+    /// Like [`run`] but also surfaces the context — needed for tests
+    /// that drive `refresh_inputs` (lambda / symbol `:power` etc.)
+    /// after the components have registered.
+    fn run_with_ctx(src: &str) -> (World, TulispContext) {
         let world = World::new();
         let mut ctx = TulispContext::new();
         crate::lisp::handle::register(&mut ctx);
         register(&mut ctx, world.clone());
         ctx.eval_string(src).expect("eval lisp source");
-        world
+        (world, ctx)
     }
 
     /// `:name "..."` on any %make-* lands as a display-name override
@@ -838,5 +858,71 @@ mod tests {
         let t = world.get(103).unwrap().telemetry(&world);
         // Default capacity from BatteryConfig::default in battery.rs.
         assert_eq!(t.capacity_wh, Some(92_000.0));
+    }
+
+    /// `:power N` lands as a constant DynamicScalar — aggregate_power_w
+    /// reads it through immediately, no refresh required.
+    #[test]
+    fn meter_power_constant_reads_through() {
+        let world = run("(%make-meter :id 7 :power 1875.0)");
+        let m = world.get(7).unwrap();
+        assert!((m.aggregate_power_w(&world) - 1875.0).abs() < 1e-3);
+    }
+
+    /// `:power (lambda () N)` produces a dynamic source that the
+    /// scheduler-driven refresh path resolves on each pass. The
+    /// fallback (0.0) is what aggregate_power_w sees before the
+    /// first refresh; after one refresh it matches the lambda's
+    /// return.
+    #[test]
+    fn meter_power_lambda_resolves_each_refresh() {
+        let (world, mut ctx) = run_with_ctx(
+            r#"(%make-meter :id 8 :power (lambda () 1234.5))"#,
+        );
+        let m = world.get(8).unwrap();
+        // Pre-refresh: cached fallback.
+        assert_eq!(m.aggregate_power_w(&world), 0.0);
+        // After refresh_inputs: the lambda's value is cached.
+        m.refresh_inputs(&mut ctx);
+        assert!((m.aggregate_power_w(&world) - 1234.5).abs() < 1e-3);
+    }
+
+    /// `:power 'symbol` derefs the variable each refresh — mutating
+    /// the bound value between refreshes is what scenarios use to
+    /// drive consumer load curves declaratively.
+    #[test]
+    fn meter_power_symbol_derefs_each_refresh() {
+        let (world, mut ctx) = run_with_ctx(
+            r#"(setq consumer-power 1500.0)
+               (%make-meter :id 9 :power 'consumer-power)"#,
+        );
+        let m = world.get(9).unwrap();
+        m.refresh_inputs(&mut ctx);
+        assert!((m.aggregate_power_w(&world) - 1500.0).abs() < 1e-3);
+        // Mutate the symbol; next refresh picks up the new value.
+        ctx.eval_string("(setq consumer-power 2750.0)").unwrap();
+        m.refresh_inputs(&mut ctx);
+        assert!((m.aggregate_power_w(&world) - 2750.0).abs() < 1e-3);
+    }
+
+    /// `(set-meter-power id W)` is the existing imperative setter
+    /// for driving curves from `(every)` callbacks. It collapses the
+    /// source back to a constant — even if the meter was originally
+    /// constructed with a lambda — so subsequent refreshes don't
+    /// silently overwrite the user's intent.
+    #[test]
+    fn meter_set_power_collapses_to_constant() {
+        let (world, mut ctx) = run_with_ctx(
+            r#"(%make-meter :id 10 :power (lambda () 1000.0))"#,
+        );
+        let m = world.get(10).unwrap();
+        m.refresh_inputs(&mut ctx);
+        assert!((m.aggregate_power_w(&world) - 1000.0).abs() < 1e-3);
+
+        // External setter wins; refresh becomes a no-op on the
+        // collapsed constant.
+        m.set_active_power_override(7777.0);
+        m.refresh_inputs(&mut ctx);
+        assert!((m.aggregate_power_w(&world) - 7777.0).abs() < 1e-3);
     }
 }

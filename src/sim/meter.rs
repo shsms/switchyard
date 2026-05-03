@@ -1,15 +1,18 @@
 use std::{fmt, time::Duration};
 
 use chrono::{DateTime, Utc};
-use parking_lot::Mutex;
+use parking_lot::RwLock;
+use tulisp::TulispContext;
 
-use crate::sim::{Category, SimulatedComponent, Telemetry, World};
+use crate::sim::{Category, SimulatedComponent, Telemetry, World, dynamic_scalar::DynamicScalar};
 
 /// A power meter sums its successors' active and reactive power, then
 /// voltage-splits the totals across the three phases. If the parent
-/// registered with explicit `:power` — or a Lisp timer pushed a value
-/// in via `(set-meter-power id W)` — that value is used verbatim
-/// instead, modelling a headless consumer / CHP load.
+/// registered with explicit `:power` — a constant, a lambda, or a
+/// symbol — that value is used verbatim instead, modelling a
+/// headless consumer / CHP load. Lisp timers can also push a value
+/// in via `(set-meter-power id W)`, which collapses the source back
+/// to a constant.
 pub struct Meter {
     id: u64,
     name: String,
@@ -23,9 +26,11 @@ pub struct Meter {
     /// and `(world-disconnect …)` removals just work.
     hidden_successors: Vec<u64>,
     /// Override the aggregate-from-successors path with an explicit
-    /// active-power value. Mutex-wrapped so a runtime defun can flip
-    /// it without contending against the per-tick aggregation read.
-    fixed_power_w: Mutex<Option<f32>>,
+    /// active-power source — either a constant or a Lisp expression
+    /// re-resolved each tick. RwLock so `(set-meter-power)` can
+    /// replace the slot without contending against the per-tick
+    /// aggregation read.
+    power_source: RwLock<Option<DynamicScalar>>,
     stream_jitter_pct: f32,
     /// Excluded from gRPC component / connection listings, but still
     /// aggregated by parent meters via World::get. Used for synthetic
@@ -39,7 +44,7 @@ impl Meter {
         id: u64,
         interval: Duration,
         hidden_successors: Vec<u64>,
-        fixed_power_w: Option<f32>,
+        power_source: Option<DynamicScalar>,
         stream_jitter_pct: f32,
         hidden: bool,
     ) -> Self {
@@ -48,15 +53,15 @@ impl Meter {
             name: format!("meter-{id}"),
             interval,
             hidden_successors,
-            fixed_power_w: Mutex::new(fixed_power_w),
+            power_source: RwLock::new(power_source),
             stream_jitter_pct,
             hidden,
         }
     }
 
     fn aggregate_active(&self, world: &World) -> f32 {
-        if let Some(p) = *self.fixed_power_w.lock() {
-            return p;
+        if let Some(scalar) = self.power_source.read().as_ref() {
+            return scalar.get();
         }
         world
             .children_of(self.id, &self.hidden_successors)
@@ -77,10 +82,10 @@ impl Meter {
     }
 
     fn aggregate_reactive(&self, world: &World) -> f32 {
-        // No reactive override on fixed-power meters — those model
+        // No reactive override on power-driven meters — those model
         // pure-real loads (consumer kW, CHP). If we ever need a
-        // synthetic reactive load, add a `fixed_reactive_var` knob.
-        if self.fixed_power_w.lock().is_some() {
+        // synthetic reactive load, add a `reactive_source` knob.
+        if self.power_source.read().is_some() {
             return 0.0;
         }
         world
@@ -94,11 +99,12 @@ impl Meter {
             .sum()
     }
 
-    /// Replace the fixed-power override (creating one if there wasn't
-    /// any). Used by `(set-meter-power)` to drive consumer / load
-    /// curves from a Lisp timer.
+    /// Replace the power source with a fresh constant. Used by
+    /// `(set-meter-power)` to drive consumer / load curves from a
+    /// Lisp timer; collapses any prior dynamic source so subsequent
+    /// refreshes are no-ops.
     pub fn set_fixed_power(&self, watts: f32) {
-        *self.fixed_power_w.lock() = Some(watts);
+        *self.power_source.write() = Some(DynamicScalar::constant(watts));
     }
 }
 
@@ -123,6 +129,11 @@ impl SimulatedComponent for Meter {
     }
     fn stream_jitter_pct(&self) -> f32 {
         self.stream_jitter_pct
+    }
+    fn refresh_inputs(&self, ctx: &mut TulispContext) {
+        if let Some(scalar) = self.power_source.read().as_ref() {
+            scalar.refresh(ctx);
+        }
     }
     fn tick(&self, _world: &World, _now: DateTime<Utc>, _dt: Duration) {}
 
@@ -341,6 +352,52 @@ mod tests {
         // Post-connect: aggregation picks up the new edge.
         w.connect(2, 100);
         assert!((m.aggregate_power_w(&w) - 2_000.0).abs() < 1e-3);
+    }
+
+    /// A constant `:power` DynamicScalar bypasses children-aggregation
+    /// and reads through directly. set_fixed_power replaces the slot
+    /// with a fresh constant.
+    #[test]
+    fn constant_power_source_reads_through() {
+        let w = World::new();
+        let m = Meter::new(
+            2,
+            Duration::from_secs(1),
+            vec![],
+            Some(DynamicScalar::constant(2750.0)),
+            0.0,
+            false,
+        );
+        w.register(m);
+        let m = w.get(2).unwrap();
+        assert!((m.aggregate_power_w(&w) - 2750.0).abs() < 1e-3);
+
+        // set-meter-power collapses the source to a fresh constant
+        // even if it had been dynamic.
+        m.set_active_power_override(4100.0);
+        assert!((m.aggregate_power_w(&w) - 4100.0).abs() < 1e-3);
+    }
+
+    /// A lambda-bound `:power` resolves through `refresh_inputs` and
+    /// the new value lands in subsequent `aggregate_power_w` reads.
+    #[test]
+    fn lambda_power_source_refreshes_each_tick() {
+        let mut ctx = tulisp::TulispContext::new();
+        let lambda = ctx.eval_string("(lambda () 1234.5)").unwrap();
+        let scalar = DynamicScalar::from_lisp(&lambda, 0.0).expect("lambda → dynamic");
+        assert!(scalar.is_dynamic());
+
+        let w = World::new();
+        let m = Meter::new(2, Duration::from_secs(1), vec![], Some(scalar), 0.0, false);
+        w.register(m);
+        let m = w.get(2).unwrap();
+
+        // Pre-refresh: the fallback (0.0) is what the cache holds.
+        assert_eq!(m.aggregate_power_w(&w), 0.0);
+
+        // Refresh once — the lambda resolves to 1234.5.
+        m.refresh_inputs(&mut ctx);
+        assert!((m.aggregate_power_w(&w) - 1234.5).abs() < 1e-3);
     }
 
     /// Hidden children (no edges in the connections graph) get
