@@ -161,6 +161,31 @@ impl Config {
         });
     }
 
+    /// Build a TAGS table for every file in `roots` and every
+    /// file each transitively `(load …)`s. Static — does not
+    /// require a running Config; the etags binary uses this
+    /// directly so tag generation works in CI / pre-commit
+    /// hooks without booting the simulator. Drives tulisp's
+    /// parse-with-etags path: every `(defun NAME …)` form
+    /// across the file tree becomes one entry.
+    ///
+    /// The load path is set from the first root's parent
+    /// directory (the canonical config); roots beyond the first
+    /// can `(load …)` files relative to it just like config.lisp
+    /// would.
+    pub fn tags_table(roots: &[&str]) -> Result<String, Error> {
+        let mut ctx = TulispContext::new();
+        if let Some(first) = roots.first()
+            && let Some(parent) = Path::new(first).parent()
+            && !parent.as_os_str().is_empty()
+        {
+            ctx.set_load_path(Some(parent)).map_err(|e| {
+                Error::os_error(format!("set_load_path({}): {e}", parent.display()))
+            })?;
+        }
+        ctx.tags_table(Some(roots))
+    }
+
     pub fn metadata(&self) -> Metadata {
         self.metadata.read().clone()
     }
