@@ -1,6 +1,6 @@
 //! Convenience CLI for poking at a running switchyard server.
 //!
-//! Examples:
+//! gRPC commands (default --addr http://[::1]:8800):
 //!   swctl info
 //!   swctl list
 //!   swctl list --category battery
@@ -10,6 +10,15 @@
 //!   swctl set-power 1001 8000
 //!   swctl set-power 1001 -- -5000 --lifetime 30   # negative → discharge
 //!   swctl augment-bounds 1001 --lower -15000 --upper 15000 --lifetime 60
+//!
+//! Scenario commands — HTTP (default --ui-addr http://127.0.0.1:8801):
+//!   swctl scenario start "demo"
+//!   swctl scenario event outage "bat-1003"
+//!   swctl scenario load scenarios/example.lisp
+//!   swctl scenario report
+//!   swctl scenario events --since 0 --limit 20
+//!   swctl scenario summary
+//!   swctl scenario stop
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -39,6 +48,12 @@ struct Cli {
     /// gRPC endpoint of the simulator.
     #[arg(long, default_value = "http://[::1]:8800", global = true)]
     addr: String,
+
+    /// HTTP endpoint of the simulator's UI server. Used by the
+    /// `scenario` subcommand — the scenario lifecycle isn't on
+    /// gRPC.
+    #[arg(long, default_value = "http://127.0.0.1:8801", global = true)]
+    ui_addr: String,
 
     /// Emit JSON instead of human-friendly output where applicable.
     #[arg(long, global = true)]
@@ -120,6 +135,60 @@ enum Cmd {
         #[arg(long, default_value_t = 60)]
         lifetime: u64,
     },
+
+    /// Drive the running scenario: start / stop / event / load,
+    /// and read back report + events. Talks to the UI's HTTP
+    /// surface, not gRPC.
+    #[command(subcommand)]
+    Scenario(ScenarioCmd),
+}
+
+#[derive(Subcommand, Debug)]
+enum ScenarioCmd {
+    /// Begin a fresh scenario. Resets the journal + reporters.
+    Start {
+        /// Scenario name. Lands as `(scenario-start NAME)`.
+        name: String,
+    },
+
+    /// Mark the running scenario as ended. Freezes elapsed +
+    /// metrics; flushes any active CSV sinks.
+    Stop,
+
+    /// Append a journal event. KIND becomes a Lisp symbol; PAYLOAD
+    /// is rendered as a string.
+    Event {
+        /// Event kind (e.g. `outage`, `note`).
+        kind: String,
+        /// Free-form payload string.
+        payload: String,
+    },
+
+    /// Load a hand-written scenario file via `(load PATH)`. Path
+    /// is resolved against the running config.lisp's load
+    /// directory, same as `(load …)` from the REPL.
+    Load {
+        /// Path to the scenario file (e.g. `scenarios/example.lisp`).
+        path: String,
+    },
+
+    /// Show lifecycle summary — name, started_at, elapsed, event
+    /// count.
+    Summary,
+
+    /// Show aggregate metrics: peak / charge / discharge / SoC
+    /// stats / 15-min averages.
+    Report,
+
+    /// Show recent events in the journal.
+    Events {
+        /// Cursor: only events with id >= SINCE. Default 0.
+        #[arg(long, default_value_t = 0)]
+        since: u64,
+        /// Cap on returned entries.
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+    },
 }
 
 #[derive(ValueEnum, Clone, Copy, Debug)]
@@ -155,6 +224,12 @@ async fn main() {
 }
 
 async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
+    // Dispatch scenario commands first — they only need the HTTP
+    // client, not a live gRPC channel. Avoids paying for a
+    // failing gRPC connect when the user only wants /api/scenario.
+    if let Cmd::Scenario(s) = cli.cmd {
+        return run_scenario(s, &cli.ui_addr, cli.json).await;
+    }
     let mut client = MicrogridClient::connect(cli.addr.clone()).await?;
     match cli.cmd {
         Cmd::Info => cmd_info(&mut client, cli.json).await,
@@ -178,7 +253,203 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             upper,
             lifetime,
         } => cmd_augment(&mut client, id, lower, upper, lifetime).await,
+        // Scenario handled before the gRPC connect above.
+        Cmd::Scenario(_) => unreachable!(),
     }
+}
+
+async fn run_scenario(
+    cmd: ScenarioCmd,
+    ui_addr: &str,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let http = reqwest::Client::new();
+    match cmd {
+        ScenarioCmd::Start { name } => {
+            // Quote the name as a Lisp string. We don't accept
+            // arbitrary expressions here on purpose — names are
+            // labels, not code.
+            eval(
+                &http,
+                ui_addr,
+                &format!("(scenario-start {})", lisp_string(&name)),
+            )
+            .await?;
+            println!("scenario-start {name}");
+        }
+        ScenarioCmd::Stop => {
+            eval(&http, ui_addr, "(scenario-stop)").await?;
+            println!("scenario-stopped");
+        }
+        ScenarioCmd::Event { kind, payload } => {
+            // KIND → unquoted symbol (matches the (scenario-event
+            // 'symbol …) idiom in scenario scripts). PAYLOAD →
+            // Lisp string.
+            let id = eval(
+                &http,
+                ui_addr,
+                &format!("(scenario-event '{kind} {})", lisp_string(&payload)),
+            )
+            .await?;
+            println!("event id={id}");
+        }
+        ScenarioCmd::Load { path } => {
+            eval(&http, ui_addr, &format!("(load {})", lisp_string(&path))).await?;
+            println!("loaded {path}");
+        }
+        ScenarioCmd::Summary => {
+            let s: serde_json::Value = http
+                .get(format!("{ui_addr}/api/scenario"))
+                .send()
+                .await?
+                .json()
+                .await?;
+            print_summary(&s, json);
+        }
+        ScenarioCmd::Report => {
+            let r: serde_json::Value = http
+                .get(format!("{ui_addr}/api/scenario/report"))
+                .send()
+                .await?
+                .json()
+                .await?;
+            print_report(&r, json);
+        }
+        ScenarioCmd::Events { since, limit } => {
+            let e: serde_json::Value = http
+                .get(format!("{ui_addr}/api/scenario/events"))
+                .query(&[("since", since.to_string()), ("limit", limit.to_string())])
+                .send()
+                .await?
+                .json()
+                .await?;
+            print_events(&e, json);
+        }
+    }
+    Ok(())
+}
+
+/// POST a Lisp expression to /api/eval. Returns the rendered
+/// result string on success, or surfaces the error message.
+async fn eval(
+    http: &reqwest::Client,
+    ui_addr: &str,
+    expr: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let body: serde_json::Value = http
+        .post(format!("{ui_addr}/api/eval"))
+        .body(expr.to_string())
+        .send()
+        .await?
+        .json()
+        .await?;
+    if body["ok"] == true {
+        Ok(body["value"].as_str().unwrap_or("").to_string())
+    } else {
+        let msg = body["error"].as_str().unwrap_or("(unknown)");
+        Err(format!("eval failed: {msg}").into())
+    }
+}
+
+/// Backslash-escape a string for embedding inside Lisp source.
+/// Handles the two characters that break a `"…"` literal: `"`
+/// and `\`.
+fn lisp_string(s: &str) -> String {
+    let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("\"{escaped}\"")
+}
+
+fn print_summary(s: &serde_json::Value, json: bool) {
+    if json {
+        println!("{s:#}");
+        return;
+    }
+    let name = s["name"].as_str().unwrap_or("(none)");
+    let started = s["started_at"].as_str().unwrap_or("—");
+    let ended = s["ended_at"].as_str().unwrap_or("running");
+    let elapsed = s["elapsed_s"].as_f64().unwrap_or(0.0);
+    let n = s["event_count"].as_u64().unwrap_or(0);
+    println!("name        {name}");
+    println!("started_at  {started}");
+    println!("ended_at    {ended}");
+    println!("elapsed     {elapsed:.1} s");
+    println!("events      {n}");
+}
+
+fn print_report(r: &serde_json::Value, json: bool) {
+    if json {
+        println!("{r:#}");
+        return;
+    }
+    fn kw(v: f64) -> String {
+        format!("{:.2} kW", v / 1000.0)
+    }
+    fn kwh(v: f64) -> String {
+        format!("{:.2} kWh", v / 1000.0)
+    }
+    let elapsed = r["scenario_elapsed_s"].as_f64().unwrap_or(0.0);
+    let peak = r["peak_main_meter_w"].as_f64().unwrap_or(0.0);
+    let chg = r["total_battery_charged_wh"].as_f64().unwrap_or(0.0);
+    let dchg = r["total_battery_discharged_wh"].as_f64().unwrap_or(0.0);
+    let pv = r["total_pv_produced_wh"].as_f64().unwrap_or(0.0);
+    println!("elapsed              {elapsed:.1} s");
+    println!("main meter peak      {}", kw(peak));
+    println!("battery charged      {}", kwh(chg));
+    println!("battery discharged   {}", kwh(dchg));
+    println!("PV produced          {}", kwh(pv));
+    if let Some(soc) = r["soc_stats"].as_object() {
+        let mean = soc["mean_pct"].as_f64().unwrap_or(0.0);
+        let median = soc["median_pct"].as_f64().unwrap_or(0.0);
+        let mode = soc["mode_pct"]
+            .as_u64()
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "—".into());
+        println!("SoC mean / median / mode  {mean:.1}% / {median:.1}% / {mode}%");
+    }
+    if let Some(arr) = r["main_meter_window_averages"].as_array()
+        && !arr.is_empty()
+    {
+        println!("\n15-min main-meter averages (last 6):");
+        for w in arr.iter().rev().take(6).collect::<Vec<_>>().iter().rev() {
+            let ts = w["window_start"].as_str().unwrap_or("?");
+            let avg = w["avg_w"].as_f64().unwrap_or(0.0);
+            println!("  {ts}  {}", kw(avg));
+        }
+    }
+    if let Some(arr) = r["per_battery"].as_array()
+        && !arr.is_empty()
+    {
+        println!("\nper battery:");
+        for b in arr {
+            let id = b["id"].as_u64().unwrap_or(0);
+            let c = b["charge_wh"].as_f64().unwrap_or(0.0);
+            let d = b["discharge_wh"].as_f64().unwrap_or(0.0);
+            println!("  {id}  charge {}  discharge {}", kwh(c), kwh(d));
+        }
+    }
+}
+
+fn print_events(e: &serde_json::Value, json: bool) {
+    if json {
+        println!("{e:#}");
+        return;
+    }
+    let next = e["next_event_id"].as_u64().unwrap_or(0);
+    if let Some(arr) = e["events"].as_array() {
+        if arr.is_empty() {
+            println!("(no events)");
+        } else {
+            println!("{:>5}  {:<24}  {:<14}  payload", "id", "ts", "kind");
+            for ev in arr {
+                let id = ev["id"].as_u64().unwrap_or(0);
+                let ts = ev["ts"].as_str().unwrap_or("?");
+                let kind = ev["kind"].as_str().unwrap_or("?");
+                let payload = ev["payload"].as_str().unwrap_or("");
+                println!("{id:>5}  {ts:<24}  {kind:<14}  {payload}");
+            }
+        }
+    }
+    println!("\nnext_event_id: {next}");
 }
 
 async fn cmd_info(
