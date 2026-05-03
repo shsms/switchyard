@@ -502,17 +502,29 @@ const topology = (() => {
         for (const n of ns) sum += positions[n].y;
         positions[id].y = sum / ns.length;
       }
-      // Spread overlapping siblings around their group mean. Sort
-      // by current y to preserve the top-down order the snap
-      // produced; recentre on the mean so the level doesn't drift.
       if (levelIds.length <= 1) return;
+      // Sort by current y, then enforce MIN_SPACING as a *floor*
+      // by pushing each node down only if it would overlap the one
+      // above. Nodes already further apart keep their separation
+      // — that's how an L3 child stays aligned with its L2 parent
+      // when siblings live at distant y's.
       levelIds.sort((a, b) => positions[a].y - positions[b].y);
-      const meanY =
+      const before =
         levelIds.reduce((s, id) => s + positions[id].y, 0) / levelIds.length;
-      const span = (levelIds.length - 1) * MIN_SPACING;
-      const startY = meanY - span / 2;
-      for (let i = 0; i < levelIds.length; i++) {
-        positions[levelIds[i]].y = startY + i * MIN_SPACING;
+      for (let i = 1; i < levelIds.length; i++) {
+        const prev = positions[levelIds[i - 1]].y;
+        if (positions[levelIds[i]].y - prev < MIN_SPACING) {
+          positions[levelIds[i]].y = prev + MIN_SPACING;
+        }
+      }
+      // Pushing-down skews the cluster toward the bottom; recentre
+      // on the pre-resolve mean so the level's barycenter doesn't
+      // drift across iterations.
+      const after =
+        levelIds.reduce((s, id) => s + positions[id].y, 0) / levelIds.length;
+      const shift = before - after;
+      if (shift !== 0) {
+        for (const id of levelIds) positions[id].y += shift;
       }
     }
 
