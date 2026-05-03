@@ -28,6 +28,7 @@ use crate::sim::events::{EVENT_BUS_CAPACITY, WorldEvent};
 use crate::sim::history::{ComponentHistory, History, Metric, Sample};
 use crate::sim::runtime::{CommandMode, ComponentRuntime, Health, TelemetryMode};
 use crate::sim::scenario::{ScenarioEvent, ScenarioJournal};
+use crate::sim::scenario_csv::{CsvSink, CsvSinks};
 use crate::sim::setpoints::{SetpointEvent, SetpointKind, SetpointLog, SetpointOutcome};
 use crate::timeout_tracker::TimeoutTracker;
 
@@ -137,6 +138,11 @@ struct WorldInner {
     /// meter may carry the flag — `set_main_meter` returns Err if
     /// a second tries to claim it.
     main_meter_id: RwLock<Option<u64>>,
+    /// Per-component CSV sinks active during the scenario.
+    /// Populated by `(scenario-record-csv DIR)`; drained on
+    /// `(scenario-stop-csv)` or implicitly by `scenario-stop`.
+    /// Empty by default — recording is opt-in.
+    scenario_csv: RwLock<CsvSinks>,
 }
 
 /// Callback invoked at the start of every `tick_once`. Held behind an
@@ -261,8 +267,35 @@ impl World {
                 pre_tick: RwLock::new(None),
                 scenario: RwLock::new(ScenarioJournal::default()),
                 main_meter_id: RwLock::new(None),
+                scenario_csv: RwLock::new(CsvSinks::new()),
             }),
         }
+    }
+
+    /// Open one CSV sink per registered component under `dir`.
+    /// Returns the count opened. Existing sinks are dropped first
+    /// so a re-call replaces (rather than appends to) the prior
+    /// recording.
+    pub fn scenario_open_csv(&self, dir: &std::path::Path) -> std::io::Result<usize> {
+        std::fs::create_dir_all(dir)?;
+        let components = self.inner.components.read().clone();
+        let mut sinks = CsvSinks::new();
+        for c in &components {
+            let sink = CsvSink::open(dir, c.id(), c.category())?;
+            sinks.insert(c.id(), sink);
+        }
+        let count = sinks.len();
+        *self.inner.scenario_csv.write() = sinks;
+        Ok(count)
+    }
+
+    /// Drop every active CSV sink. Each underlying `BufWriter`
+    /// flushes on drop.
+    pub fn scenario_close_csv(&self) -> usize {
+        let mut g = self.inner.scenario_csv.write();
+        let count = g.len();
+        g.clear();
+        count
     }
 
     /// Mark `id` as the main meter. Returns `Err` if a different
@@ -300,9 +333,12 @@ impl World {
         self.inner.scenario.write().start(name, now);
     }
 
-    /// Mark the scenario as ended at `now`. Idempotent.
+    /// Mark the scenario as ended at `now`. Also closes any active
+    /// CSV sinks so the file flushes before a downstream loader
+    /// might pick it up. Idempotent.
     pub fn scenario_stop(&self, now: DateTime<Utc>) {
         self.inner.scenario.write().stop(now);
+        self.scenario_close_csv();
     }
 
     /// Append a journal event. Returns the assigned id.
@@ -746,6 +782,7 @@ impl World {
         let mut pv_samples: Vec<(u64, f32)> = Vec::new();
         {
             let mut histories = self.inner.histories.write();
+            let mut csv_sinks = self.inner.scenario_csv.write();
             for c in &components {
                 let snap = c.telemetry(self);
                 match c.category() {
@@ -760,6 +797,11 @@ impl World {
                         }
                     }
                     _ => {}
+                }
+                if let Some(sink) = csv_sinks.get_mut(&c.id())
+                    && let Err(e) = sink.write_row(now, &snap)
+                {
+                    log::warn!("CSV write failed for {}: {e}", c.id());
                 }
                 let entry = histories
                     .entry(c.id())

@@ -182,7 +182,7 @@ doesn't already expose one. Composes existing
 Acceptance: example scenario file uses it; manual smoke shows
 outages firing in the UI.
 
-*** TODO B6. CSV telemetry export
+*** DONE B6. CSV telemetry export
 
 - =(scenario-record-csv DIR)= → World opens per-component
   =csv::Writer<File>= sinks (one file per component, named

@@ -587,6 +587,22 @@ fn register_scenario(ctx: &mut TulispContext, world: World) {
         },
     );
 
+    let w = world.clone();
+    ctx.defun(
+        "scenario-record-csv",
+        move |dir: String| -> Result<i64, Error> {
+            let path = std::path::PathBuf::from(dir);
+            w.scenario_open_csv(&path)
+                .map(|n| n as i64)
+                .map_err(|e| Error::os_error(format!("scenario-record-csv: {e}")))
+        },
+    );
+
+    let w = world.clone();
+    ctx.defun("scenario-stop-csv", move || -> Result<i64, Error> {
+        Ok(w.scenario_close_csv() as i64)
+    });
+
     ctx.defun("scenario-elapsed", move || -> Result<f64, Error> {
         Ok(world.scenario_elapsed_s(Utc::now()))
     });
@@ -1168,6 +1184,52 @@ mod tests {
         assert!(
             cfg.eval("(set-meter-power 7 \"garbage\")").is_ok(),
             "string is accepted as an eval source — fallback governs",
+        );
+    }
+
+    /// `(scenario-record-csv DIR)` opens one CSV per registered
+    /// component; record_history_snapshot writes a row per pass;
+    /// `(scenario-stop-csv)` flushes and closes them. Test
+    /// asserts the file exists and contains a header + N rows.
+    #[test]
+    fn scenario_csv_records_per_component_files() {
+        use chrono::Utc;
+        let (cfg, dir) = config_with(
+            "(set-microgrid-id 9)
+             (%make-meter :id 1)
+             (%make-battery :id 2)",
+        );
+        let csv_dir = dir.join("csvs");
+        cfg.eval("(scenario-start \"csv\")").unwrap();
+        let opened: i64 = cfg
+            .eval(&format!(
+                "(scenario-record-csv {:?})",
+                csv_dir.to_str().unwrap()
+            ))
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(opened, 2);
+        // Three snapshots → three rows + header.
+        for _ in 0..3 {
+            cfg.world().record_history_snapshot(Utc::now());
+        }
+        cfg.eval("(scenario-stop-csv)").unwrap();
+
+        let meter_csv = std::fs::read_to_string(csv_dir.join("1-meter.csv")).unwrap();
+        let battery_csv = std::fs::read_to_string(csv_dir.join("2-battery.csv")).unwrap();
+        // Header line + 3 data rows = 4 lines (last one ends in
+        // newline so split gives 5 elements with trailing empty).
+        assert_eq!(meter_csv.lines().count(), 4, "meter csv: {meter_csv}");
+        assert_eq!(battery_csv.lines().count(), 4, "battery csv: {battery_csv}");
+        assert!(meter_csv.starts_with("ts_iso,active_power_w"));
+        // Battery rows have an empty active_power_w cell (it
+        // publishes dc_power_w instead) — the column shape stays
+        // uniform.
+        let first_data = battery_csv.lines().nth(1).unwrap();
+        assert!(
+            first_data.starts_with("20") && first_data.contains(",,"),
+            "expected empty active_power cell, got {first_data}"
         );
     }
 
