@@ -241,7 +241,7 @@ in ~5s and is the model for future integration tests.
 
 Acceptance: tests exercise the watcher + tracker without flake.
 
-*** TODO C3. Scenario integration coverage (after B1–B4)
+*** DONE C3. Scenario integration coverage (after B1–B4)
 
 Stress-test the scenario surface via the harness:
 
