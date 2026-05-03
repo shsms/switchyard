@@ -1187,6 +1187,31 @@ mod tests {
         );
     }
 
+    /// load_scenario evaluates a driver script — the same surface
+    /// the old override-snapshot feature uses, but with the new
+    /// scenario-* defun calls inside. Verifies a driver file
+    /// running scenario-start + scenario-event lands in the
+    /// journal.
+    #[test]
+    fn load_scenario_runs_driver_script() {
+        let (cfg, dir) = config_with("(set-microgrid-id 9)");
+        let scenarios = dir.join("scenarios");
+        std::fs::create_dir_all(&scenarios).unwrap();
+        std::fs::write(
+            scenarios.join("warmup.lisp"),
+            "(scenario-start \"warmup\")\n\
+             (scenario-event 'note \"loaded via /api/scenarios/load\")",
+        )
+        .unwrap();
+
+        cfg.load_scenario("warmup").expect("scenario loads");
+        let summary = cfg.world().scenario_summary(chrono::Utc::now());
+        assert_eq!(summary.name.as_deref(), Some("warmup"));
+        assert_eq!(summary.event_count, 1);
+        let events = cfg.world().scenario_events_since(0, 10);
+        assert_eq!(events[0].kind, "note");
+    }
+
     /// `(scenario-record-csv DIR)` opens one CSV per registered
     /// component; record_history_snapshot writes a row per pass;
     /// `(scenario-stop-csv)` flushes and closes them. Test

@@ -194,32 +194,33 @@ outages firing in the UI.
 Acceptance: integration test records a 5-second scenario, asserts
 CSV rows ≈ 5 / =physics_tick_ms= and columns parse as floats.
 
-*** TODO B6.1. Retire the old "scenarios" feature (override-file copy)
+*** DONE B7. Named scenario save/load
 
-The current =/api/scenarios{,save,load}= endpoints save / load the
-per-microgrid override file as =scenarios/<name>.lisp= — a
-clipboard for "freeze the current edits, restore them later". With
-B1's scenario framework arriving, the "scenario" word now means
-"a driver script that exercises the simulator over time and is
-journalled". The old feature predates that and now collides
-namespace-wise.
+The existing =/api/scenarios=, =/api/scenarios/save=, and
+=/api/scenarios/load= endpoints — originally built as a clipboard
+for override-file snapshots — turned out to cover B7 verbatim.
+A "scenario file" is now any =scenarios/<name>.lisp= the
+interpreter can load:
 
-*Plan:* once B1–B6 have landed and the new scenario surface is
-exercised, drop the old =/api/scenarios{,save,load}= +
-=Config::list_scenarios= / =save_scenario= / =load_scenario= +
-the UI dropdown that wires them. Move any reusable bits (override-
-file IO, name sanitization) into the new scenario-load path
-(=B7. Named scenario save/load=) so we don't lose the ability to
-save and re-run a curated config.
+- *Override snapshot* (the original use case): copy the per-
+  microgrid override file via =POST /api/scenarios/save?name=…=
+  and reload it later.
+- *Driver script* (the new use case): hand-write a file in
+  =scenarios/= using =(scenario-start)=, =(scenario-event)=,
+  =(every)=, =(random-outage)=, etc., then load via
+  =POST /api/scenarios/load?name=…=.
 
-*Why deferred to after B6:* B7 already covers
-=scenarios/<name>.lisp= as the canonical way to persist a
-scenario. The old feature is the natural starting point for B7's
-implementation, and ripping it out before B7 lands would lose
-working machinery. Schedule the removal as a follow-up that
-either folds the old code into B7 or deletes it.
+Test =load_scenario_runs_driver_script= confirms a driver
+file loaded through =Config::load_scenario= populates the
+scenario journal as expected — the same path =/api/scenarios/load=
+takes. The =/api/scenarios= dropdown the UI already exposes
+serves both kinds of files unchanged.
 
-*** TODO B7. Named scenario save/load
+The B6.1 follow-up to "retire the old scenarios feature" turned
+out to be unnecessary — both use cases share the same machinery
+and there's no real namespace collision (the old endpoints live
+under =/api/scenarios/= while the new lifecycle lives under
+=/api/scenario/=). Closing without a code change.
 
 - =scenarios/= directory at the working root (gitignored by default
   user choice; users can opt in).
