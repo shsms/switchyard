@@ -131,6 +131,12 @@ struct WorldInner {
     /// outlive an `eval_file` call and the gRPC server reads from
     /// it via `World::scenario_*`.
     scenario: RwLock<ScenarioJournal>,
+    /// Id of the meter flagged with `:main t` at construction. The
+    /// scenario reporter tracks its active-power peak, and the
+    /// `/api/scenario/report` endpoint surfaces it. At most one
+    /// meter may carry the flag — `set_main_meter` returns Err if
+    /// a second tries to claim it.
+    main_meter_id: RwLock<Option<u64>>,
 }
 
 /// Callback invoked at the start of every `tick_once`. Held behind an
@@ -148,6 +154,17 @@ pub struct ScenarioSummary {
     pub elapsed_s: f64,
     pub event_count: usize,
     pub next_event_id: u64,
+}
+
+/// Snapshot of scenario-scoped metrics for `/api/scenario/report`.
+/// Grows in subsequent roadmap items (B3 = battery / PV integrals,
+/// B4 = SoC stats + 15-min window peaks). v1 carries elapsed time
+/// and the main-meter peak.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ScenarioReport {
+    pub scenario_elapsed_s: f64,
+    pub peak_main_meter_w: f64,
+    pub main_meter_id: Option<u64>,
 }
 
 impl World {
@@ -169,8 +186,29 @@ impl World {
                 timeout_tracker: TimeoutTracker::new(),
                 pre_tick: RwLock::new(None),
                 scenario: RwLock::new(ScenarioJournal::default()),
+                main_meter_id: RwLock::new(None),
             }),
         }
+    }
+
+    /// Mark `id` as the main meter. Returns `Err` if a different
+    /// meter already holds the flag — the make-path treats that
+    /// as a config error and surfaces it as a Lisp error.
+    pub fn set_main_meter(&self, id: u64) -> Result<(), String> {
+        let mut g = self.inner.main_meter_id.write();
+        if let Some(existing) = *g
+            && existing != id
+        {
+            return Err(format!(
+                "main meter already set to {existing}; can't claim {id}",
+            ));
+        }
+        *g = Some(id);
+        Ok(())
+    }
+
+    pub fn main_meter_id(&self) -> Option<u64> {
+        *self.inner.main_meter_id.read()
     }
 
     /// Install the pre-tick hook. `Config::new` is the sole caller;
@@ -226,6 +264,19 @@ impl World {
     /// `/api/scenario/events`.
     pub fn scenario_events_since(&self, since: u64, limit: usize) -> Vec<ScenarioEvent> {
         self.inner.scenario.read().events_since(since, limit)
+    }
+
+    /// Aggregate metrics for `/api/scenario/report`. Returns a
+    /// snapshot — the same struct B3 / B4 will grow with battery
+    /// integrals, SoC stats, 15-min window peaks. v1 just carries
+    /// the elapsed time and the main-meter peak.
+    pub fn scenario_report(&self, now: DateTime<Utc>) -> ScenarioReport {
+        let g = self.inner.scenario.read();
+        ScenarioReport {
+            scenario_elapsed_s: g.elapsed_s(now),
+            peak_main_meter_w: g.peak_main_meter_active_w(),
+            main_meter_id: *self.inner.main_meter_id.read(),
+        }
     }
 
     /// Schedule a setpoint expiry for `id` at `now + lifetime`.
@@ -563,6 +614,17 @@ impl World {
                 for (m, v) in entry.push_snapshot(now, &snap) {
                     emitted.push((c.id(), m, v));
                 }
+            }
+        }
+        // Hand each new sample to the scenario reporter so the
+        // metrics endpoint stays current. Only meaningful while a
+        // scenario is running; the journal short-circuits for
+        // unflagged ids and unwatched metrics.
+        let main_id = *self.inner.main_meter_id.read();
+        {
+            let mut journal = self.inner.scenario.write();
+            for (id, metric, value) in &emitted {
+                journal.record_sample(*id, *metric, *value, main_id);
             }
         }
         let ts_ms = now.timestamp_millis();

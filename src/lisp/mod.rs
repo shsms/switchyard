@@ -1206,6 +1206,62 @@ mod tests {
         assert!(frozen.ended_at.is_some());
     }
 
+    /// `:main t` on a meter wires it as the scenario reporter's
+    /// peak source. record_history_snapshot updates the journal's
+    /// peak each tick; scenario_start resets it.
+    #[test]
+    fn main_meter_peak_tracks_active_power() {
+        use chrono::Utc;
+        let (cfg, _dir) = config_with(
+            "(set-microgrid-id 9)
+             (%make-meter :id 1 :main t :power 1000.0)",
+        );
+        // Pre-start, sampling shouldn't update the peak — the
+        // scenario hasn't begun.
+        cfg.world().record_history_snapshot(Utc::now());
+        assert_eq!(
+            cfg.world().scenario_report(Utc::now()).peak_main_meter_w,
+            0.0,
+        );
+
+        cfg.eval("(scenario-start \"power\")").unwrap();
+        cfg.eval("(set-meter-power 1 2500.0)").unwrap();
+        cfg.world().record_history_snapshot(Utc::now());
+        let r = cfg.world().scenario_report(Utc::now());
+        assert!((r.peak_main_meter_w - 2500.0).abs() < 1e-3);
+
+        // A higher value lifts the peak; a later lower one
+        // doesn't.
+        cfg.eval("(set-meter-power 1 7800.0)").unwrap();
+        cfg.world().record_history_snapshot(Utc::now());
+        cfg.eval("(set-meter-power 1 1100.0)").unwrap();
+        cfg.world().record_history_snapshot(Utc::now());
+        let r = cfg.world().scenario_report(Utc::now());
+        assert!((r.peak_main_meter_w - 7800.0).abs() < 1e-3);
+
+        // scenario-start resets the peak.
+        cfg.eval("(scenario-start \"again\")").unwrap();
+        cfg.eval("(set-meter-power 1 500.0)").unwrap();
+        cfg.world().record_history_snapshot(Utc::now());
+        assert!(
+            (cfg.world().scenario_report(Utc::now()).peak_main_meter_w - 500.0).abs() < 1e-3,
+        );
+    }
+
+    /// Two meters with `:main t` is a config error. The first one
+    /// claims the slot; the second's `(%make-meter)` returns an
+    /// error rather than silently overwriting.
+    #[test]
+    fn duplicate_main_meter_rejects() {
+        let (cfg, _dir) = config_with(
+            "(set-microgrid-id 9)
+             (%make-meter :id 1 :main t)",
+        );
+        let res = cfg.eval("(%make-meter :id 2 :main t)");
+        assert!(res.is_err(), "expected duplicate-main error");
+        assert!(res.unwrap_err().contains("main meter"));
+    }
+
     /// A second `(scenario-start)` clears the previous run's events
     /// but keeps the monotonic id counter so polling clients with a
     /// `since=` cursor see new events immediately rather than

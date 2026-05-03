@@ -24,7 +24,12 @@ use tokio::sync::broadcast::error::RecvError;
 
 use crate::{
     lisp::{Config, PersistResult},
-    sim::{Category, history::Metric, setpoints::SetpointEvent, world::ScenarioSummary},
+    sim::{
+        Category,
+        history::Metric,
+        setpoints::SetpointEvent,
+        world::{ScenarioReport, ScenarioSummary},
+    },
 };
 
 /// Embedded SPA assets. In debug builds rust-embed reads from the
@@ -69,6 +74,7 @@ fn router(config: Config) -> Router {
         .route("/api/scenarios/load", post(scenarios_load))
         .route("/api/scenario", get(scenario_summary))
         .route("/api/scenario/events", get(scenario_events))
+        .route("/api/scenario/report", get(scenario_report))
         .route("/ws/events", get(events_ws))
         .with_state(config)
 }
@@ -585,6 +591,14 @@ async fn scenario_events(
         events,
         next_event_id,
     })
+}
+
+/// Aggregate metrics for the running scenario (peak main-meter
+/// power so far, plus future B3/B4 fields). Independent of
+/// `/api/scenario/events` so a dashboard can poll metrics
+/// frequently without scanning the whole event log.
+async fn scenario_report(State(config): State<Config>) -> Json<ScenarioReport> {
+    Json(config.world().scenario_report(Utc::now()))
 }
 
 /// Reject path-traversal + obviously-bad characters in scenario

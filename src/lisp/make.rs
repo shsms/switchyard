@@ -68,6 +68,11 @@ AsPlist! {
         power: Option<LispValue> {= None},
         successors: Option<Vec<ComponentHandle>> {= None},
         hidden: Option<bool> {= None},
+        /// Mark this meter as the microgrid's main / point-of-
+        /// common-coupling meter. The scenario reporter tracks its
+        /// active-power peak; at most one meter per microgrid may
+        /// carry the flag.
+        main: Option<bool> {= None},
         stream_jitter_pct<":stream-jitter-pct">: Option<f64> {= None},
         health<":health">: Option<Health> {= None},
         telemetry_mode<":telemetry-mode">: Option<TelemetryMode> {= None},
@@ -408,6 +413,9 @@ pub fn register(ctx: &mut TulispContext, world: World) {
                 a.command_mode.or(d.command_mode),
             )?;
             apply_initial_name(&w, id, a.name);
+            if a.main.unwrap_or(false) {
+                w.set_main_meter(id).map_err(Error::invalid_argument)?;
+            }
             // Hidden meters: their *outgoing* edges (to children) are
             // suppressed too, mirroring microsim. The handle-side filter
             // in connect_successors elsewhere skips edges *into* hidden

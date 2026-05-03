@@ -119,7 +119,7 @@ Goal: lifecycle + event log primitives.
 Acceptance: in-process test starts a scenario, fires events, stops,
 asserts elapsed ≈ slept-duration ± tolerance and events round-trip.
 
-*** TODO B2. Main-meter tagging + peak metric
+*** DONE B2. Main-meter tagging + peak metric
 
 - New plist arg =:main t= on =%make-meter=; stored as
   =Meter::is_main: bool=.

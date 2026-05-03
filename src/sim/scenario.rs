@@ -17,6 +17,8 @@ use std::collections::VecDeque;
 
 use chrono::{DateTime, Utc};
 
+use crate::sim::history::Metric;
+
 /// Cap on the in-memory event ring. A typical scenario fires
 /// dozens of events per minute (component outages, setpoint
 /// responses, milestone markers); 4096 entries covers ~30 minutes
@@ -37,7 +39,9 @@ pub struct ScenarioEvent {
     pub payload: String,
 }
 
-/// Scenario journal: name + lifecycle + capped event ring.
+/// Scenario journal: name + lifecycle + capped event ring + the
+/// metric accumulators the reporter exposes via
+/// `/api/scenario/report`.
 #[derive(Debug, Default)]
 pub struct ScenarioJournal {
     pub name: Option<String>,
@@ -45,6 +49,12 @@ pub struct ScenarioJournal {
     pub ended_at: Option<DateTime<Utc>>,
     events: VecDeque<ScenarioEvent>,
     next_id: u64,
+    /// Maximum positive active power seen on the main meter since
+    /// the scenario started. Resets on `start`, freezes — like
+    /// elapsed — once `stop` lands, but keeps absorbing samples
+    /// until then. Stored as f64 to match the units B3/B4 will
+    /// later use for charge / discharge integrals.
+    peak_main_meter_active_w: f64,
 }
 
 impl ScenarioJournal {
@@ -57,6 +67,32 @@ impl ScenarioJournal {
         self.started_at = Some(now);
         self.ended_at = None;
         self.events.clear();
+        self.peak_main_meter_active_w = 0.0;
+    }
+
+    /// Hand a freshly-recorded telemetry sample to the reporter.
+    /// Skipped before `start` and after `stop`, so the peaks reflect
+    /// only the active scenario window.
+    pub fn record_sample(
+        &mut self,
+        id: u64,
+        metric: Metric,
+        value: f32,
+        main_meter_id: Option<u64>,
+    ) {
+        if self.started_at.is_none() || self.ended_at.is_some() {
+            return;
+        }
+        if Some(id) == main_meter_id && metric == Metric::ActivePowerW {
+            let v = value as f64;
+            if v > self.peak_main_meter_active_w {
+                self.peak_main_meter_active_w = v;
+            }
+        }
+    }
+
+    pub fn peak_main_meter_active_w(&self) -> f64 {
+        self.peak_main_meter_active_w
     }
 
     /// Mark the scenario as ended. Idempotent; subsequent calls

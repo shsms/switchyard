@@ -419,3 +419,23 @@ async fn scenario_endpoints_round_trip_lifecycle_and_events() {
     assert_eq!(events[0]["id"], 1);
 }
 
+
+#[tokio::test]
+async fn scenario_report_endpoint_returns_main_meter_peak() {
+    let cfg = config_with(
+        "(set-microgrid-id 9)
+         (%make-meter :id 1 :main t)
+         (scenario-start \"smoke\")
+         (set-meter-power 1 4500.0)",
+    )
+    .await;
+    // Drive the sampler so the reporter sees a peak.
+    cfg.world().record_history_snapshot(Utc::now());
+
+    let (status, body) = call(cfg, get("/api/scenario/report")).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["main_meter_id"], 1);
+    let peak = v["peak_main_meter_w"].as_f64().unwrap();
+    assert!((peak - 4500.0).abs() < 1e-3, "got peak {peak}");
+}
