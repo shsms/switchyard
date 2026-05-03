@@ -232,7 +232,7 @@ tests for *switchyard the binary*, not just module-level coverage.
 Acceptance: =cargo test --test grpc --test ui_http= passes locally
 in ~5s and is the model for future integration tests.
 
-*** TODO C2. Hot-reload + timeout-tracker coverage
+*** DONE C2. Hot-reload + timeout-tracker coverage
 
 - =tests/hot_reload.rs=: write a config, boot, edit the file, assert
   the topology version bumps and the new component appears.

@@ -14,6 +14,7 @@
 //!   tests, so the `/api/logs` endpoint just returns empty —
 //!   acceptable for a fixture.
 
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -111,6 +112,14 @@ impl TestServer {
     #[allow(dead_code)]
     pub async fn empty() -> Self {
         Self::start("(set-microgrid-id 1)").await
+    }
+
+    /// Path of the config.lisp file backing this server. Tests
+    /// that exercise the watcher (hot-reload) overwrite this file
+    /// to trigger a reload.
+    #[allow(dead_code)]
+    pub fn config_path(&self) -> PathBuf {
+        self._tempdir.path().join("config.lisp")
     }
 }
 
