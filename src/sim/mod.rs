@@ -13,6 +13,7 @@ pub mod meter;
 pub mod ramp;
 pub mod reactive;
 pub mod runtime;
+pub mod scenario;
 pub mod setpoints;
 pub mod world;
 

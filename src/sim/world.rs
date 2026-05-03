@@ -27,6 +27,7 @@ use crate::sim::component::{ComponentHandle, FIRST_AUTO_ID, SimulatedComponent};
 use crate::sim::events::{EVENT_BUS_CAPACITY, WorldEvent};
 use crate::sim::history::{ComponentHistory, History, Metric, Sample};
 use crate::sim::runtime::{CommandMode, ComponentRuntime, Health, TelemetryMode};
+use crate::sim::scenario::{ScenarioEvent, ScenarioJournal};
 use crate::sim::setpoints::{SetpointEvent, SetpointKind, SetpointLog, SetpointOutcome};
 use crate::timeout_tracker::TimeoutTracker;
 
@@ -125,11 +126,29 @@ struct WorldInner {
     /// resolve once per tick. World stays interpreter-agnostic at
     /// the type level.
     pre_tick: RwLock<Option<PreTickHook>>,
+    /// Scenario lifecycle + event journal. Scoped to the World
+    /// rather than the Config because long-running scenarios
+    /// outlive an `eval_file` call and the gRPC server reads from
+    /// it via `World::scenario_*`.
+    scenario: RwLock<ScenarioJournal>,
 }
 
 /// Callback invoked at the start of every `tick_once`. Held behind an
 /// `Arc<dyn Fn>` so World's API doesn't depend on tulisp.
 pub type PreTickHook = Arc<dyn Fn(&World) + Send + Sync + 'static>;
+
+/// Snapshot of `ScenarioJournal` lifecycle state for `/api/scenario`.
+/// Excludes the events themselves — those live behind a paginated
+/// `/api/scenario/events` endpoint with a `since=` cursor.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ScenarioSummary {
+    pub name: Option<String>,
+    pub started_at: Option<DateTime<Utc>>,
+    pub ended_at: Option<DateTime<Utc>>,
+    pub elapsed_s: f64,
+    pub event_count: usize,
+    pub next_event_id: u64,
+}
 
 impl World {
     pub fn new() -> Self {
@@ -149,6 +168,7 @@ impl World {
                 events: broadcast::channel(EVENT_BUS_CAPACITY).0,
                 timeout_tracker: TimeoutTracker::new(),
                 pre_tick: RwLock::new(None),
+                scenario: RwLock::new(ScenarioJournal::default()),
             }),
         }
     }
@@ -157,6 +177,55 @@ impl World {
     /// later overwrites replace the previous closure.
     pub fn set_pre_tick(&self, hook: PreTickHook) {
         *self.inner.pre_tick.write() = Some(hook);
+    }
+
+    // ── scenario journal ────────────────────────────────────────────
+
+    /// Begin a fresh scenario at `now`. Empties the event ring,
+    /// clears the stop marker, sets the name. Used by
+    /// `(scenario-start)`.
+    pub fn scenario_start(&self, name: String, now: DateTime<Utc>) {
+        self.inner.scenario.write().start(name, now);
+    }
+
+    /// Mark the scenario as ended at `now`. Idempotent.
+    pub fn scenario_stop(&self, now: DateTime<Utc>) {
+        self.inner.scenario.write().stop(now);
+    }
+
+    /// Append a journal event. Returns the assigned id.
+    pub fn scenario_record(
+        &self,
+        kind: String,
+        payload: String,
+        now: DateTime<Utc>,
+    ) -> u64 {
+        self.inner.scenario.write().record(kind, payload, now)
+    }
+
+    /// Wall-clock seconds since the scenario started. 0 if not
+    /// running. Freezes once stopped.
+    pub fn scenario_elapsed_s(&self, now: DateTime<Utc>) -> f64 {
+        self.inner.scenario.read().elapsed_s(now)
+    }
+
+    /// Snapshot of scenario lifecycle for `/api/scenario`.
+    pub fn scenario_summary(&self, now: DateTime<Utc>) -> ScenarioSummary {
+        let g = self.inner.scenario.read();
+        ScenarioSummary {
+            name: g.name.clone(),
+            started_at: g.started_at,
+            ended_at: g.ended_at,
+            elapsed_s: g.elapsed_s(now),
+            event_count: g.event_count(),
+            next_event_id: g.next_event_id(),
+        }
+    }
+
+    /// Pull events with id > `since`, capped at `limit`. Used by
+    /// `/api/scenario/events`.
+    pub fn scenario_events_since(&self, since: u64, limit: usize) -> Vec<ScenarioEvent> {
+        self.inner.scenario.read().events_since(since, limit)
     }
 
     /// Schedule a setpoint expiry for `id` at `now + lifetime`.
