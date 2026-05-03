@@ -30,7 +30,7 @@ scheduler invokes *before* the tick loop, holding the interpreter
 lock once. Lambdas/symbols are derefed there into per-component
 atomics; tick reads the atomic.
 
-*** TODO A1. =refresh_inputs= trait hook + scheduler wiring
+*** DONE A1. =refresh_inputs= trait hook + scheduler wiring
 
 Goal: introduce the hook with no behavior change. Foundation for A2 / A3.
 

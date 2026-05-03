@@ -1,6 +1,7 @@
 use std::{fmt, sync::Arc, time::Duration};
 
 use chrono::{DateTime, Utc};
+use tulisp::TulispContext;
 
 use crate::sim::{bounds::VecBounds, world::World};
 
@@ -149,10 +150,26 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
         0.0
     }
 
+    /// Refresh externally-driven inputs from Lisp. The World
+    /// scheduler holds the interpreter lock and calls this on every
+    /// component, in registration order, *before* the tick pass.
+    /// Components carrying a [`DynamicScalar`] (lambda- or symbol-
+    /// bound `:power`, `:sunlight%`, …) re-evaluate it here and
+    /// stash the resolved scalar in an atomic that `tick` then reads.
+    /// Default no-op.
+    ///
+    /// Must not register defuns or otherwise mutate global state —
+    /// the lock is held for every component in turn and the loop's
+    /// total cost is bounded by the slowest implementor.
+    ///
+    /// [`DynamicScalar`]: crate::sim::dynamic_scalar::DynamicScalar
+    fn refresh_inputs(&self, _ctx: &mut TulispContext) {}
+
     /// Advance internal state by `dt`. Called once per physics tick
     /// from `World::tick_once` in registration order (children before
     /// parents). Components that aggregate from successors read them
-    /// here via `world.get(child_id)`.
+    /// here via `world.get(child_id)`. Must not call back into the
+    /// Lisp interpreter — see [`Self::refresh_inputs`] for that.
     fn tick(&self, world: &World, now: DateTime<Utc>, dt: Duration);
 
     /// Snapshot the component's observable state for streaming. Pure

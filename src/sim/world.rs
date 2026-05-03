@@ -117,7 +117,19 @@ struct WorldInner {
     /// `reset_setpoint` on each. Living on World means the loop runs
     /// once per process regardless of which call sites schedule.
     timeout_tracker: TimeoutTracker,
+    /// Optional callback invoked at the start of every `tick_once`,
+    /// before any component's `tick` runs. `Config::new` installs a
+    /// closure that locks the interpreter and calls
+    /// `SimulatedComponent::refresh_inputs` on every registered
+    /// component, so lambda-bound `:power` / `:sunlight%` / … values
+    /// resolve once per tick. World stays interpreter-agnostic at
+    /// the type level.
+    pre_tick: RwLock<Option<PreTickHook>>,
 }
+
+/// Callback invoked at the start of every `tick_once`. Held behind an
+/// `Arc<dyn Fn>` so World's API doesn't depend on tulisp.
+pub type PreTickHook = Arc<dyn Fn(&World) + Send + Sync + 'static>;
 
 impl World {
     pub fn new() -> Self {
@@ -136,8 +148,15 @@ impl World {
                 version: AtomicU64::new(0),
                 events: broadcast::channel(EVENT_BUS_CAPACITY).0,
                 timeout_tracker: TimeoutTracker::new(),
+                pre_tick: RwLock::new(None),
             }),
         }
+    }
+
+    /// Install the pre-tick hook. `Config::new` is the sole caller;
+    /// later overwrites replace the previous closure.
+    pub fn set_pre_tick(&self, hook: PreTickHook) {
+        *self.inner.pre_tick.write() = Some(hook);
     }
 
     /// Schedule a setpoint expiry for `id` at `now + lifetime`.
@@ -388,7 +407,15 @@ impl World {
     /// Tick every registered component once. Children are stored before
     /// parents, so a single forward pass updates leaves before the
     /// meters that aggregate them.
+    ///
+    /// If a pre-tick hook is installed it runs first — this is where
+    /// `Config::new` resolves Lisp-driven inputs (lambda `:power`,
+    /// symbol `:sunlight%`, …) into atomic scalars that the tick
+    /// pass then reads without re-entering the interpreter.
     pub fn tick_once(&self, now: DateTime<Utc>, dt: Duration) {
+        if let Some(hook) = self.inner.pre_tick.read().clone() {
+            hook(self);
+        }
         let components = self.inner.components.read().clone();
         for c in components {
             c.tick(self, now, dt);
@@ -618,6 +645,59 @@ mod tests {
         assert_eq!(w.parent_count(100), 2);
         // unrelated child unaffected
         assert_eq!(w.parent_count(101), 0);
+    }
+
+    /// `tick_once` runs the pre-tick hook to completion before any
+    /// component's `tick` fires. Components rely on this ordering so
+    /// a meter can read its lambda-resolved `:power` in `tick`
+    /// without re-entering the interpreter.
+    #[test]
+    fn pre_tick_hook_runs_before_component_tick() {
+        use crate::sim::Telemetry;
+        use chrono::TimeZone;
+        use parking_lot::Mutex;
+
+        struct OrderRecorder {
+            order: Arc<Mutex<Vec<&'static str>>>,
+        }
+        impl std::fmt::Display for OrderRecorder {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "order-recorder")
+            }
+        }
+        impl SimulatedComponent for OrderRecorder {
+            fn id(&self) -> u64 {
+                1
+            }
+            fn category(&self) -> crate::sim::Category {
+                crate::sim::Category::Meter
+            }
+            fn name(&self) -> &str {
+                "order"
+            }
+            fn stream_interval(&self) -> Duration {
+                Duration::from_secs(1)
+            }
+            fn tick(&self, _: &World, _: DateTime<Utc>, _: Duration) {
+                self.order.lock().push("tick");
+            }
+            fn telemetry(&self, _: &World) -> Telemetry {
+                Telemetry::default()
+            }
+        }
+
+        let w = World::new();
+        let order: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+        let order_for_hook = order.clone();
+        w.set_pre_tick(Arc::new(move |_| {
+            order_for_hook.lock().push("pre_tick");
+        }));
+        w.register(OrderRecorder {
+            order: order.clone(),
+        });
+        let now = chrono::Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+        w.tick_once(now, Duration::from_millis(100));
+        assert_eq!(*order.lock(), vec!["pre_tick", "tick"]);
     }
 
     /// Driving `record_history_snapshot` directly populates the

@@ -128,9 +128,25 @@ impl Config {
             log::error!("Tulisp error:\n{}", e.format(&ctx));
         }
 
+        let ctx = SharedMut::new(ctx);
+
+        // Pre-tick hook: hold the interpreter lock once per tick and
+        // refresh every component's Lisp-driven inputs (lambda-bound
+        // `:power`, `:sunlight%`, …) before any `tick` runs. Lets
+        // components read the resolved scalar from an atomic in
+        // `tick` without re-entering the interpreter — see
+        // `dynamic_scalar::DynamicScalar`.
+        let hook_ctx = ctx.clone();
+        world.set_pre_tick(Arc::new(move |w| {
+            let mut guard = hook_ctx.borrow_mut();
+            for c in w.components() {
+                c.refresh_inputs(&mut guard);
+            }
+        }));
+
         Self {
             filename: filename.to_string(),
-            ctx: SharedMut::new(ctx),
+            ctx,
             world,
             metadata,
             extra_watches,
