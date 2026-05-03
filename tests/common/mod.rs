@@ -106,14 +106,6 @@ impl TestServer {
         }
     }
 
-    /// Convenience — same as `TestServer::start` but with the
-    /// minimum config (microgrid id only) for tests that don't
-    /// care about the topology.
-    #[allow(dead_code)]
-    pub async fn empty() -> Self {
-        Self::start("(set-microgrid-id 1)").await
-    }
-
     /// Path of the config.lisp file backing this server. Tests
     /// that exercise the watcher (hot-reload) overwrite this file
     /// to trigger a reload.
