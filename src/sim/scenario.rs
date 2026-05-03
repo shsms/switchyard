@@ -13,7 +13,7 @@
 //! monotonic id so HTTP clients can poll the events endpoint with a
 //! `since=` cursor and only see new entries.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 
 use chrono::{DateTime, Utc};
 
@@ -39,6 +39,24 @@ pub struct ScenarioEvent {
     pub payload: String,
 }
 
+/// Battery-side energy integrals accumulated since `scenario_start`.
+/// Sign convention follows switchyard's internals: positive DC power
+/// = charging; negative = discharging. Both quantities are recorded
+/// as positive Wh (absolute energy that crossed the bus in each
+/// direction).
+#[derive(Debug, Default, Clone, serde::Serialize)]
+pub struct BatteryIntegrals {
+    pub charge_wh: f64,
+    pub discharge_wh: f64,
+}
+
+/// Solar-inverter integrals. PV publishes negative active power
+/// while sourcing; `produced_wh` is the absolute energy delivered.
+#[derive(Debug, Default, Clone, serde::Serialize)]
+pub struct PvIntegrals {
+    pub produced_wh: f64,
+}
+
 /// Scenario journal: name + lifecycle + capped event ring + the
 /// metric accumulators the reporter exposes via
 /// `/api/scenario/report`.
@@ -52,9 +70,19 @@ pub struct ScenarioJournal {
     /// Maximum positive active power seen on the main meter since
     /// the scenario started. Resets on `start`, freezes — like
     /// elapsed — once `stop` lands, but keeps absorbing samples
-    /// until then. Stored as f64 to match the units B3/B4 will
-    /// later use for charge / discharge integrals.
+    /// until then. Stored as f64 to match the units the integrals
+    /// below use.
     peak_main_meter_active_w: f64,
+    /// Per-battery charge / discharge energy integrals since
+    /// `scenario_start`. BTreeMap so report ordering is stable.
+    per_battery: BTreeMap<u64, BatteryIntegrals>,
+    /// Per-solar-inverter produced-energy integrals.
+    per_pv: BTreeMap<u64, PvIntegrals>,
+    /// Wall-clock timestamp of the previous integration sample —
+    /// used to compute `dt` for the energy integrals. `None` until
+    /// `start` runs; updated at the end of each
+    /// `World::record_history_snapshot` pass.
+    prev_sample_ts: Option<DateTime<Utc>>,
 }
 
 impl ScenarioJournal {
@@ -68,6 +96,11 @@ impl ScenarioJournal {
         self.ended_at = None;
         self.events.clear();
         self.peak_main_meter_active_w = 0.0;
+        self.per_battery.clear();
+        self.per_pv.clear();
+        // Seed the integration cursor at start so the first
+        // snapshot's dt covers `now → snapshot_ts`.
+        self.prev_sample_ts = Some(now);
     }
 
     /// Hand a freshly-recorded telemetry sample to the reporter.
@@ -93,6 +126,72 @@ impl ScenarioJournal {
 
     pub fn peak_main_meter_active_w(&self) -> f64 {
         self.peak_main_meter_active_w
+    }
+
+    /// Compute the integration window for this snapshot relative
+    /// to the previous one. Used by `record_battery_sample` and
+    /// `record_pv_sample`. Returns 0 if there is no prior cursor
+    /// (scenario not running) or if time went backwards.
+    fn integration_dt_s(&self, now: DateTime<Utc>) -> f64 {
+        if !self.is_running() {
+            return 0.0;
+        }
+        match self.prev_sample_ts {
+            Some(prev) => (now - prev).to_std().map(|d| d.as_secs_f64()).unwrap_or(0.0),
+            None => 0.0,
+        }
+    }
+
+    fn is_running(&self) -> bool {
+        self.started_at.is_some() && self.ended_at.is_none()
+    }
+
+    /// Accumulate one battery DC-power sample. Positive = charging,
+    /// negative = discharging; both go into the integrals as
+    /// absolute Wh.
+    pub fn record_battery_sample(&mut self, id: u64, dc_power_w: f32, now: DateTime<Utc>) {
+        let dt_s = self.integration_dt_s(now);
+        if dt_s <= 0.0 {
+            return;
+        }
+        let p = dc_power_w as f64;
+        let entry = self.per_battery.entry(id).or_default();
+        if p > 0.0 {
+            entry.charge_wh += p * dt_s / 3600.0;
+        } else if p < 0.0 {
+            entry.discharge_wh += (-p) * dt_s / 3600.0;
+        }
+    }
+
+    /// Accumulate one solar-inverter active-power sample. Negative
+    /// values (PV sourcing) contribute to `produced_wh`; non-
+    /// negative values are no-ops.
+    pub fn record_pv_sample(&mut self, id: u64, active_power_w: f32, now: DateTime<Utc>) {
+        let dt_s = self.integration_dt_s(now);
+        if dt_s <= 0.0 {
+            return;
+        }
+        let p = active_power_w as f64;
+        if p < 0.0 {
+            self.per_pv.entry(id).or_default().produced_wh += (-p) * dt_s / 3600.0;
+        }
+    }
+
+    /// Advance the integration cursor at the end of a snapshot
+    /// pass — so the next snapshot's dt is measured from this one's
+    /// timestamp.
+    pub fn advance_sample_cursor(&mut self, now: DateTime<Utc>) {
+        if self.is_running() {
+            self.prev_sample_ts = Some(now);
+        }
+    }
+
+    pub fn per_battery(&self) -> &BTreeMap<u64, BatteryIntegrals> {
+        &self.per_battery
+    }
+
+    pub fn per_pv(&self) -> &BTreeMap<u64, PvIntegrals> {
+        &self.per_pv
     }
 
     /// Mark the scenario as ended. Idempotent; subsequent calls
@@ -221,6 +320,70 @@ mod tests {
 
         let id = j.record("c".into(), String::new(), ts(101));
         assert_eq!(id, 2);
+    }
+
+    #[test]
+    fn battery_integrals_split_by_sign() {
+        let mut j = ScenarioJournal::default();
+        j.start("integ".into(), ts(0));
+        // 10 seconds of charging at 1800 W: charge_wh += 1800 *
+        // 10 / 3600 = 5.0 Wh.
+        j.record_battery_sample(1, 1800.0, ts(10));
+        j.advance_sample_cursor(ts(10));
+        // 5 more seconds at -3600 W (discharging): 3600*5/3600 = 5 Wh.
+        j.record_battery_sample(1, -3600.0, ts(15));
+        j.advance_sample_cursor(ts(15));
+        let b = j.per_battery().get(&1).unwrap();
+        assert!((b.charge_wh - 5.0).abs() < 1e-6, "got {b:?}");
+        assert!((b.discharge_wh - 5.0).abs() < 1e-6, "got {b:?}");
+    }
+
+    #[test]
+    fn pv_integrals_treat_negative_power_as_production() {
+        let mut j = ScenarioJournal::default();
+        j.start("pv".into(), ts(0));
+        // PV publishes negative power while sourcing — 3600 s at
+        // -7200 W is 7200 Wh produced.
+        j.record_pv_sample(2, -7200.0, ts(3600));
+        j.advance_sample_cursor(ts(3600));
+        // A spurious positive sample shouldn't decrement.
+        j.record_pv_sample(2, 500.0, ts(3601));
+        j.advance_sample_cursor(ts(3601));
+        let p = j.per_pv().get(&2).unwrap();
+        assert!((p.produced_wh - 7200.0).abs() < 1e-6, "got {p:?}");
+    }
+
+    #[test]
+    fn integrals_skip_outside_running_window() {
+        let mut j = ScenarioJournal::default();
+        // Pre-start: no integration.
+        j.record_battery_sample(1, 1000.0, ts(10));
+        assert!(j.per_battery().get(&1).is_none());
+
+        j.start("s".into(), ts(20));
+        j.record_battery_sample(1, 1800.0, ts(80)); // 60 s at 1800 W = 30 Wh
+        j.advance_sample_cursor(ts(80));
+        j.stop(ts(80));
+
+        // Post-stop samples are dropped.
+        j.record_battery_sample(1, 7200.0, ts(140));
+        j.advance_sample_cursor(ts(140));
+        let b = j.per_battery().get(&1).unwrap();
+        assert!((b.charge_wh - 30.0).abs() < 1e-6, "got {b:?}");
+        assert_eq!(b.discharge_wh, 0.0);
+    }
+
+    #[test]
+    fn restart_clears_integrals() {
+        let mut j = ScenarioJournal::default();
+        j.start("first".into(), ts(0));
+        j.record_battery_sample(1, 3600.0, ts(60)); // 60 Wh
+        j.advance_sample_cursor(ts(60));
+        assert!(j.per_battery().get(&1).is_some());
+
+        j.start("second".into(), ts(100));
+        assert!(j.per_battery().is_empty());
+        assert!(j.per_pv().is_empty());
     }
 
     #[test]

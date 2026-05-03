@@ -133,7 +133,7 @@ asserts elapsed ≈ slept-duration ± tolerance and events round-trip.
 Acceptance: integration test spins meter power via lambda from 5kW
 to 50kW and back, asserts reported peak = 50kW.
 
-*** TODO B3. Battery / PV integrals
+*** DONE B3. Battery / PV integrals
 
 Per-tick accumulation:
 

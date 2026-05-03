@@ -157,14 +157,31 @@ pub struct ScenarioSummary {
 }
 
 /// Snapshot of scenario-scoped metrics for `/api/scenario/report`.
-/// Grows in subsequent roadmap items (B3 = battery / PV integrals,
-/// B4 = SoC stats + 15-min window peaks). v1 carries elapsed time
-/// and the main-meter peak.
+/// Grows in subsequent roadmap items (B4 = SoC stats + 15-min
+/// window peaks).
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ScenarioReport {
     pub scenario_elapsed_s: f64,
     pub peak_main_meter_w: f64,
     pub main_meter_id: Option<u64>,
+    pub total_battery_charged_wh: f64,
+    pub total_battery_discharged_wh: f64,
+    pub total_pv_produced_wh: f64,
+    pub per_battery: Vec<PerBatteryReport>,
+    pub per_pv: Vec<PerPvReport>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PerBatteryReport {
+    pub id: u64,
+    pub charge_wh: f64,
+    pub discharge_wh: f64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PerPvReport {
+    pub id: u64,
+    pub produced_wh: f64,
 }
 
 impl World {
@@ -267,15 +284,46 @@ impl World {
     }
 
     /// Aggregate metrics for `/api/scenario/report`. Returns a
-    /// snapshot — the same struct B3 / B4 will grow with battery
-    /// integrals, SoC stats, 15-min window peaks. v1 just carries
-    /// the elapsed time and the main-meter peak.
+    /// snapshot — the same struct B4 will grow with SoC stats and
+    /// 15-min window peaks.
     pub fn scenario_report(&self, now: DateTime<Utc>) -> ScenarioReport {
         let g = self.inner.scenario.read();
+        let mut total_charged = 0.0;
+        let mut total_discharged = 0.0;
+        let per_battery: Vec<PerBatteryReport> = g
+            .per_battery()
+            .iter()
+            .map(|(id, b)| {
+                total_charged += b.charge_wh;
+                total_discharged += b.discharge_wh;
+                PerBatteryReport {
+                    id: *id,
+                    charge_wh: b.charge_wh,
+                    discharge_wh: b.discharge_wh,
+                }
+            })
+            .collect();
+        let mut total_pv = 0.0;
+        let per_pv: Vec<PerPvReport> = g
+            .per_pv()
+            .iter()
+            .map(|(id, p)| {
+                total_pv += p.produced_wh;
+                PerPvReport {
+                    id: *id,
+                    produced_wh: p.produced_wh,
+                }
+            })
+            .collect();
         ScenarioReport {
             scenario_elapsed_s: g.elapsed_s(now),
             peak_main_meter_w: g.peak_main_meter_active_w(),
             main_meter_id: *self.inner.main_meter_id.read(),
+            total_battery_charged_wh: total_charged,
+            total_battery_discharged_wh: total_discharged,
+            total_pv_produced_wh: total_pv,
+            per_battery,
+            per_pv,
         }
     }
 
@@ -602,12 +650,33 @@ impl World {
     /// WS subscribers see live samples but can't deadlock against
     /// each other or against /api/history readers.
     pub fn record_history_snapshot(&self, now: DateTime<Utc>) {
+        use crate::sim::Category;
+
         let components = self.inner.components.read().clone();
         let mut emitted: Vec<(u64, Metric, f32)> = Vec::new();
+        // Integrals fed to the scenario reporter. We capture them
+        // off the telemetry snapshot rather than refilling from the
+        // metric stream so batteries (which expose only dc_power_w,
+        // not active_power_w) get integrated too.
+        let mut battery_samples: Vec<(u64, f32)> = Vec::new();
+        let mut pv_samples: Vec<(u64, f32)> = Vec::new();
         {
             let mut histories = self.inner.histories.write();
             for c in &components {
                 let snap = c.telemetry(self);
+                match c.category() {
+                    Category::Battery => {
+                        if let Some(p) = snap.dc_power_w {
+                            battery_samples.push((c.id(), p));
+                        }
+                    }
+                    Category::Inverter if c.subtype() == Some("solar") => {
+                        if let Some(p) = snap.active_power_w {
+                            pv_samples.push((c.id(), p));
+                        }
+                    }
+                    _ => {}
+                }
                 let entry = histories
                     .entry(c.id())
                     .or_insert_with(|| ComponentHistory::new(HISTORY_CAPACITY));
@@ -619,13 +688,22 @@ impl World {
         // Hand each new sample to the scenario reporter so the
         // metrics endpoint stays current. Only meaningful while a
         // scenario is running; the journal short-circuits for
-        // unflagged ids and unwatched metrics.
+        // unflagged ids and unwatched metrics. Integrals advance
+        // the cursor at the end so the next snapshot's dt is
+        // measured from now.
         let main_id = *self.inner.main_meter_id.read();
         {
             let mut journal = self.inner.scenario.write();
             for (id, metric, value) in &emitted {
                 journal.record_sample(*id, *metric, *value, main_id);
             }
+            for (id, dc_power_w) in &battery_samples {
+                journal.record_battery_sample(*id, *dc_power_w, now);
+            }
+            for (id, active_power_w) in &pv_samples {
+                journal.record_pv_sample(*id, *active_power_w, now);
+            }
+            journal.advance_sample_cursor(now);
         }
         let ts_ms = now.timestamp_millis();
         for (id, metric, value) in emitted {

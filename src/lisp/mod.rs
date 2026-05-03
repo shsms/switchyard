@@ -1206,6 +1206,63 @@ mod tests {
         assert!(frozen.ended_at.is_some());
     }
 
+    /// Battery DC power integrates into the journal's per-battery
+    /// charge / discharge integrals. Drive a battery via its
+    /// inverter, advance physics + sampling, and assert the totals.
+    #[test]
+    fn battery_charge_discharge_integrates_through_snapshot() {
+        use chrono::{Duration as ChronoDuration, Utc};
+        let (cfg, _dir) = config_with(
+            "(set-microgrid-id 9)
+             (setq b (%make-battery :id 100
+                                    :capacity 100000.0
+                                    :rated-lower -10000.0
+                                    :rated-upper 10000.0))
+             (%make-battery-inverter :id 200
+                                     :rated-lower -10000.0
+                                     :rated-upper 10000.0
+                                     :successors (list b))",
+        );
+        cfg.eval("(scenario-start \"integrate\")").unwrap();
+        // Push a charge setpoint of +3600 W for 10 sim-seconds.
+        cfg.eval("(set-active-power 200 3600.0 60000)").unwrap();
+        // Advance physics enough to settle the ramp; default ramp
+        // is infinity so one tick is enough.
+        let mut now = Utc::now();
+        cfg.world().tick_once(now, std::time::Duration::from_millis(100));
+        // Snapshot pass at t0 — first one just seeds the cursor
+        // (dt from start is small but non-zero — ignore the result).
+        cfg.world().record_history_snapshot(now);
+        now += ChronoDuration::seconds(10);
+        cfg.world().tick_once(now, std::time::Duration::from_secs(10));
+        cfg.world().record_history_snapshot(now);
+        let r = cfg.world().scenario_report(now);
+        // 3600 W for 10 s = 10 Wh. Allow some slop for the seed
+        // sample's dt at start.
+        assert!(
+            r.total_battery_charged_wh > 8.0 && r.total_battery_charged_wh < 12.0,
+            "expected ~10 Wh charged, got {}",
+            r.total_battery_charged_wh,
+        );
+        assert_eq!(r.total_battery_discharged_wh, 0.0);
+
+        // Now flip to discharging.
+        cfg.eval("(set-active-power 200 -7200.0 60000)").unwrap();
+        cfg.world().tick_once(now, std::time::Duration::from_millis(100));
+        now += ChronoDuration::seconds(5);
+        cfg.world().tick_once(now, std::time::Duration::from_secs(5));
+        cfg.world().record_history_snapshot(now);
+        let r = cfg.world().scenario_report(now);
+        // 7200 W * 5 s / 3600 = 10 Wh discharged.
+        assert!(
+            r.total_battery_discharged_wh > 8.0 && r.total_battery_discharged_wh < 12.0,
+            "expected ~10 Wh discharged, got {}",
+            r.total_battery_discharged_wh,
+        );
+        assert_eq!(r.per_battery.len(), 1);
+        assert_eq!(r.per_battery[0].id, 100);
+    }
+
     /// `:main t` on a meter wires it as the scenario reporter's
     /// peak source. record_history_snapshot updates the journal's
     /// peak each tick; scenario_start resets it.
