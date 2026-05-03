@@ -163,7 +163,7 @@ Report adds: =soc_stats: {mean, median, mode_pct}=,
 Acceptance: in-process test runs synthetic main-meter samples across
 two aligned windows, asserts peak per window matches.
 
-*** TODO B5. Random-outage helper
+*** DONE B5. Random-outage helper
 
 Pure-Lisp helper in a new =sim/scenarios.lisp=:
 

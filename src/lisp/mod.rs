@@ -1171,6 +1171,37 @@ mod tests {
         );
     }
 
+    /// sim/scenarios.lisp loads cleanly and the random-* helpers
+    /// produce values in their stated range.
+    #[test]
+    fn scenarios_helpers_load_and_run() {
+        let (cfg, dir) = config_with("(set-microgrid-id 9)");
+        // Copy sim/scenarios.lisp into the test's load dir so
+        // (load "sim/scenarios.lisp") finds it.
+        let src = std::path::Path::new("sim/scenarios.lisp");
+        let dst_dir = dir.join("sim");
+        std::fs::create_dir_all(&dst_dir).unwrap();
+        std::fs::copy(src, dst_dir.join("scenarios.lisp")).unwrap();
+        cfg.eval("(load \"sim/scenarios.lisp\")").unwrap();
+        // 100 draws of random-uniform should all land in [10, 20).
+        for _ in 0..100 {
+            let v: f64 = cfg
+                .eval("(random-uniform 10.0 20.0)")
+                .unwrap()
+                .parse()
+                .unwrap();
+            assert!((10.0..20.0).contains(&v), "out-of-range {v}");
+        }
+        // random-pick over a 3-element list always returns one of
+        // them.
+        for _ in 0..100 {
+            let v = cfg.eval("(random-pick '(11 22 33))").unwrap();
+            assert!(["11", "22", "33"].contains(&v.as_str()), "got {v}");
+        }
+        // random-pick on empty list returns nil.
+        assert_eq!(cfg.eval("(random-pick '())").unwrap(), "nil");
+    }
+
     /// `(scenario-start)` opens a scenario, `(scenario-event)`
     /// appends to the journal, `(scenario-elapsed)` returns wall-
     /// clock seconds since start, `(scenario-stop)` freezes it.
