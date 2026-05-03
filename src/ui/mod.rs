@@ -24,7 +24,7 @@ use tokio::sync::broadcast::error::RecvError;
 
 use crate::{
     lisp::{Config, PersistResult},
-    sim::{Category, history::Metric, setpoints::SetpointEvent},
+    sim::{Category, history::Metric, setpoints::SetpointEvent, world::ScenarioSummary},
 };
 
 /// Embedded SPA assets. In debug builds rust-embed reads from the
@@ -67,6 +67,8 @@ fn router(config: Config) -> Router {
         .route("/api/scenarios", get(scenarios_list))
         .route("/api/scenarios/save", post(scenarios_save))
         .route("/api/scenarios/load", post(scenarios_load))
+        .route("/api/scenario", get(scenario_summary))
+        .route("/api/scenario/events", get(scenario_events))
         .route("/ws/events", get(events_ws))
         .with_state(config)
 }
@@ -543,6 +545,46 @@ async fn scenarios_load(
         // to BAD_REQUEST — the message names the failure kind.
         .map(|entries_added| Json(ScenarioLoadResponse { entries_added }))
         .map_err(|e| (StatusCode::BAD_REQUEST, e))
+}
+
+/// Snapshot of the running scenario's lifecycle. Empty (`name:
+/// null`, zero counts) before any `(scenario-start)`; freezes
+/// `elapsed_s` once `(scenario-stop)` fires.
+async fn scenario_summary(State(config): State<Config>) -> Json<ScenarioSummary> {
+    Json(config.world().scenario_summary(Utc::now()))
+}
+
+#[derive(Deserialize)]
+struct ScenarioEventsQuery {
+    /// Return events with id strictly greater than this. Default 0
+    /// means "everything in the ring".
+    since: Option<u64>,
+    /// Cap on returned entries. Default 200.
+    limit: Option<usize>,
+}
+
+#[derive(Serialize)]
+struct ScenarioEventsResponse {
+    events: Vec<crate::sim::scenario::ScenarioEvent>,
+    /// `next_event_id` lets a polling client advance its `since=`
+    /// cursor even when this batch was empty (because no events
+    /// have arrived since last poll, but new ones might before the
+    /// next).
+    next_event_id: u64,
+}
+
+async fn scenario_events(
+    State(config): State<Config>,
+    Query(q): Query<ScenarioEventsQuery>,
+) -> Json<ScenarioEventsResponse> {
+    let since = q.since.unwrap_or(0);
+    let limit = q.limit.unwrap_or(200).min(1000);
+    let events = config.world().scenario_events_since(since, limit);
+    let next_event_id = config.world().scenario_summary(Utc::now()).next_event_id;
+    Json(ScenarioEventsResponse {
+        events,
+        next_event_id,
+    })
 }
 
 /// Reject path-traversal + obviously-bad characters in scenario

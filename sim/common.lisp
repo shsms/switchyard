@@ -63,3 +63,17 @@ so user-driven mutations apply on top of the canonical graph."
   (let ((path (overrides-path)))
     (when (file-exists-p path)
       (load path))))
+
+;; -----------------------------------------------------------------------------
+;; Scenario helpers
+;; -----------------------------------------------------------------------------
+
+(defun scenario-end-after (minutes)
+  "Schedule a single-shot timer that runs (scenario-stop) after
+MINUTES wall-clock minutes. Useful for fixed-duration runs like
+`(scenario-end-after 60)` to cap the scenario at one hour. The
+handle goes through `every`'s tracker so a reload cancels it."
+  (let ((secs (* minutes 60.0)))
+    (setq active-timers
+          (cons (run-with-timer secs nil 'scenario-stop)
+                active-timers))))

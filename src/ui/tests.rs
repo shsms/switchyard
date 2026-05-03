@@ -378,3 +378,44 @@ async fn eval_endpoint_mutates_world() {
     let components = parsed["components"].as_array().unwrap();
     assert!(components.iter().any(|c| c["id"] == 42));
 }
+
+#[tokio::test]
+async fn scenario_endpoints_round_trip_lifecycle_and_events() {
+    let cfg = config_with("").await;
+
+    // Pre-start: name is null, count is 0.
+    let (_, body) = call(cfg.clone(), get("/api/scenario")).await;
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(v["name"].is_null());
+    assert_eq!(v["event_count"], 0);
+
+    // Start + record two events.
+    call(cfg.clone(), post("/api/eval", "(scenario-start \"warmup\")")).await;
+    call(cfg.clone(), post("/api/eval", "(scenario-event 'outage \"bat-1003\")")).await;
+    call(cfg.clone(), post("/api/eval", "(scenario-event \"note\" \"hi\")")).await;
+
+    // Summary reflects the events.
+    let (status, body) = call(cfg.clone(), get("/api/scenario")).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["name"], "warmup");
+    assert_eq!(v["event_count"], 2);
+    assert_eq!(v["next_event_id"], 2);
+
+    // /api/scenario/events with default since=0 returns both.
+    let (status, body) = call(cfg.clone(), get("/api/scenario/events")).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let events = v["events"].as_array().unwrap();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0]["kind"], "outage");
+    assert_eq!(events[1]["kind"], "note");
+
+    // since=1 cursor returns only id 1 onward.
+    let (_, body) = call(cfg.clone(), get("/api/scenario/events?since=1")).await;
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let events = v["events"].as_array().unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0]["id"], 1);
+}
+

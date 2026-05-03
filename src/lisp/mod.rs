@@ -545,8 +545,51 @@ fn register_runtime(
     register_reactive_setters(ctx, world.clone());
     register_setpoints(ctx, world.clone(), metadata);
     register_world_ops(ctx, world.clone());
+    register_scenario(ctx, world.clone());
     register_fs_helpers(ctx, load_dir);
     csv_profile::register(ctx);
+}
+
+/// Scenario lifecycle defuns. Scripts call `(scenario-start NAME)`
+/// to mark the beginning, drop `(scenario-event KIND PAYLOAD)` markers
+/// at interesting moments, and `(scenario-stop)` when finished. The
+/// underlying journal lives on `World` and is read by the
+/// `/api/scenario` and `/api/scenario/events` endpoints.
+fn register_scenario(ctx: &mut TulispContext, world: World) {
+    let w = world.clone();
+    ctx.defun("scenario-start", move |name: String| -> Result<bool, Error> {
+        w.scenario_start(name, Utc::now());
+        Ok(true)
+    });
+
+    let w = world.clone();
+    ctx.defun("scenario-stop", move || -> Result<bool, Error> {
+        w.scenario_stop(Utc::now());
+        Ok(true)
+    });
+
+    let w = world.clone();
+    ctx.defun(
+        "scenario-event",
+        move |kind: TulispObject, payload: TulispObject| -> Result<i64, Error> {
+            // Accept either a string or a symbol for `kind` so
+            // scripts can write `(scenario-event 'outage "bat-1003")`
+            // alongside `(scenario-event "note" "warming up")`.
+            // Payload renders via Display so any Lisp value works.
+            let kind_str = if kind.symbolp() {
+                kind.to_string()
+            } else {
+                String::try_from(kind)?
+            };
+            let payload_str = payload.to_string();
+            let id = w.scenario_record(kind_str, payload_str, Utc::now());
+            Ok(id as i64)
+        },
+    );
+
+    ctx.defun("scenario-elapsed", move || -> Result<f64, Error> {
+        Ok(world.scenario_elapsed_s(Utc::now()))
+    });
 }
 
 /// `(set-active-power ID WATTS &OPTIONAL LIFETIME-MS)` — apply an
@@ -1126,6 +1169,67 @@ mod tests {
             cfg.eval("(set-meter-power 7 \"garbage\")").is_ok(),
             "string is accepted as an eval source — fallback governs",
         );
+    }
+
+    /// `(scenario-start)` opens a scenario, `(scenario-event)`
+    /// appends to the journal, `(scenario-elapsed)` returns wall-
+    /// clock seconds since start, `(scenario-stop)` freezes it.
+    #[test]
+    fn scenario_lifecycle_round_trips_through_lisp() {
+        let (cfg, _dir) = config_with("(set-microgrid-id 9)");
+        cfg.eval("(scenario-start \"warmup\")").unwrap();
+        let summary = cfg.world().scenario_summary(chrono::Utc::now());
+        assert_eq!(summary.name.as_deref(), Some("warmup"));
+        assert!(summary.started_at.is_some());
+        assert!(summary.ended_at.is_none());
+        assert_eq!(summary.event_count, 0);
+
+        // First event id is 0.
+        cfg.eval("(scenario-event 'outage \"bat-1003\")").unwrap();
+        cfg.eval("(scenario-event \"note\" \"warming up\")").unwrap();
+        let summary = cfg.world().scenario_summary(chrono::Utc::now());
+        assert_eq!(summary.event_count, 2);
+        assert_eq!(summary.next_event_id, 2);
+
+        let events = cfg.world().scenario_events_since(0, 100);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].kind, "outage");
+        assert_eq!(events[1].kind, "note");
+
+        // Stop freezes elapsed; a subsequent (scenario-elapsed)
+        // returns the frozen value rather than continuing to grow.
+        cfg.eval("(scenario-stop)").unwrap();
+        let frozen = cfg.world().scenario_summary(chrono::Utc::now());
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let later = cfg.world().scenario_summary(chrono::Utc::now());
+        assert_eq!(frozen.elapsed_s, later.elapsed_s);
+        assert!(frozen.ended_at.is_some());
+    }
+
+    /// A second `(scenario-start)` clears the previous run's events
+    /// but keeps the monotonic id counter so polling clients with a
+    /// `since=` cursor see new events immediately rather than
+    /// rewinding through stale ids.
+    #[test]
+    fn scenario_restart_clears_events_keeps_ids_monotonic() {
+        let (cfg, _dir) = config_with("(set-microgrid-id 9)");
+        cfg.eval("(scenario-start \"first\")").unwrap();
+        cfg.eval("(scenario-event 'a \"\")").unwrap();
+        cfg.eval("(scenario-event 'b \"\")").unwrap();
+        assert_eq!(
+            cfg.world().scenario_summary(chrono::Utc::now()).next_event_id,
+            2
+        );
+        cfg.eval("(scenario-start \"second\")").unwrap();
+        let summary = cfg.world().scenario_summary(chrono::Utc::now());
+        assert_eq!(summary.event_count, 0);
+        assert_eq!(summary.next_event_id, 2);
+        let id = cfg
+            .eval("(scenario-event 'c \"\")")
+            .unwrap()
+            .parse::<i64>()
+            .unwrap();
+        assert_eq!(id, 2);
     }
 
     /// A scenario with a good form followed by a bad form must roll

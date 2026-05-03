@@ -101,7 +101,7 @@ during a scenario already work via the existing =:telemetry-mode
 'silent= and =:command-mode 'timeout= knobs — scenarios just toggle
 those at scheduled times. No new component-level mechanism needed.
 
-*** TODO B1. Scenario journal foundation
+*** DONE B1. Scenario journal foundation
 
 Goal: lifecycle + event log primitives.
 
@@ -193,6 +193,31 @@ outages firing in the UI.
 
 Acceptance: integration test records a 5-second scenario, asserts
 CSV rows ≈ 5 / =physics_tick_ms= and columns parse as floats.
+
+*** TODO B6.1. Retire the old "scenarios" feature (override-file copy)
+
+The current =/api/scenarios{,save,load}= endpoints save / load the
+per-microgrid override file as =scenarios/<name>.lisp= — a
+clipboard for "freeze the current edits, restore them later". With
+B1's scenario framework arriving, the "scenario" word now means
+"a driver script that exercises the simulator over time and is
+journalled". The old feature predates that and now collides
+namespace-wise.
+
+*Plan:* once B1–B6 have landed and the new scenario surface is
+exercised, drop the old =/api/scenarios{,save,load}= +
+=Config::list_scenarios= / =save_scenario= / =load_scenario= +
+the UI dropdown that wires them. Move any reusable bits (override-
+file IO, name sanitization) into the new scenario-load path
+(=B7. Named scenario save/load=) so we don't lose the ability to
+save and re-run a curated config.
+
+*Why deferred to after B6:* B7 already covers
+=scenarios/<name>.lisp= as the canonical way to persist a
+scenario. The old feature is the natural starting point for B7's
+implementation, and ripping it out before B7 lands would lose
+working machinery. Schedule the removal as a follow-up that
+either folds the old code into B7 or deletes it.
 
 *** TODO B7. Named scenario save/load
 
