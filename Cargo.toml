@@ -11,9 +11,9 @@ prost = "0.14.0"
 prost-types = "0.14.0"
 tokio = { version = "1.43.1", features = ["rt", "rt-multi-thread", "macros", "sync", "time"] }
 tokio-stream = "0.1.15"
-tulisp = { path = "../tulisp", features = ["sync"] }
-tulisp-fmt = { path = "../tulisp/tulisp-fmt" }
-tulisp-async = { path = "../tulisp-async" }
+tulisp = { git = "https://github.com/shsms/tulisp", branch = "fmt", features = ["sync"] }
+tulisp-fmt = { git = "https://github.com/shsms/tulisp", branch = "fmt" }
+tulisp-async = { git = "https://github.com/tulisp/tulisp-async" }
 notify = "6.1.1"
 futures = "0.3.30"
 log = "0.4.22"
@@ -42,12 +42,6 @@ tempfile = "3"
 [lib]
 name = "switchyard"
 path = "src/lib.rs"
-
-# tulisp-async still references tulisp via git; redirect that
-# transitive dep to the same local path so we don't end up with two
-# tulisps in the dep graph.
-[patch."https://github.com/shsms/tulisp"]
-tulisp = { path = "../tulisp" }
 
 [[bin]]
 name = "switchyard"

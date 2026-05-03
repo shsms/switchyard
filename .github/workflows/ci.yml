@@ -10,30 +10,15 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Format + clippy + cargo test (lib, bin, integration). The path
-  # deps to ../tulisp / ../tulisp-async are checked out at fixed
-  # branches alongside switchyard. The proto build pulls from
-  # frequenz-api-microgrid with its two protobuf submodules.
+  # Format + clippy + cargo test (lib, bin, integration). tulisp /
+  # tulisp-async / tulisp-fmt come from their git remotes per
+  # Cargo.toml; only the proto checkout (frequenz-api-microgrid
+  # with two protobuf submodules) lands as a sibling checkout
+  # exposed via SWITCHYARD_PROTO_ROOT.
   rust:
     runs-on: ubuntu-latest
     steps:
-      - name: Check out switchyard
-        uses: actions/checkout@v4
-        with:
-          path: switchyard
-
-      - name: Check out tulisp (path dep)
-        uses: actions/checkout@v4
-        with:
-          repository: shsms/tulisp
-          ref: fmt
-          path: tulisp
-
-      - name: Check out tulisp-async (path dep)
-        uses: actions/checkout@v4
-        with:
-          repository: tulisp/tulisp-async
-          path: tulisp-async
+      - uses: actions/checkout@v4
 
       - name: Check out frequenz-api-microgrid (proto root)
         uses: actions/checkout@v4
@@ -51,23 +36,20 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            switchyard/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('switchyard/Cargo.lock') }}
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
 
       - name: rustfmt
-        working-directory: switchyard
         run: cargo fmt --check
 
       - name: clippy
-        working-directory: switchyard
         env:
           SWITCHYARD_PROTO_ROOT: ${{ github.workspace }}/frequenz-api-microgrid
         run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: cargo test
-        working-directory: switchyard
         env:
           SWITCHYARD_PROTO_ROOT: ${{ github.workspace }}/frequenz-api-microgrid
         run: cargo test --all-features
@@ -92,23 +74,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: rust
     steps:
-      - name: Check out switchyard
-        uses: actions/checkout@v4
-        with:
-          path: switchyard
-
-      - name: Check out tulisp (path dep)
-        uses: actions/checkout@v4
-        with:
-          repository: shsms/tulisp
-          ref: fmt
-          path: tulisp
-
-      - name: Check out tulisp-async (path dep)
-        uses: actions/checkout@v4
-        with:
-          repository: tulisp/tulisp-async
-          path: tulisp-async
+      - uses: actions/checkout@v4
 
       - name: Check out frequenz-api-microgrid (proto root)
         uses: actions/checkout@v4
@@ -126,17 +92,15 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            switchyard/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('switchyard/Cargo.lock') }}
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
 
       - name: Build switchyard binary
-        working-directory: switchyard
         env:
           SWITCHYARD_PROTO_ROOT: ${{ github.workspace }}/frequenz-api-microgrid
         run: cargo build --bin switchyard
 
       - name: Boot + curl /api/topology
-        working-directory: switchyard
         run: |
           ./target/debug/switchyard config.lisp > /tmp/sw.log 2>&1 &
           PID=$!
