@@ -177,6 +177,10 @@ impl SimulatedComponent for Meter {
         self.set_fixed_power(p);
     }
 
+    fn set_active_power_source(&self, scalar: DynamicScalar) {
+        *self.power_source.write() = Some(scalar);
+    }
+
     fn is_hidden(&self) -> bool {
         self.hidden
     }

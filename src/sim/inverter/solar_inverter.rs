@@ -260,6 +260,10 @@ impl SimulatedComponent for SolarInverter {
     fn set_sunlight_pct(&self, pct: f32) {
         SolarInverter::set_sunlight_pct(self, pct);
     }
+
+    fn set_sunlight_source(&self, scalar: DynamicScalar) {
+        SolarInverter::set_sunlight_source(self, scalar);
+    }
 }
 
 #[cfg(test)]

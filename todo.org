@@ -73,7 +73,7 @@ output via panel curve), with =:power= as a lower-level override.
 Acceptance: =(make-solar-inverter :sunlight% (lambda () 87.5))= ticks
 correctly through the existing PV curve.
 
-*** TODO A4. UI edit form support for dynamic values
+*** DONE A4. UI edit form support for dynamic values
 
 The right-pane form currently shows =:power= as a number input. With
 A2/A3 the value can be a lambda or symbol. Render a single text input

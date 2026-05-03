@@ -710,8 +710,14 @@ const ACCEPTS_SETPOINTS = new Set(["battery", "inverter", "ev-charger", "chp"]);
 // just UI sugar over what the REPL could already do. Construction-
 // time args (capacity, rated bounds, …) aren't here because most
 // aren't runtime-mutable on the underlying component yet.
+// `dynamic: true` knobs accept either a numeric literal or a Lisp
+// expression (lambda, quoted symbol, …) — the underlying defun
+// dispatches on input kind. Inputs with `dynamic` render as text,
+// everything else as numeric. See the renderInspect Knobs block.
 const KNOBS_BY_CATEGORY = {
-  meter: [{ label: "power override (W)", defun: "set-meter-power" }],
+  meter: [
+    { label: "power (W or expr)", defun: "set-meter-power", dynamic: true },
+  ],
   inverter: [
     { label: "reactive PF limit", defun: "set-reactive-pf-limit" },
     { label: "reactive apparent (VA)", defun: "set-reactive-apparent-va" },
@@ -723,7 +729,11 @@ function knobsFor(d) {
   // Solar inverters also get a sunlight knob — driven by the same
   // (set-solar-sunlight ID PCT) defun the cloud-curve timer uses.
   if (d.category === "inverter" && d.subtype === "solar") {
-    knobs.unshift({ label: "sunlight (%)", defun: "set-solar-sunlight" });
+    knobs.unshift({
+      label: "sunlight (% or expr)",
+      defun: "set-solar-sunlight",
+      dynamic: true,
+    });
   }
   return knobs;
 }
@@ -760,12 +770,15 @@ function renderInspect(d, parentIds, childIds) {
       const knobs = knobsFor(d);
       if (!knobs.length) return "";
       return `<h3>Knobs</h3><dl>${knobs
-        .map(
-          (k) => `<dt>${escapeHtml(k.label)}</dt><dd>
-            <input type="number" step="any" class="knob-input"
-                   data-defun="${k.defun}" placeholder="value" />
-          </dd>`,
-        )
+        .map((k) => {
+          const inputAttrs = k.dynamic
+            ? `type="text" placeholder="value or (lambda () ...)"`
+            : `type="number" step="any" placeholder="value"`;
+          return `<dt>${escapeHtml(k.label)}</dt><dd>
+            <input ${inputAttrs} class="knob-input"
+                   data-defun="${k.defun}" />
+          </dd>`;
+        })
         .join("")}</dl>`;
     })()}
     <h3>Connections</h3>

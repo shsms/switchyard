@@ -3,7 +3,7 @@ use std::{fmt, sync::Arc, time::Duration};
 use chrono::{DateTime, Utc};
 use tulisp::TulispContext;
 
-use crate::sim::{bounds::VecBounds, world::World};
+use crate::sim::{bounds::VecBounds, dynamic_scalar::DynamicScalar, world::World};
 
 /// High-level kind of a component, mirroring the proto category enum but
 /// kept Rust-side so non-gRPC code does not need to depend on protobuf.
@@ -208,16 +208,28 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
     ) {
     }
 
-    /// Override the active-power value a meter publishes. Used by
-    /// `(set-meter-power id W)` to drive a Lisp- or CSV-computed
-    /// consumer load curve from a timer callback. Default no-op.
+    /// Override the active-power value a meter publishes with a
+    /// constant. Used by `(set-meter-power id W)` when called with a
+    /// numeric argument. Default no-op.
     fn set_active_power_override(&self, _p: f32) {}
 
+    /// Replace the meter's `:power` source with a Lisp expression
+    /// that the scheduler's `refresh_inputs` pass re-resolves each
+    /// tick. Used by `(set-meter-power id (lambda () …))` and by
+    /// the UI when a user types a Lisp form into the `:power` input.
+    /// Default no-op for non-meter components.
+    fn set_active_power_source(&self, _scalar: DynamicScalar) {}
+
     /// Update the live cloud-cover percentage on a solar inverter.
-    /// Used by `(set-solar-sunlight id PCT)` to drive a cloud schedule
-    /// from a Lisp timer (the PV analogue of `set-meter-power` for
-    /// consumer load curves). Default no-op for non-solar components.
+    /// Used by `(set-solar-sunlight id PCT)` with a numeric
+    /// argument. Default no-op for non-solar components.
     fn set_sunlight_pct(&self, _pct: f32) {}
+
+    /// Replace the solar inverter's `:sunlight%` source with a Lisp
+    /// expression. PV analogue of [`Self::set_active_power_source`];
+    /// used by `(set-solar-sunlight id (lambda () …))`. Default
+    /// no-op for non-solar components.
+    fn set_sunlight_source(&self, _scalar: DynamicScalar) {}
 
     // ── bounds telemetry ─────────────────────────────────────────────
 
