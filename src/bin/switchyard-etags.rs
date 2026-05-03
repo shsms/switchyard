@@ -17,7 +17,11 @@ use std::{env, io::Write as _, path::Path, process};
 
 use switchyard::lisp::Config;
 
-fn main() {
+// tulisp_async::TokioExecutor::new captures Handle::current(),
+// so Config::tags_table needs a tokio runtime in scope even
+// though no async work happens during tag generation.
+#[tokio::main(flavor = "current_thread")]
+async fn main() {
     let mut args = env::args().skip(1);
     let mut roots: Vec<String> = Vec::new();
     let mut output_path: String = "TAGS".to_string();

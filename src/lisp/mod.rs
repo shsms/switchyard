@@ -162,12 +162,19 @@ impl Config {
     }
 
     /// Build a TAGS table for every file in `roots` and every
-    /// file each transitively `(load …)`s. Static — does not
-    /// require a running Config; the etags binary uses this
-    /// directly so tag generation works in CI / pre-commit
-    /// hooks without booting the simulator. Drives tulisp's
-    /// parse-with-etags path: every `(defun NAME …)` form
-    /// across the file tree becomes one entry.
+    /// file each transitively `(load …)`s. Drives tulisp's
+    /// parse-with-etags path: every `(defun NAME …)` form across
+    /// the file tree becomes one entry, and every Rust-side
+    /// `ctx.defun("name", …)` call from `register_runtime` /
+    /// `tulisp_async::register` adds an entry pointing at the
+    /// Rust source location — so `M-.` on `(set-meter-power …)`
+    /// or `(run-with-timer …)` jumps straight into the Rust
+    /// implementation.
+    ///
+    /// Static, but must run inside a tokio runtime —
+    /// `tulisp_async::TokioExecutor::new` captures
+    /// `Handle::current()`. The etags binary wraps `main` with
+    /// `#[tokio::main]` for that.
     ///
     /// The load path is set from the first root's parent
     /// directory (the canonical config); roots beyond the first
@@ -175,14 +182,21 @@ impl Config {
     /// would.
     pub fn tags_table(roots: &[&str]) -> Result<String, Error> {
         let mut ctx = TulispContext::new();
-        if let Some(first) = roots.first()
-            && let Some(parent) = Path::new(first).parent()
-            && !parent.as_os_str().is_empty()
-        {
-            ctx.set_load_path(Some(parent)).map_err(|e| {
-                Error::os_error(format!("set_load_path({}): {e}", parent.display()))
-            })?;
-        }
+        let world = World::new();
+        let metadata = Arc::new(RwLock::new(Metadata::default()));
+
+        let load_dir: PathBuf = roots
+            .first()
+            .and_then(|r| Path::new(r).parent())
+            .filter(|p| !p.as_os_str().is_empty())
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."));
+        ctx.set_load_path(Some(&load_dir))
+            .map_err(|e| Error::os_error(format!("set_load_path({}): {e}", load_dir.display())))?;
+
+        register_runtime(&mut ctx, &world, metadata, load_dir);
+        tulisp_async::register(&mut ctx, Arc::new(tulisp_async::TokioExecutor::new()));
+
         ctx.tags_table(Some(roots))
     }
 
