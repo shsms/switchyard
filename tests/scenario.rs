@@ -86,7 +86,9 @@ async fn lambda_meter_power_resolves_through_http_eval() {
     eval_or_panic(&client, &s, "(set-meter-power 2 'curve)").await;
 
     let mut now = chrono::Utc::now();
-    s.config.world().tick_once(now, std::time::Duration::from_millis(100));
+    s.config
+        .world()
+        .tick_once(now, std::time::Duration::from_millis(100));
     s.config.world().record_history_snapshot(now);
 
     let topo = topology(&client, &s).await;
@@ -102,7 +104,9 @@ async fn lambda_meter_power_resolves_through_http_eval() {
     // Mutate the global; the next snapshot picks up the new value.
     eval_or_panic(&client, &s, "(setq curve 4321.0)").await;
     now += chrono::Duration::seconds(1);
-    s.config.world().tick_once(now, std::time::Duration::from_millis(100));
+    s.config
+        .world()
+        .tick_once(now, std::time::Duration::from_millis(100));
     s.config.world().record_history_snapshot(now);
     let r = report(&client, &s).await;
     let peak = r["peak_main_meter_w"].as_f64().unwrap();
@@ -113,14 +117,11 @@ async fn lambda_meter_power_resolves_through_http_eval() {
 
     // Lambda form: replace the source with a thunk and confirm
     // the next snapshot resolves it.
-    eval_or_panic(
-        &client,
-        &s,
-        "(set-meter-power 2 (lambda () 9999.0))",
-    )
-    .await;
+    eval_or_panic(&client, &s, "(set-meter-power 2 (lambda () 9999.0))").await;
     now += chrono::Duration::seconds(1);
-    s.config.world().tick_once(now, std::time::Duration::from_millis(100));
+    s.config
+        .world()
+        .tick_once(now, std::time::Duration::from_millis(100));
     s.config.world().record_history_snapshot(now);
     let r = report(&client, &s).await;
     let peak = r["peak_main_meter_w"].as_f64().unwrap();

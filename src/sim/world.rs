@@ -211,9 +211,9 @@ pub(crate) struct ScenarioReport {
     /// Computed lazily on each report fetch — cheap O(N) over a
     /// handful of batteries. None when no batteries are registered.
     pub soc_stats: Option<SocStats>,
-    /// Per-15-minute UTC-aligned window peak of main-meter active
-    /// power. Sorted oldest-first.
-    pub main_meter_window_peaks: Vec<WindowPeakEntry>,
+    /// Per-15-minute UTC-aligned window average of main-meter
+    /// active power. Sorted oldest-first.
+    pub main_meter_window_averages: Vec<WindowAverageEntry>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -241,9 +241,9 @@ pub(crate) struct SocStats {
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
-pub(crate) struct WindowPeakEntry {
+pub(crate) struct WindowAverageEntry {
     pub window_start: DateTime<Utc>,
-    pub peak_w: f64,
+    pub avg_w: f64,
 }
 
 impl World {
@@ -399,12 +399,16 @@ impl World {
                 }
             })
             .collect();
-        let main_meter_window_peaks: Vec<WindowPeakEntry> = g
-            .window_peaks()
+        let main_meter_window_averages: Vec<WindowAverageEntry> = g
+            .window_avgs()
             .iter()
-            .map(|(secs, peak)| WindowPeakEntry {
+            .map(|(secs, (sum, count))| WindowAverageEntry {
                 window_start: DateTime::<Utc>::from_timestamp(*secs, 0).unwrap_or_else(Utc::now),
-                peak_w: *peak,
+                avg_w: if *count > 0 {
+                    *sum / (*count as f64)
+                } else {
+                    0.0
+                },
             })
             .collect();
         drop(g);
@@ -432,7 +436,7 @@ impl World {
             per_battery,
             per_pv,
             soc_stats,
-            main_meter_window_peaks,
+            main_meter_window_averages,
         }
     }
 
