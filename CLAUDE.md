@@ -136,7 +136,8 @@ config.lisp does.
    config to script behaviour over time.
 3. Demonstrate via a new line in `config.lisp` and verify via swctl.
 
-## Microsim parity gaps
+## Roadmap and deferred work
 
-See PLAN.md for the up-to-date comparison of features microsim has and
-switchyard doesn't (and vice versa).
+See `todo.org` for the forward-looking roadmap (scenario framework,
+reactive plist values, integration tests, CI) and known open design
+questions.

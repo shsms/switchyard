@@ -1,9 +1,8 @@
 //! Embedded web UI server.
 //!
 //! Runs alongside the gRPC server on the same tokio runtime, separate
-//! port (default 8801, see UI.org). Phase 1 surface is intentionally
-//! tiny — endpoints land one commit at a time. The SPA shell + assets
-//! arrive later via rust-embed.
+//! port (default 8801). The SPA shell + vendored assets are bundled
+//! via rust-embed.
 
 use std::net::SocketAddr;
 

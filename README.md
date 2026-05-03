@@ -6,8 +6,6 @@ a single `SimulatedComponent` trait; the configuration DSL is Lisp via
 `(make-meter)`, `(make-battery)`, … return typed handles assembled into
 a topology.
 
-See [`PLAN.md`](PLAN.md) for the design in full. The short version:
-
 - `World` owns the registry, physics-tick scheduler, and shared AC
   environment (per-phase voltage, frequency).
 - Components opt into `CommandDelay` (SCADA round-trip latency) and
