@@ -115,9 +115,10 @@ impl DynamicScalar {
     }
 
     /// Re-resolve the source and update the cached value. No-op for
-    /// constants. Errors are logged and the prior value kept — a
-    /// scenario shouldn't crash the simulator if a curve transiently
-    /// returns garbage.
+    /// constants. Errors and non-finite results (`NaN`, `±∞`) log
+    /// and keep the prior cached value — a scenario shouldn't
+    /// corrupt downstream telemetry if a curve transiently returns
+    /// garbage.
     pub fn refresh(&self, ctx: &mut TulispContext) {
         let Some(src) = &self.source else { return };
         let (label, result) = match src {
@@ -126,7 +127,12 @@ impl DynamicScalar {
         };
         match result {
             Ok(obj) => match f64::try_from(&obj) {
-                Ok(v) => self.set(v as f32),
+                Ok(v) if v.is_finite() => self.set(v as f32),
+                Ok(v) => log::warn!(
+                    "DynamicScalar refresh: non-finite result {} from {}; keeping prior value",
+                    v,
+                    label,
+                ),
                 Err(e) => log::warn!(
                     "DynamicScalar refresh: non-numeric result from {}: {}",
                     label,
@@ -178,6 +184,18 @@ mod tests {
         assert_eq!(s.get(), 0.0);
         s.refresh(&mut ctx);
         assert_eq!(s.get(), 42.0);
+    }
+
+    #[test]
+    fn from_eval_keeps_fallback_on_non_finite_result() {
+        let mut ctx = TulispContext::new();
+        // 1.0 / 0.0 = +Inf in tulisp's float arithmetic; the
+        // refresh path should reject it and keep the fallback
+        // rather than poison the cache.
+        let src = ctx.eval_string("'(/ 1.0 0.0)").unwrap();
+        let s = DynamicScalar::from_eval(src, 7.5);
+        s.refresh(&mut ctx);
+        assert_eq!(s.get(), 7.5);
     }
 
     #[test]
