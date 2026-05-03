@@ -1,4 +1,3 @@
 /target
 config.ui-overrides.*.lisp
-/scenarios/
 /.claude/

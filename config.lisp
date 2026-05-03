@@ -106,6 +106,7 @@
  (list
   (make-meter
    :id 2
+   :main t                       ;; flagged for scenario-report peak tracking
    :successors
    (list
     ;; Battery branch — every knob (SCADA delay, ramp, jitter,
