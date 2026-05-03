@@ -274,8 +274,12 @@ async fn history(
     State(config): State<Config>,
     Query(q): Query<HistoryQuery>,
 ) -> Result<Json<HistoryResponse>, (StatusCode, String)> {
-    let metric = parse_metric(&q.metric)
-        .ok_or_else(|| (StatusCode::BAD_REQUEST, format!("unknown metric '{}'", q.metric)))?;
+    let metric = parse_metric(&q.metric).ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("unknown metric '{}'", q.metric),
+        )
+    })?;
     let window = ChronoDuration::seconds(q.window_s.unwrap_or(600));
     let since: DateTime<Utc> = Utc::now() - window;
 
@@ -367,25 +371,22 @@ async fn defaults(State(config): State<Config>) -> Json<DefaultsResponse> {
         let mut out = Vec::new();
         for cat in DEFAULT_CATEGORIES {
             let var = format!("{cat}-defaults");
-            match config.eval_silent(&var) {
-                Ok(value) => {
-                    // Pretty-print via tulisp-fmt so the textarea
-                    // shows one (key . value) pair per line at a
-                    // narrow width — fits the side panel without
-                    // horizontal scroll. Falls back to the raw
-                    // Display form if the printed value isn't
-                    // parseable (shouldn't happen for an alist read
-                    // back from the interpreter).
-                    let formatted = tulisp_fmt::format_with_width(&value, 50)
-                        .map(|f| f.trim_end().to_string())
-                        .unwrap_or(value);
-                    out.push(DefaultsEntry {
-                        category: cat,
-                        var_name: var,
-                        value: formatted,
-                    });
-                }
-                Err(_) => {} // variable unset — skip
+            // Pretty-print via tulisp-fmt so the textarea shows
+            // one (key . value) pair per line at a narrow width
+            // — fits the side panel without horizontal scroll.
+            // Falls back to the raw Display form if the printed
+            // value isn't parseable (shouldn't happen for an alist
+            // read back from the interpreter). Variables that
+            // aren't bound just get skipped.
+            if let Ok(value) = config.eval_silent(&var) {
+                let formatted = tulisp_fmt::format_with_width(&value, 50)
+                    .map(|f| f.trim_end().to_string())
+                    .unwrap_or(value);
+                out.push(DefaultsEntry {
+                    category: cat,
+                    var_name: var,
+                    value: formatted,
+                });
             }
         }
         out
@@ -443,14 +444,22 @@ async fn persisted_remove(
 ) -> Result<StatusCode, (StatusCode, String)> {
     let result = tokio::task::spawn_blocking(move || config.remove_persisted_overrides(&[idx]))
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("task panicked: {e}")))?;
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("task panicked: {e}"),
+            )
+        })?;
     match result {
         Ok(0) => Err((
             StatusCode::NOT_FOUND,
             format!("no persisted override at idx {idx}"),
         )),
         Ok(_) => Ok(StatusCode::NO_CONTENT),
-        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, format!("write failed: {e}"))),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("write failed: {e}"),
+        )),
     }
 }
 
@@ -475,10 +484,18 @@ async fn persisted_bulk_remove(
     let result =
         tokio::task::spawn_blocking(move || config.remove_persisted_overrides(&body.indices))
             .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("task panicked: {e}")))?;
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("task panicked: {e}"),
+                )
+            })?;
     match result {
         Ok(removed) => Ok(Json(BulkRemoveResponse { removed })),
-        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, format!("write failed: {e}"))),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("write failed: {e}"),
+        )),
     }
 }
 
@@ -596,10 +613,10 @@ async fn event_pump(mut socket: WebSocket, config: Config) {
                         target: line.target,
                         message: line.message,
                     };
-                    if let Ok(json) = serde_json::to_string(&event) {
-                        if socket.send(Message::Text(json.into())).await.is_err() {
-                            break;
-                        }
+                    if let Ok(json) = serde_json::to_string(&event)
+                        && socket.send(Message::Text(json.into())).await.is_err()
+                    {
+                        break;
                     }
                 }
                 Err(RecvError::Lagged(_)) => continue,

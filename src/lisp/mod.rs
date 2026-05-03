@@ -316,8 +316,8 @@ impl Config {
             // forms keeps multi-line `let*` paste shapes visually
             // separable.
             for src in &kept {
-                let fmt = tulisp_fmt::format_with_width(src, 80)
-                    .unwrap_or_else(|_| format!("{}\n", src));
+                let fmt =
+                    tulisp_fmt::format_with_width(src, 80).unwrap_or_else(|_| format!("{}\n", src));
                 file.write_all(fmt.as_bytes())?;
                 writeln!(file)?;
             }
@@ -339,7 +339,6 @@ impl Config {
             self.metadata.read().microgrid_id
         ))
     }
-
 
     pub fn reload(&self) {
         let start = std::time::Instant::now();
@@ -384,9 +383,7 @@ impl Config {
         // next process restart (the live notify watcher isn't held
         // across reloads, by design — keeps the watch lifecycle simple).
         for path in self.extra_watches.lock().iter() {
-            if let Err(e) =
-                watcher.watch(path, notify::RecursiveMode::NonRecursive)
-            {
+            if let Err(e) = watcher.watch(path, notify::RecursiveMode::NonRecursive) {
                 log::warn!("watch-file {}: {}", path.display(), e);
             }
         }
@@ -439,10 +436,13 @@ fn register_runtime(
 /// `/api/scenario` and `/api/scenario/events` endpoints.
 fn register_scenario(ctx: &mut TulispContext, world: World) {
     let w = world.clone();
-    ctx.defun("scenario-start", move |name: String| -> Result<bool, Error> {
-        w.scenario_start(name, Utc::now());
-        Ok(true)
-    });
+    ctx.defun(
+        "scenario-start",
+        move |name: String| -> Result<bool, Error> {
+            w.scenario_start(name, Utc::now());
+            Ok(true)
+        },
+    );
 
     let w = world.clone();
     ctx.defun("scenario-stop", move || -> Result<bool, Error> {
@@ -500,11 +500,7 @@ fn register_scenario(ctx: &mut TulispContext, world: World) {
 /// to idle. Omitting it falls back to `default-request-lifetime-ms`,
 /// matching the gRPC behaviour. The reset fires from the loop in
 /// `Config::start_timeout_loop`.
-fn register_setpoints(
-    ctx: &mut TulispContext,
-    world: World,
-    metadata: Arc<RwLock<Metadata>>,
-) {
+fn register_setpoints(ctx: &mut TulispContext, world: World, metadata: Arc<RwLock<Metadata>>) {
     ctx.defun(
         "set-active-power",
         move |id: i64, watts: f64, lifetime_ms: Option<i64>| -> Result<bool, Error> {
@@ -528,24 +524,19 @@ fn register_setpoints(
 /// rename for display.
 fn register_world_ops(ctx: &mut TulispContext, world: World) {
     let w = world.clone();
-    ctx.defun(
-        "world-connect",
-        move |parent: i64, child: i64| -> bool {
-            // World::connect doesn't return a status; we always ack.
-            w.connect(parent as u64, child as u64);
-            true
-        },
-    );
+    ctx.defun("world-connect", move |parent: i64, child: i64| -> bool {
+        // World::connect doesn't return a status; we always ack.
+        w.connect(parent as u64, child as u64);
+        true
+    });
     let w = world.clone();
-    ctx.defun(
-        "world-remove-component",
-        move |id: i64| -> bool { w.remove_component(id as u64) },
-    );
+    ctx.defun("world-remove-component", move |id: i64| -> bool {
+        w.remove_component(id as u64)
+    });
     let w = world.clone();
-    ctx.defun(
-        "world-disconnect",
-        move |parent: i64, child: i64| -> bool { w.disconnect(parent as u64, child as u64) },
-    );
+    ctx.defun("world-disconnect", move |parent: i64, child: i64| -> bool {
+        w.disconnect(parent as u64, child as u64)
+    });
     ctx.defun(
         "world-rename-component",
         move |id: i64, name: String| -> bool {
@@ -624,31 +615,28 @@ fn register_watches(
     load_dir: PathBuf,
     extra_watches: Arc<Mutex<HashSet<PathBuf>>>,
 ) {
-    ctx.defun(
-        "watch-file",
-        move |path: String| -> Result<bool, Error> {
-            let p = Path::new(&path);
-            let resolved = if p.is_absolute() {
-                p.to_path_buf()
-            } else {
-                load_dir.join(p)
-            };
-            // Canonicalize so dedup works regardless of how the user
-            // wrote the path. Failing canonicalize == file doesn't
-            // exist; surface that as an error so a typo doesn't
-            // silently no-op.
-            let canonical = resolved.canonicalize().map_err(|e| {
-                Error::invalid_argument(format!(
-                    "watch-file {}: {} ({})",
-                    resolved.display(),
-                    e,
-                    "file does not exist or is unreadable"
-                ))
-            })?;
-            extra_watches.lock().insert(canonical);
-            Ok(true)
-        },
-    );
+    ctx.defun("watch-file", move |path: String| -> Result<bool, Error> {
+        let p = Path::new(&path);
+        let resolved = if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            load_dir.join(p)
+        };
+        // Canonicalize so dedup works regardless of how the user
+        // wrote the path. Failing canonicalize == file doesn't
+        // exist; surface that as an error so a typo doesn't
+        // silently no-op.
+        let canonical = resolved.canonicalize().map_err(|e| {
+            Error::invalid_argument(format!(
+                "watch-file {}: {} ({})",
+                resolved.display(),
+                e,
+                "file does not exist or is unreadable"
+            ))
+        })?;
+        extra_watches.lock().insert(canonical);
+        Ok(true)
+    });
 }
 
 fn register_load_drivers(ctx: &mut TulispContext, world: World) {
@@ -747,13 +735,10 @@ fn register_runtime_modes(ctx: &mut TulispContext, world: World) {
     use crate::sim::runtime::{CommandMode, Health, TelemetryMode};
 
     let w = world.clone();
-    ctx.defun(
-        "set-component-health",
-        move |id: i64, h: Health| -> bool {
-            w.set_health(id as u64, h);
-            true
-        },
-    );
+    ctx.defun("set-component-health", move |id: i64, h: Health| -> bool {
+        w.set_health(id as u64, h);
+        true
+    });
 
     let w = world.clone();
     ctx.defun(
@@ -1143,7 +1128,8 @@ mod tests {
 
         // First event id is 0.
         cfg.eval("(scenario-event 'outage \"bat-1003\")").unwrap();
-        cfg.eval("(scenario-event \"note\" \"warming up\")").unwrap();
+        cfg.eval("(scenario-event \"note\" \"warming up\")")
+            .unwrap();
         let summary = cfg.world().scenario_summary(chrono::Utc::now());
         assert_eq!(summary.event_count, 2);
         assert_eq!(summary.next_event_id, 2);
@@ -1186,12 +1172,14 @@ mod tests {
         // Advance physics enough to settle the ramp; default ramp
         // is infinity so one tick is enough.
         let mut now = Utc::now();
-        cfg.world().tick_once(now, std::time::Duration::from_millis(100));
+        cfg.world()
+            .tick_once(now, std::time::Duration::from_millis(100));
         // Snapshot pass at t0 — first one just seeds the cursor
         // (dt from start is small but non-zero — ignore the result).
         cfg.world().record_history_snapshot(now);
         now += ChronoDuration::seconds(10);
-        cfg.world().tick_once(now, std::time::Duration::from_secs(10));
+        cfg.world()
+            .tick_once(now, std::time::Duration::from_secs(10));
         cfg.world().record_history_snapshot(now);
         let r = cfg.world().scenario_report(now);
         // 3600 W for 10 s = 10 Wh. Allow some slop for the seed
@@ -1205,9 +1193,11 @@ mod tests {
 
         // Now flip to discharging.
         cfg.eval("(set-active-power 200 -7200.0 60000)").unwrap();
-        cfg.world().tick_once(now, std::time::Duration::from_millis(100));
+        cfg.world()
+            .tick_once(now, std::time::Duration::from_millis(100));
         now += ChronoDuration::seconds(5);
-        cfg.world().tick_once(now, std::time::Duration::from_secs(5));
+        cfg.world()
+            .tick_once(now, std::time::Duration::from_secs(5));
         cfg.world().record_history_snapshot(now);
         let r = cfg.world().scenario_report(now);
         // 7200 W * 5 s / 3600 = 10 Wh discharged.
@@ -1257,9 +1247,7 @@ mod tests {
         cfg.eval("(scenario-start \"again\")").unwrap();
         cfg.eval("(set-meter-power 1 500.0)").unwrap();
         cfg.world().record_history_snapshot(Utc::now());
-        assert!(
-            (cfg.world().scenario_report(Utc::now()).peak_main_meter_w - 500.0).abs() < 1e-3,
-        );
+        assert!((cfg.world().scenario_report(Utc::now()).peak_main_meter_w - 500.0).abs() < 1e-3,);
     }
 
     /// Two meters with `:main t` is a config error. The first one
@@ -1287,7 +1275,9 @@ mod tests {
         cfg.eval("(scenario-event 'a \"\")").unwrap();
         cfg.eval("(scenario-event 'b \"\")").unwrap();
         assert_eq!(
-            cfg.world().scenario_summary(chrono::Utc::now()).next_event_id,
+            cfg.world()
+                .scenario_summary(chrono::Utc::now())
+                .next_event_id,
             2
         );
         cfg.eval("(scenario-start \"second\")").unwrap();
@@ -1301,5 +1291,4 @@ mod tests {
             .unwrap();
         assert_eq!(id, 2);
     }
-
 }

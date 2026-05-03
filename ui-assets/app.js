@@ -11,7 +11,7 @@ const inspectEl = document.getElementById("inspect");
 
 function setStatus(text, klass) {
   status.textContent = text;
-  status.className = "status " + (klass || "");
+  status.className = `status ${klass || ""}`;
 }
 
 // Surface a transient toast in the bottom-right. Auto-dismisses after
@@ -123,8 +123,8 @@ const METRIC_PRESENTATION = {
 function chooseScale(rule, values) {
   if (rule.kind === "power" && values.length) {
     const max = Math.max(...values.map((v) => Math.abs(v)));
-    if (max >= 1e6) return { div: 1e6, unit: "M" + rule.baseUnit };
-    if (max >= 1e3) return { div: 1e3, unit: "k" + rule.baseUnit };
+    if (max >= 1e6) return { div: 1e6, unit: `M${rule.baseUnit}` };
+    if (max >= 1e3) return { div: 1e3, unit: `k${rule.baseUnit}` };
     return { div: 1, unit: rule.baseUnit };
   }
   return { div: 1, unit: rule.unit || "" };
@@ -181,7 +181,7 @@ const liveCharts = (() => {
       const empty = list.querySelector(".sp-empty");
       if (empty) empty.remove();
       const li = document.createElement("li");
-      li.className = "sp-event " + (ev.accepted ? "accepted" : "rejected");
+      li.className = `sp-event ${ev.accepted ? "accepted" : "rejected"}`;
       const ts = new Date(ev.ts_ms).toLocaleTimeString();
       // The WS event carries the setpoint kind on `setpoint_kind`
       // to dodge collision with the WorldEvent discriminator (also
@@ -220,7 +220,7 @@ function lighten(hex, n) {
   const r = Math.min(255, ((c >> 16) & 255) + n);
   const g = Math.min(255, ((c >> 8) & 255) + n);
   const b = Math.min(255, (c & 255) + n);
-  return "#" + ((r << 16) | (g << 8) | b).toString(16).padStart(6, "0");
+  return `#${((r << 16) | (g << 8) | b).toString(16).padStart(6, "0")}`;
 }
 
 function nodeStyleFor(c) {
@@ -461,7 +461,7 @@ const topology = (() => {
       if (!levels.has(lvl)) levels.set(lvl, []);
       levels.get(lvl).push(id);
     }
-    const sortedLevels = [...levels.keys()].sort((a, b) => a - b);
+    const _sortedLevels = [...levels.keys()].sort((a, b) => a - b);
 
     // Two adjacency maps split by level direction. Same-level edges
     // are ignored — they don't tell us anything about top-down or
@@ -535,7 +535,7 @@ const topology = (() => {
     // visible canvas after the sweeps converge.
     const hiddenIds = ids.filter((id) => {
       const c = componentById.get(Number(id));
-      return c && c.hidden;
+      return c?.hidden;
     });
     const visibleLevels = new Map();
     for (const [lvl, lvlIds] of levels) {
@@ -689,7 +689,7 @@ const visOptions = {
       })
         .then((r) => r.json())
         .then((res) => {
-          if (!res.ok) notify("Connect failed: " + res.error);
+          if (!res.ok) notify(`Connect failed: ${res.error}`);
         });
       // Don't apply locally — the WS topology refresh will redraw
       // with the new edge once the eval lands on the server.
@@ -857,7 +857,7 @@ async function evalQuoted(expr) {
   let data;
   try {
     data = JSON.parse(text);
-  } catch (e) {
+  } catch (_e) {
     console.error(`evalQuoted: bad JSON for ${expr.slice(0, 60)}…`, {
       status: res.status,
       body: text,
@@ -929,7 +929,7 @@ async function renderSetpoints(id, container) {
     for (const e of data.events.slice().reverse()) {
       const li = document.createElement("li");
       const accepted = e.outcome.kind === "accepted";
-      li.className = "sp-event " + (accepted ? "accepted" : "rejected");
+      li.className = `sp-event ${accepted ? "accepted" : "rejected"}`;
       const ts = new Date(e.ts).toLocaleTimeString();
       const tag = e.kind.replace("_", " ");
       const head = `<span class="sp-ts">${ts}</span> <span class="sp-tag">${tag}</span> <span class="sp-val">${e.value}</span>`;
@@ -1181,7 +1181,7 @@ function setupAddForm() {
         body: `(${fn})`,
       });
       const data = await res.json();
-      if (!data.ok) notify("Create failed: " + data.error);
+      if (!data.ok) notify(`Create failed: ${data.error}`);
     } finally {
       btn.disabled = false;
     }
@@ -1550,7 +1550,7 @@ const refitCharts = () => liveCharts.refit();
 function appendLog(ev) {
   const box = document.getElementById("logs");
   const el = document.createElement("div");
-  el.className = "log-line " + (ev.level || "info").toLowerCase();
+  el.className = `log-line ${(ev.level || "info").toLowerCase()}`;
   const ts = new Date(ev.ts_ms).toLocaleTimeString();
   el.innerHTML =
     `<span class="log-ts">${ts}</span>` +
@@ -1779,7 +1779,7 @@ function setupRepl() {
     } catch (err) {
       const out = document.createElement("pre");
       out.className = "repl-error";
-      out.textContent = "transport error: " + err.message;
+      out.textContent = `transport error: ${err.message}`;
       entry.appendChild(out);
     }
     input.value = "";
@@ -1870,10 +1870,10 @@ function openWebSocket(onTopologyChanged) {
 async function refreshTopology() {
   try {
     const res = await fetch("/api/topology");
-    if (!res.ok) throw new Error("HTTP " + res.status);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     topology.apply(await res.json());
   } catch (err) {
-    setStatus("error: " + err.message, "error");
+    setStatus(`error: ${err.message}`, "error");
   }
 }
 

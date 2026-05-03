@@ -210,7 +210,11 @@ mod tests {
         assert!(p.accept_setpoint(0.0, 5000.0).is_ok());
 
         // Before the 100 ms delay elapses, no movement.
-        let q = p.step(0.0, now + chrono::Duration::milliseconds(50), Duration::from_millis(50));
+        let q = p.step(
+            0.0,
+            now + chrono::Duration::milliseconds(50),
+            Duration::from_millis(50),
+        );
         assert!(q.abs() < 1.0, "expected ~0 before delay, got {q}");
 
         // After 1 s past the delay, ramp at 1000 VAR/s reaches 1 kVAR.

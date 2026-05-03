@@ -345,9 +345,7 @@ pub fn register(ctx: &mut TulispContext, world: World) {
             let grid = Grid::new(
                 id,
                 a.rated_fuse_current.or(d.rated_fuse_current).unwrap_or(0) as u32,
-                a.stream_jitter_pct
-                    .or(d.stream_jitter_pct)
-                    .unwrap_or(0.0) as f32,
+                a.stream_jitter_pct.or(d.stream_jitter_pct).unwrap_or(0.0) as f32,
             );
             let h = register_with_modes(
                 &w,
@@ -400,9 +398,7 @@ pub fn register(ctx: &mut TulispContext, world: World) {
                 interval,
                 cached_succ_ids,
                 power_source,
-                a.stream_jitter_pct
-                    .or(d.stream_jitter_pct)
-                    .unwrap_or(0.0) as f32,
+                a.stream_jitter_pct.or(d.stream_jitter_pct).unwrap_or(0.0) as f32,
                 hidden,
             );
             let h = register_with_modes(
@@ -573,8 +569,7 @@ pub fn register(ctx: &mut TulispContext, world: World) {
                         cfg.sunlight_pct = pct as f32;
                     }
                 } else {
-                    dynamic_sunlight =
-                        DynamicScalar::from_lisp(raw, cfg.sunlight_pct);
+                    dynamic_sunlight = DynamicScalar::from_lisp(raw, cfg.sunlight_pct);
                     if let Some(pct) = d.sunlight_pct {
                         cfg.sunlight_pct = pct as f32;
                     }
@@ -692,10 +687,7 @@ pub fn register(ctx: &mut TulispContext, world: World) {
             let a = args.into_inner();
             let d = parse_defaults::<ChpDefaults>(ctx, a.config.as_ref())?;
             let id = id_or_next(&w, a.id);
-            let jitter = a
-                .stream_jitter_pct
-                .or(d.stream_jitter_pct)
-                .unwrap_or(0.0) as f32;
+            let jitter = a.stream_jitter_pct.or(d.stream_jitter_pct).unwrap_or(0.0) as f32;
             let h = register_with_modes(
                 &w,
                 Chp::new(id, jitter),
@@ -845,13 +837,11 @@ mod tests {
 
     #[test]
     fn battery_defaults_alone_apply() {
-        let world = run(
-            r#"(setq d '((capacity . 50000.0)
+        let world = run(r#"(setq d '((capacity . 50000.0)
                          (initial-soc . 20.0)
                          (rated-lower . -8000.0)
                          (rated-upper . 8000.0)))
-               (%make-battery :id 100 :config d)"#,
-        );
+               (%make-battery :id 100 :config d)"#);
         let t = world.get(100).unwrap().telemetry(&world);
         assert_eq!(t.capacity_wh, Some(50_000.0));
         assert!((t.soc_pct.unwrap() - 20.0).abs() < 1e-3);
@@ -861,10 +851,8 @@ mod tests {
     fn battery_per_component_overrides_defaults() {
         // :capacity in the plist wins over (capacity . X) in the alist;
         // initial-soc only in defaults still applies.
-        let world = run(
-            r#"(setq d '((capacity . 50000.0) (initial-soc . 20.0)))
-               (%make-battery :id 101 :config d :capacity 25000.0)"#,
-        );
+        let world = run(r#"(setq d '((capacity . 50000.0) (initial-soc . 20.0)))
+               (%make-battery :id 101 :config d :capacity 25000.0)"#);
         let t = world.get(101).unwrap().telemetry(&world);
         assert_eq!(t.capacity_wh, Some(25_000.0));
         assert!((t.soc_pct.unwrap() - 20.0).abs() < 1e-3);
@@ -875,10 +863,8 @@ mod tests {
         // :health in the alist as a bare symbol, no plist override.
         // Component starts in `error` health; gRPC layer would reject
         // setpoints, but we just verify the runtime knob landed.
-        let world = run(
-            r#"(setq d '((health . error)))
-               (%make-battery :id 102 :config d)"#,
-        );
+        let world = run(r#"(setq d '((health . error)))
+               (%make-battery :id 102 :config d)"#);
         assert_eq!(
             world.runtime_of(102).health,
             crate::sim::runtime::Health::Error
@@ -911,9 +897,7 @@ mod tests {
     /// return.
     #[test]
     fn meter_power_lambda_resolves_each_refresh() {
-        let (world, mut ctx) = run_with_ctx(
-            r#"(%make-meter :id 8 :power (lambda () 1234.5))"#,
-        );
+        let (world, mut ctx) = run_with_ctx(r#"(%make-meter :id 8 :power (lambda () 1234.5))"#);
         let m = world.get(8).unwrap();
         // Pre-refresh: cached fallback.
         assert_eq!(m.aggregate_power_w(&world), 0.0);
@@ -961,7 +945,8 @@ mod tests {
         // zero so the next tick promotes it. Ramp default is
         // infinity so the actual jumps straight to the target,
         // floored at min_avail.
-        inv.set_active_setpoint(-5000.0).expect("setpoint within rated");
+        inv.set_active_setpoint(-5000.0)
+            .expect("setpoint within rated");
         let now = chrono::Utc::now();
         inv.tick(&world, now, Duration::from_millis(100));
         let p = inv
@@ -981,9 +966,7 @@ mod tests {
     /// silently overwrite the user's intent.
     #[test]
     fn meter_set_power_collapses_to_constant() {
-        let (world, mut ctx) = run_with_ctx(
-            r#"(%make-meter :id 10 :power (lambda () 1000.0))"#,
-        );
+        let (world, mut ctx) = run_with_ctx(r#"(%make-meter :id 10 :power (lambda () 1000.0))"#);
         let m = world.get(10).unwrap();
         m.refresh_inputs(&mut ctx);
         assert!((m.aggregate_power_w(&world) - 1000.0).abs() < 1e-3);

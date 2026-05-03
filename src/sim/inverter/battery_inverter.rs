@@ -220,8 +220,7 @@ impl SimulatedComponent for BatteryInverter {
     }
 
     fn set_reactive_setpoint(&self, vars: f32) -> Result<(), SetpointError> {
-        self.reactive
-            .accept_setpoint(*self.measured_w.lock(), vars)
+        self.reactive.accept_setpoint(*self.measured_w.lock(), vars)
     }
 
     fn reset_setpoint(&self) {

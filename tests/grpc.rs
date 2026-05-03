@@ -56,9 +56,7 @@ async fn list_connections_returns_edges() {
     let s = TestServer::start(TINY_TOPOLOGY).await;
     let mut c = connect(&s).await;
     let resp = c
-        .list_electrical_component_connections(
-            ListElectricalComponentConnectionsRequest::default(),
-        )
+        .list_electrical_component_connections(ListElectricalComponentConnectionsRequest::default())
         .await
         .expect("list ok")
         .into_inner();

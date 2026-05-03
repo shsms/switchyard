@@ -155,12 +155,10 @@ fn compute_soc_stats(socs: &[f32]) -> Option<SocStats> {
     if socs.is_empty() {
         return None;
     }
-    let mean_pct =
-        socs.iter().map(|v| *v as f64).sum::<f64>() / socs.len() as f64;
+    let mean_pct = socs.iter().map(|v| *v as f64).sum::<f64>() / socs.len() as f64;
     let mut sorted: Vec<f32> = socs.to_vec();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let median_pct =
-        sorted[sorted.len() / 2 - usize::from(sorted.len().is_multiple_of(2))] as f64;
+    let median_pct = sorted[sorted.len() / 2 - usize::from(sorted.len().is_multiple_of(2))] as f64;
     // Mode: integer-bucketed, lowest-bucket on tie.
     let mut histogram = [0u32; 101];
     for v in socs {
@@ -343,12 +341,7 @@ impl World {
     }
 
     /// Append a journal event. Returns the assigned id.
-    pub fn scenario_record(
-        &self,
-        kind: String,
-        payload: String,
-        now: DateTime<Utc>,
-    ) -> u64 {
+    pub fn scenario_record(&self, kind: String, payload: String, now: DateTime<Utc>) -> u64 {
         self.inner.scenario.write().record(kind, payload, now)
     }
 
@@ -414,8 +407,7 @@ impl World {
             .window_peaks()
             .iter()
             .map(|(secs, peak)| WindowPeakEntry {
-                window_start: DateTime::<Utc>::from_timestamp(*secs, 0)
-                    .unwrap_or_else(Utc::now),
+                window_start: DateTime::<Utc>::from_timestamp(*secs, 0).unwrap_or_else(Utc::now),
                 peak_w: *peak,
             })
             .collect();
@@ -472,7 +464,10 @@ impl World {
     /// forget by design.
     pub fn bump_version(&self) -> u64 {
         let v = self.inner.version.fetch_add(1, Ordering::Relaxed) + 1;
-        let _ = self.inner.events.send(WorldEvent::TopologyChanged { version: v });
+        let _ = self
+            .inner
+            .events
+            .send(WorldEvent::TopologyChanged { version: v });
         v
     }
 
@@ -901,11 +896,7 @@ impl World {
     /// owned events so the caller can release the lock immediately.
     /// Empty Vec when the component has no recorded setpoints yet —
     /// either because it's new or because no client has set anything.
-    pub fn setpoints_window(
-        &self,
-        id: u64,
-        since: DateTime<Utc>,
-    ) -> Vec<SetpointEvent> {
+    pub fn setpoints_window(&self, id: u64, since: DateTime<Utc>) -> Vec<SetpointEvent> {
         self.inner
             .setpoint_logs
             .read()

@@ -125,11 +125,7 @@ impl ComponentHistory {
     /// recorded — the caller (typically `World::record_history_snapshot`)
     /// uses this to fan out per-sample broadcast events without
     /// re-walking the snapshot.
-    pub fn push_snapshot(
-        &mut self,
-        ts: DateTime<Utc>,
-        snapshot: &Telemetry,
-    ) -> Vec<(Metric, f32)> {
+    pub fn push_snapshot(&mut self, ts: DateTime<Utc>, snapshot: &Telemetry) -> Vec<(Metric, f32)> {
         let mut pushed = Vec::new();
         let mut record = |this: &mut Self, m: Metric, v: f32| {
             this.push(ts, m, v);

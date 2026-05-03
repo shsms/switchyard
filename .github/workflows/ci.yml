@@ -1,0 +1,161 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Format + clippy + cargo test (lib, bin, integration). The path
+  # deps to ../tulisp / ../tulisp-async are checked out at fixed
+  # branches alongside switchyard. The proto build pulls from
+  # frequenz-api-microgrid with its two protobuf submodules.
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out switchyard
+        uses: actions/checkout@v4
+        with:
+          path: switchyard
+
+      - name: Check out tulisp (path dep)
+        uses: actions/checkout@v4
+        with:
+          repository: shsms/tulisp
+          ref: fmt
+          path: tulisp
+
+      - name: Check out tulisp-async (path dep)
+        uses: actions/checkout@v4
+        with:
+          repository: tulisp/tulisp-async
+          path: tulisp-async
+
+      - name: Check out frequenz-api-microgrid (proto root)
+        uses: actions/checkout@v4
+        with:
+          repository: frequenz-floss/frequenz-api-microgrid
+          submodules: recursive
+          path: frequenz-api-microgrid
+
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Cache cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            switchyard/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('switchyard/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: rustfmt
+        working-directory: switchyard
+        run: cargo fmt --check
+
+      - name: clippy
+        working-directory: switchyard
+        env:
+          SWITCHYARD_PROTO_ROOT: ${{ github.workspace }}/frequenz-api-microgrid
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: cargo test
+        working-directory: switchyard
+        env:
+          SWITCHYARD_PROTO_ROOT: ${{ github.workspace }}/frequenz-api-microgrid
+        run: cargo test --all-features
+
+  # Lint the hand-written JS in ui-assets/. Vendored libs and
+  # everything outside ui-assets/ are excluded via biome.json's
+  # `files.includes` patterns.
+  ui-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: biome lint
+        run: npx --yes @biomejs/biome lint ui-assets/app.js
+
+  # Smoke test: boot the binary against the sample config.lisp and
+  # curl /api/topology to confirm the server stood up. Catches
+  # regressions in the boot path that pure-Rust tests miss.
+  smoke:
+    runs-on: ubuntu-latest
+    needs: rust
+    steps:
+      - name: Check out switchyard
+        uses: actions/checkout@v4
+        with:
+          path: switchyard
+
+      - name: Check out tulisp (path dep)
+        uses: actions/checkout@v4
+        with:
+          repository: shsms/tulisp
+          ref: fmt
+          path: tulisp
+
+      - name: Check out tulisp-async (path dep)
+        uses: actions/checkout@v4
+        with:
+          repository: tulisp/tulisp-async
+          path: tulisp-async
+
+      - name: Check out frequenz-api-microgrid (proto root)
+        uses: actions/checkout@v4
+        with:
+          repository: frequenz-floss/frequenz-api-microgrid
+          submodules: recursive
+          path: frequenz-api-microgrid
+
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Restore cargo cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            switchyard/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('switchyard/Cargo.lock') }}
+
+      - name: Build switchyard binary
+        working-directory: switchyard
+        env:
+          SWITCHYARD_PROTO_ROOT: ${{ github.workspace }}/frequenz-api-microgrid
+        run: cargo build --bin switchyard
+
+      - name: Boot + curl /api/topology
+        working-directory: switchyard
+        run: |
+          ./target/debug/switchyard config.lisp > /tmp/sw.log 2>&1 &
+          PID=$!
+          for _ in {1..30}; do
+            if grep -q "Switchyard UI listening" /tmp/sw.log 2>/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          if ! grep -q "Switchyard UI listening" /tmp/sw.log; then
+            echo "server failed to start"
+            cat /tmp/sw.log
+            kill $PID 2>/dev/null || true
+            exit 1
+          fi
+          components=$(curl -fs http://127.0.0.1:8801/api/topology | python3 -c "import sys,json; print(len(json.load(sys.stdin)['components']))")
+          kill $PID 2>/dev/null || true
+          if [ "$components" -lt 1 ]; then
+            echo "expected non-empty components, got $components"
+            exit 1
+          fi
+          echo "smoke ok — $components components"

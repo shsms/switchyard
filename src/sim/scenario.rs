@@ -141,9 +141,11 @@ impl ScenarioJournal {
             if v > self.peak_main_meter_active_w {
                 self.peak_main_meter_active_w = v;
             }
-            let window_start =
-                (now.timestamp() / WINDOW_PEAK_LENGTH_S) * WINDOW_PEAK_LENGTH_S;
-            let entry = self.window_peaks.entry(window_start).or_insert(f64::NEG_INFINITY);
+            let window_start = (now.timestamp() / WINDOW_PEAK_LENGTH_S) * WINDOW_PEAK_LENGTH_S;
+            let entry = self
+                .window_peaks
+                .entry(window_start)
+                .or_insert(f64::NEG_INFINITY);
             if v > *entry {
                 *entry = v;
             }
@@ -169,7 +171,10 @@ impl ScenarioJournal {
             return 0.0;
         }
         match self.prev_sample_ts {
-            Some(prev) => (now - prev).to_std().map(|d| d.as_secs_f64()).unwrap_or(0.0),
+            Some(prev) => (now - prev)
+                .to_std()
+                .map(|d| d.as_secs_f64())
+                .unwrap_or(0.0),
             None => 0.0,
         }
     }

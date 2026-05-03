@@ -145,7 +145,15 @@ mod tests {
         let rejected = SetpointOutcome::Rejected {
             reason: "ouch".into(),
         };
-        assert!(serde_json::to_string(&accepted).unwrap().contains("\"kind\":\"accepted\""));
-        assert!(serde_json::to_string(&rejected).unwrap().contains("\"kind\":\"rejected\""));
+        assert!(
+            serde_json::to_string(&accepted)
+                .unwrap()
+                .contains("\"kind\":\"accepted\"")
+        );
+        assert!(
+            serde_json::to_string(&rejected)
+                .unwrap()
+                .contains("\"kind\":\"rejected\"")
+        );
     }
 }

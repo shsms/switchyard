@@ -167,8 +167,7 @@ impl SimulatedComponent for Battery {
         //    Clamp at boundaries so unphysical "extra" charge can't
         //    accumulate when the protective taper is disabled.
         if self.cfg.capacity_wh > 0.0 {
-            let delta_soc =
-                s.power_w * dt.as_secs_f32() / 3600.0 / self.cfg.capacity_wh * 100.0;
+            let delta_soc = s.power_w * dt.as_secs_f32() / 3600.0 / self.cfg.capacity_wh * 100.0;
             s.soc_pct = (s.soc_pct + delta_soc).clamp(0.0, 100.0);
         }
     }

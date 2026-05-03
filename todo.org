@@ -254,7 +254,7 @@ Acceptance: scenario test is deterministic across runs.
 
 ** D. CI
 
-*** TODO D1. CI workflow
+*** DONE D1. CI workflow
 
 Single GitHub Actions workflow at =.github/workflows/ci.yml= with
 three jobs:

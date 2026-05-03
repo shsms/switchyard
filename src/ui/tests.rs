@@ -126,7 +126,7 @@ async fn eval_endpoint_reports_lisp_errors() {
     let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(parsed["ok"], false);
     assert!(parsed["value"].is_null());
-    assert!(parsed["error"].as_str().unwrap().len() > 0);
+    assert!(!parsed["error"].as_str().unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -140,11 +140,7 @@ async fn history_endpoint_returns_recent_samples() {
     world.record_history_snapshot(now - chrono::Duration::seconds(2));
     world.record_history_snapshot(now - chrono::Duration::seconds(1));
 
-    let (status, body) = call(
-        cfg,
-        get("/api/history?id=1000&metric=soc_pct&window_s=10"),
-    )
-    .await;
+    let (status, body) = call(cfg, get("/api/history?id=1000&metric=soc_pct&window_s=10")).await;
     assert_eq!(status, StatusCode::OK);
     let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(parsed["id"], 1000);
@@ -176,9 +172,17 @@ async fn history_endpoint_returns_empty_for_unknown_component() {
 async fn overrides_endpoint_lists_appended_evals() {
     let cfg = config_with("(set-microgrid-id 7) (%make-grid :id 1)").await;
     // Two successful evals + one error. Errors don't append.
-    call(cfg.clone(), post("/api/eval", "(world-rename-component 1 \"a\")")).await;
+    call(
+        cfg.clone(),
+        post("/api/eval", "(world-rename-component 1 \"a\")"),
+    )
+    .await;
     call(cfg.clone(), post("/api/eval", "(undefined-fn 1)")).await;
-    call(cfg.clone(), post("/api/eval", "(set-microgrid-name \"foo\")")).await;
+    call(
+        cfg.clone(),
+        post("/api/eval", "(set-microgrid-name \"foo\")"),
+    )
+    .await;
     let (status, body) = call(cfg, get("/api/overrides")).await;
     assert_eq!(status, StatusCode::OK);
     let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
@@ -200,8 +204,7 @@ async fn overrides_endpoint_lists_appended_evals() {
 /// Minimal local `load-overrides` defun for tests — real configs
 /// get this from `sim/common.lisp`, but `config_with` writes a
 /// bare-bones config that doesn't pull in the helper file.
-const LOAD_OVERRIDES_HELPER: &str =
-    "(defun load-overrides ()
+const LOAD_OVERRIDES_HELPER: &str = "(defun load-overrides ()
        (when (file-exists-p \"config.ui-overrides.7.lisp\")
          (load \"config.ui-overrides.7.lisp\")))
      (load-overrides)";
@@ -212,12 +215,18 @@ async fn persisted_remove_drops_form_immediately() {
     // /api/persisted/0 rewrites the file without that form and
     // reloads; the world reflects only the second rename, and
     // the file no longer contains the first.
-    let body = format!(
-        "(set-microgrid-id 7) (%make-grid :id 1) {LOAD_OVERRIDES_HELPER}",
-    );
+    let body = format!("(set-microgrid-id 7) (%make-grid :id 1) {LOAD_OVERRIDES_HELPER}",);
     let cfg = config_with(&body).await;
-    call(cfg.clone(), post("/api/eval", "(world-rename-component 1 \"a\")")).await;
-    call(cfg.clone(), post("/api/eval", "(world-rename-component 1 \"b\")")).await;
+    call(
+        cfg.clone(),
+        post("/api/eval", "(world-rename-component 1 \"a\")"),
+    )
+    .await;
+    call(
+        cfg.clone(),
+        post("/api/eval", "(world-rename-component 1 \"b\")"),
+    )
+    .await;
 
     let (_, body) = call(cfg.clone(), get("/api/overrides")).await;
     let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
@@ -259,13 +268,23 @@ async fn persisted_remove_drops_form_immediately() {
 
 #[tokio::test]
 async fn persisted_bulk_remove_drops_indices_in_one_reload() {
-    let body = format!(
-        "(set-microgrid-id 7) (%make-grid :id 1) {LOAD_OVERRIDES_HELPER}",
-    );
+    let body = format!("(set-microgrid-id 7) (%make-grid :id 1) {LOAD_OVERRIDES_HELPER}",);
     let cfg = config_with(&body).await;
-    call(cfg.clone(), post("/api/eval", "(world-rename-component 1 \"a\")")).await;
-    call(cfg.clone(), post("/api/eval", "(world-rename-component 1 \"b\")")).await;
-    call(cfg.clone(), post("/api/eval", "(world-rename-component 1 \"c\")")).await;
+    call(
+        cfg.clone(),
+        post("/api/eval", "(world-rename-component 1 \"a\")"),
+    )
+    .await;
+    call(
+        cfg.clone(),
+        post("/api/eval", "(world-rename-component 1 \"b\")"),
+    )
+    .await;
+    call(
+        cfg.clone(),
+        post("/api/eval", "(world-rename-component 1 \"c\")"),
+    )
+    .await;
 
     // Drop idx 0 + 2 → only "b" survives, world reflects "b".
     let req = axum::http::Request::builder()
@@ -323,9 +342,21 @@ async fn scenario_endpoints_round_trip_lifecycle_and_events() {
     assert_eq!(v["event_count"], 0);
 
     // Start + record two events.
-    call(cfg.clone(), post("/api/eval", "(scenario-start \"warmup\")")).await;
-    call(cfg.clone(), post("/api/eval", "(scenario-event 'outage \"bat-1003\")")).await;
-    call(cfg.clone(), post("/api/eval", "(scenario-event \"note\" \"hi\")")).await;
+    call(
+        cfg.clone(),
+        post("/api/eval", "(scenario-start \"warmup\")"),
+    )
+    .await;
+    call(
+        cfg.clone(),
+        post("/api/eval", "(scenario-event 'outage \"bat-1003\")"),
+    )
+    .await;
+    call(
+        cfg.clone(),
+        post("/api/eval", "(scenario-event \"note\" \"hi\")"),
+    )
+    .await;
 
     // Summary reflects the events.
     let (status, body) = call(cfg.clone(), get("/api/scenario")).await;
@@ -351,7 +382,6 @@ async fn scenario_endpoints_round_trip_lifecycle_and_events() {
     assert_eq!(events.len(), 1);
     assert_eq!(events[0]["id"], 1);
 }
-
 
 #[tokio::test]
 async fn scenario_report_endpoint_returns_main_meter_peak() {

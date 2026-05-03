@@ -31,7 +31,11 @@ async fn json(client: &reqwest::Client, url: String) -> Value {
 #[tokio::test(flavor = "multi_thread")]
 async fn topology_endpoint_serves_components_and_connections() {
     let s = TestServer::start(TINY_TOPOLOGY).await;
-    let topo = json(&reqwest::Client::new(), format!("{}/api/topology", s.ui_url)).await;
+    let topo = json(
+        &reqwest::Client::new(),
+        format!("{}/api/topology", s.ui_url),
+    )
+    .await;
     let components = topo["components"].as_array().expect("components array");
     let ids: Vec<i64> = components
         .iter()
@@ -90,7 +94,11 @@ async fn scenario_endpoints_round_trip_via_eval() {
             .send()
             .await
             .unwrap();
-        assert!(r.status().is_success(), "eval {body} failed: {:?}", r.status());
+        assert!(
+            r.status().is_success(),
+            "eval {body} failed: {:?}",
+            r.status()
+        );
     }
 
     let summary = json(&client, format!("{}/api/scenario", s.ui_url)).await;
