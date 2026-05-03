@@ -202,7 +202,10 @@ AsPlist! {
         id: Option<i64> {= None},
         name: Option<String> {= None},
         interval: Option<i64> {= None},
-        sunlight_pct<":sunlight%">: Option<f64> {= None},
+        /// Cloud-cover percentage. May be a number, a lambda, or a
+        /// symbol — see [`crate::sim::dynamic_scalar::DynamicScalar::from_lisp`].
+        /// Resolved each tick via the scheduler's pre-tick hook.
+        sunlight_pct<":sunlight%">: Option<LispValue> {= None},
         rated_lower<":rated-lower">: Option<f64> {= None},
         rated_upper<":rated-upper">: Option<f64> {= None},
         command_delay_ms<":command-delay-ms">: Option<i64> {= None},
@@ -548,8 +551,28 @@ pub fn register(ctx: &mut TulispContext, world: World) {
             let id = id_or_next(&w, a.id);
             let interval = ms_to_duration(a.interval.or(d.interval), 1000);
             let mut cfg = SolarInverterConfig::default();
-            if let Some(v) = a.sunlight_pct.or(d.sunlight_pct) {
-                cfg.sunlight_pct = v as f32;
+            // :sunlight% accepts a number, lambda, or symbol. Pull
+            // out the dynamic source (if any) before construction
+            // and seed cfg.sunlight_pct from a numeric value or
+            // category default. The ramp's initial target is
+            // computed from the seed; a dynamic source takes effect
+            // on the first refresh_inputs.
+            let mut dynamic_sunlight: Option<DynamicScalar> = None;
+            if let Some(v) = a.sunlight_pct.as_ref() {
+                let raw = v.as_inner();
+                if raw.numberp() {
+                    if let Ok(pct) = f64::try_from(raw) {
+                        cfg.sunlight_pct = pct as f32;
+                    }
+                } else {
+                    dynamic_sunlight =
+                        DynamicScalar::from_lisp(raw, cfg.sunlight_pct);
+                    if let Some(pct) = d.sunlight_pct {
+                        cfg.sunlight_pct = pct as f32;
+                    }
+                }
+            } else if let Some(pct) = d.sunlight_pct {
+                cfg.sunlight_pct = pct as f32;
             }
             if let Some(v) = a.rated_lower.or(d.rated_lower) {
                 cfg.rated_lower_w = v as f32;
@@ -587,9 +610,13 @@ pub fn register(ctx: &mut TulispContext, world: World) {
             if let Some(v) = a.reactive_ramp_rate.or(d.reactive_ramp_rate) {
                 cfg.reactive_ramp_rate_var_per_s = v as f32;
             }
+            let inverter = SolarInverter::new(id, interval, cfg);
+            if let Some(scalar) = dynamic_sunlight {
+                inverter.set_sunlight_source(scalar);
+            }
             let h = register_with_modes(
                 &w,
-                SolarInverter::new(id, interval, cfg),
+                inverter,
                 a.health.or(d.health),
                 a.telemetry_mode.or(d.telemetry_mode),
                 a.command_mode.or(d.command_mode),
@@ -903,6 +930,40 @@ mod tests {
         ctx.eval_string("(setq consumer-power 2750.0)").unwrap();
         m.refresh_inputs(&mut ctx);
         assert!((m.aggregate_power_w(&world) - 2750.0).abs() < 1e-3);
+    }
+
+    /// `:sunlight%` accepts a lambda the same way meter `:power`
+    /// does — the make-path detects the non-numeric value and wires
+    /// it into the inverter's DynamicScalar. Refresh resolves it
+    /// each tick; the resolved sunlight% is the floor for incoming
+    /// setpoints, observable as a clip on the ramp output.
+    #[test]
+    fn solar_inverter_sunlight_lambda_clips_setpoint() {
+        let (world, mut ctx) = run_with_ctx(
+            r#"(%make-solar-inverter :id 11
+                                    :sunlight% (lambda () 25.0)
+                                    :rated-lower -8000.0
+                                    :rated-upper 0.0)"#,
+        );
+        let inv = world.get(11).unwrap();
+        // Refresh runs the lambda → sunlight_pct = 25 →
+        // min_avail = -2000 W.
+        inv.refresh_inputs(&mut ctx);
+        // Issue a setpoint below min_avail; CommandDelay default is
+        // zero so the next tick promotes it. Ramp default is
+        // infinity so the actual jumps straight to the target,
+        // floored at min_avail.
+        inv.set_active_setpoint(-5000.0).expect("setpoint within rated");
+        let now = chrono::Utc::now();
+        inv.tick(&world, now, Duration::from_millis(100));
+        let p = inv
+            .telemetry(&world)
+            .active_power_w
+            .expect("active power present");
+        assert!(
+            (p - (-2000.0)).abs() < 1.0,
+            "expected sunlight-clipped -2000 W, got {p}"
+        );
     }
 
     /// `(set-meter-power id W)` is the existing imperative setter

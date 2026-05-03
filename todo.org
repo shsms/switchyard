@@ -64,7 +64,7 @@ Goal: =(make-meter :power (lambda () 1234.5))= and
 Acceptance: existing meter tests untouched; new test covers
 function and symbol cases.
 
-*** TODO A3. Reactive =:sunlight%= (or =:power=) on solar inverters
+*** DONE A3. Reactive =:sunlight%= (or =:power=) on solar inverters
 
 Same shape as A2 on =SolarInverter=. Choose =:sunlight%= as the
 primary reactive entry point (domain-correct: irradiance drives

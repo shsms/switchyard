@@ -7,11 +7,13 @@
 use std::{fmt, time::Duration};
 
 use chrono::{DateTime, Utc};
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
+use tulisp::TulispContext;
 
 use crate::sim::{
     Category, SetpointError, SimulatedComponent, Telemetry, World,
     bounds::ComponentBounds,
+    dynamic_scalar::DynamicScalar,
     meter::{per_phase_apparent_current, split_per_phase},
     ramp::{CommandDelay, Ramp},
     reactive::{ReactiveCapability, ReactivePath},
@@ -56,11 +58,13 @@ pub struct SolarInverter {
     name: String,
     interval: Duration,
     cfg: SolarInverterConfig,
-    /// Runtime-mutable cloud-cover knob. `cfg.sunlight_pct` seeds this
-    /// at construction; thereafter every read goes through the mutex
-    /// so a Lisp timer can drive a cloud-cover schedule via
-    /// `(set-solar-sunlight ID PCT)`.
-    sunlight_pct: Mutex<f32>,
+    /// Cloud-cover percentage. Either a constant (the cfg default
+    /// or a numeric `:sunlight%`) or a Lisp expression
+    /// (`:sunlight% (lambda () …)` / `:sunlight% 'symbol`) re-
+    /// resolved each tick by `refresh_inputs`. Lisp timers can
+    /// also push values via `(set-solar-sunlight ID PCT)`, which
+    /// collapses any prior dynamic source to a constant.
+    sunlight_source: RwLock<DynamicScalar>,
     bounds: Mutex<ComponentBounds>,
     delay: CommandDelay,
     ramp: Ramp,
@@ -71,7 +75,8 @@ pub struct SolarInverter {
 
 impl SolarInverter {
     pub fn new(id: u64, interval: Duration, cfg: SolarInverterConfig) -> Self {
-        let init_p = cfg.rated_lower_w * cfg.sunlight_pct / 100.0;
+        let init_pct = cfg.sunlight_pct;
+        let init_p = cfg.rated_lower_w * init_pct / 100.0;
         let bounds = ComponentBounds::rated(cfg.rated_lower_w, cfg.rated_upper_w);
         let delay = CommandDelay::new(cfg.command_delay);
         let ramp = Ramp::new(cfg.ramp_rate_w_per_s, init_p);
@@ -81,13 +86,12 @@ impl SolarInverter {
             cfg.reactive_command_delay,
             cfg.reactive_ramp_rate_var_per_s,
         );
-        let sunlight_pct = Mutex::new(cfg.sunlight_pct);
         Self {
             id,
             name: format!("inv-pv-{id}"),
             interval,
             cfg,
-            sunlight_pct,
+            sunlight_source: RwLock::new(DynamicScalar::constant(init_pct)),
             bounds: Mutex::new(bounds),
             delay,
             ramp,
@@ -95,17 +99,30 @@ impl SolarInverter {
         }
     }
 
-    /// Update the live cloud-cover percentage. Drives the per-tick
-    /// `min_avail = rated_lower_w × sunlight_pct / 100` clamp the
-    /// inverter applies to incoming setpoints. No clamp on the
-    /// input — out-of-range values just produce out-of-range
-    /// `min_avail`, mirroring microsim.
+    /// Replace the cloud-cover source with a Lisp expression that
+    /// `refresh_inputs` re-resolves each tick. The make-path uses
+    /// this when `:sunlight%` is a lambda or symbol; the default is
+    /// a constant seeded from `cfg.sunlight_pct`.
+    pub fn set_sunlight_source(&self, scalar: DynamicScalar) {
+        *self.sunlight_source.write() = scalar;
+    }
+
+    /// Replace the cloud-cover source with a constant. Drives the
+    /// per-tick `min_avail = rated_lower_w × sunlight_pct / 100`
+    /// clamp the inverter applies to incoming setpoints. No clamp
+    /// on the input — out-of-range values just produce out-of-range
+    /// `min_avail`, mirroring microsim. Collapses any prior dynamic
+    /// source so subsequent refreshes are no-ops.
     pub fn set_sunlight_pct(&self, pct: f32) {
-        *self.sunlight_pct.lock() = pct;
+        *self.sunlight_source.write() = DynamicScalar::constant(pct);
+    }
+
+    pub fn sunlight_pct(&self) -> f32 {
+        self.sunlight_source.read().get()
     }
 
     fn min_avail_w(&self) -> f32 {
-        self.cfg.rated_lower_w * *self.sunlight_pct.lock() / 100.0
+        self.cfg.rated_lower_w * self.sunlight_pct() / 100.0
     }
 }
 
@@ -127,6 +144,11 @@ impl SimulatedComponent for SolarInverter {
     }
     fn stream_interval(&self) -> Duration {
         self.interval
+    }
+    fn refresh_inputs(&self, ctx: &mut TulispContext) {
+        // No-op for the constant case — DynamicScalar::refresh
+        // returns immediately when there's no source expression.
+        self.sunlight_source.read().refresh(ctx);
     }
 
     fn tick(&self, _world: &World, now: DateTime<Utc>, dt: Duration) {
@@ -267,5 +289,42 @@ mod tests {
         // Out-of-range values pass through (microsim parity).
         inv.set_sunlight_pct(150.0);
         assert!((inv.min_avail_w() - (-15_000.0)).abs() < 1e-3);
+    }
+
+    /// A dynamic sunlight source resolves on each `refresh_inputs`,
+    /// driving the min_avail floor without going through the
+    /// imperative `(set-solar-sunlight)` setter.
+    #[test]
+    fn dynamic_sunlight_source_refreshes() {
+        let mut ctx = tulisp::TulispContext::new();
+        let inv = SolarInverter::new(1, Duration::from_secs(1), cfg_with_sun(100.0));
+        let lambda = ctx.eval_string("(lambda () 40.0)").unwrap();
+        let scalar = DynamicScalar::from_lisp(&lambda, 100.0).expect("lambda → dynamic");
+        inv.set_sunlight_source(scalar);
+
+        // Pre-refresh: the cached fallback (100.0) is still in effect.
+        assert!((inv.min_avail_w() - (-10_000.0)).abs() < 1e-3);
+
+        // Refresh resolves the lambda → 40% of -10 kW rated = -4 kW.
+        inv.refresh_inputs(&mut ctx);
+        assert!((inv.min_avail_w() - (-4_000.0)).abs() < 1e-3);
+    }
+
+    /// `set_sunlight_pct` collapses any prior dynamic source, so a
+    /// timer- or scenario-driven imperative override wins over a
+    /// configured lambda.
+    #[test]
+    fn set_sunlight_pct_collapses_dynamic_source() {
+        let mut ctx = tulisp::TulispContext::new();
+        let inv = SolarInverter::new(1, Duration::from_secs(1), cfg_with_sun(100.0));
+        let lambda = ctx.eval_string("(lambda () 70.0)").unwrap();
+        inv.set_sunlight_source(DynamicScalar::from_lisp(&lambda, 100.0).unwrap());
+        inv.refresh_inputs(&mut ctx);
+        assert!((inv.min_avail_w() - (-7_000.0)).abs() < 1e-3);
+
+        inv.set_sunlight_pct(30.0);
+        // Subsequent refresh is a no-op on the constant.
+        inv.refresh_inputs(&mut ctx);
+        assert!((inv.min_avail_w() - (-3_000.0)).abs() < 1e-3);
     }
 }
