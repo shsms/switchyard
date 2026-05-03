@@ -212,7 +212,7 @@ exercises the public surface end-to-end (gRPC + HTTP), with helpers
 that spawn a fresh server on a free port. These are integration
 tests for *switchyard the binary*, not just module-level coverage.
 
-*** TODO C1. Integration test harness + first round
+*** DONE C1. Integration test harness + first round
 
 - =tests/common/mod.rs= with =spawn_test_server(config: &str) ->
   TestServer= helper that:

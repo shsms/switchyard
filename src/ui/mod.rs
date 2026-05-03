@@ -53,6 +53,16 @@ pub async fn serve(addr: SocketAddr, config: Config) -> Result<(), std::io::Erro
     axum::serve(listener, app).await
 }
 
+/// Like [`serve`] but with a caller-supplied listener — for tests
+/// that need to pre-bind on a free OS-assigned port and read the
+/// resulting addr before the server starts accepting connections.
+pub async fn serve_with_listener(
+    listener: tokio::net::TcpListener,
+    config: Config,
+) -> Result<(), std::io::Error> {
+    axum::serve(listener, router(config)).await
+}
+
 fn router(config: Config) -> Router {
     Router::new()
         .route("/", get(index))

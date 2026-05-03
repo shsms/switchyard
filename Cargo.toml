@@ -34,6 +34,10 @@ tonic-prost-build = { version = "0.14", features = ["cleanup-markdown"] }
 # axum oneshot testing pattern — no live port needed
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+# Out-of-process integration tests in tests/ bind real TCP sockets
+# and talk to the live HTTP / gRPC surface.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tempfile = "3"
 
 [lib]
 name = "switchyard"
