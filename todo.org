@@ -1,108 +1,465 @@
-#+TITLE: Switchyard — deferred work
+#+TITLE: Switchyard — roadmap and deferred work
 
-Items not landing right now but worth revisiting.
+The realized design (rewrite narrative, UI phase 1+2 detail) used to live
+in =PLAN.md= and =UI.org=; this file is the forward-looking residue.
 
-* Features
+* Roadmap
 
-** f1. Promote override file into ~config.lisp~
+The big-picture goal is to make switchyard a faithful microgrid stand-in
+for testing downstream control apps: long-running, scriptable scenarios
+that drive the simulator through realistic stress events, with metrics
+the developer can ask about at any time.
 
-Currently every successful eval lands in the per-microgrid override
-file (~config.ui-overrides.<id>.lisp~). The next step in that
-flow: a UI action that takes the override file's contents and
-appends them to ~config.lisp~ (somewhere — see "Open questions"
-below), then empties the override file. After the action the
-world is unchanged but the source-of-truth has shifted from
-"runtime edit" to "canonical config" and the entry is no longer
-editable from the UI overrides dialog.
+The work splits into five tracks, each with self-contained sub-tasks.
+A → B is the natural order (reactive inputs unblock scenario drivers).
+C and D can land any time; E is housekeeping.
 
-*Where it'd land:* a button in the chrome (probably called Persist
-or Promote), a server-side endpoint that does the file munging,
-and an entry in this UI dialog that confirms the move.
+** A. Reactive plist values
 
-*Open questions to settle before coding:*
+Today =:power= on a meter and =:sunlight%= on a solar inverter take
+constants, and curves are driven by =(every)= callbacks calling the
+=(set-meter-power)= / =(set-solar-sunlight)= setters. We want to also
+accept a *lambda* or a *symbol* in those plist slots, so a scenario
+can express "consumer power follows this curve" declaratively instead
+of as side-effecting timers.
 
-- Where in ~config.lisp~ does the appended content go? End of
-  file? Before a designated marker comment? Inside the
-  ~(unless (boundp 'switchyard-loaded) …)~ guard? Mid-topology?
-  Most user configs have a structure (timers near the top,
-  topology in the middle, ~(load-overrides)~ at the bottom) —
-  blindly appending at the end works mechanically but loses
-  semantic grouping.
-- Does the action try to dedup against existing forms in
-  ~config.lisp~? eg. if the override is
-  ~(world-rename-component 1 "alpha")~ and config.lisp already
-  ~(world-rename-component 1 "main-grid")~, do we replace the
-  existing call, append after it, or just append at the end and
-  let last-write-win semantics carry the day?
-- Does the action run ~tulisp-fmt~ over the merged config.lisp,
-  or preserve the existing whitespace / comments verbatim and
-  only format the appended block?
-- After the move, the override file is empty and config.lisp
-  grew. Reloading should yield the same world (same forms, just
-  relocated). Worth a test that round-trips
-  add → promote → reload → state-equal.
+The architectural pivot: =SimulatedComponent::tick()= must not call
+back into the Lisp interpreter (CLAUDE.md rule). Solution: a new
+=refresh_inputs(&self, &mut TulispContext)= trait method that the
+scheduler invokes *before* the tick loop, holding the interpreter
+lock once. Lambdas/symbols are derefed there into per-component
+atomics; tick reads the atomic.
 
-*Why deferred:* the immediate-write override file (item lands
-right after this todo file is updated) makes the override file
-the pending log. Promote-to-config.lisp is a one-way commit gate
-on top of that, but the interesting design choices above need a
-real config sample to test against — easier to settle once a
-heavy switchyard config has accumulated some real overrides.
+*** TODO A1. =refresh_inputs= trait hook + scheduler wiring
 
-* Bugs / dubious decisions
+Goal: introduce the hook with no behavior change. Foundation for A2 / A3.
+
+- New trait method on =SimulatedComponent= with a default no-op impl.
+- =World::spawn_physics= acquires the =TulispContext= lock once per
+  tick, calls =refresh_inputs= on every component in registration
+  order, releases the lock, then calls =tick()= on every component
+  (which never re-enters Lisp).
+- New =sim::dynamic_scalar::DynamicScalar= helper: holds either a
+  constant =f64= or a =TulispObject= (function or symbol); =refresh=
+  calls/derefs into an =AtomicU64= bit-pattern; =get= reads it.
+- Test: a meter wired with a constant ticks unchanged; a meter wired
+  with a lambda updates each tick.
+
+Acceptance: =cargo test= passes; lock contention measured via a
+=/api/diag= counter (optional).
+
+*** TODO A2. Reactive =:power= on meters
+
+Goal: =(make-meter :power (lambda () 1234.5))= and
+=(make-meter :power 'consumer-power)= work alongside the existing
+=:power 25000.0= numeric form.
+
+- =MeterArgs.power= becomes =Option<LispValue>= (already passes
+  through =AsPlist!= via =LispValue= wrapper).
+- =Meter= grows a =DynamicScalar= field replacing the current
+  =power_w: AtomicF32=.
+- =refresh_inputs= populates it; =tick= reads the resolved value.
+- =(set-meter-power id W)= still works (sets the constant slot).
+
+Acceptance: existing meter tests untouched; new test covers
+function and symbol cases.
+
+*** TODO A3. Reactive =:sunlight%= (or =:power=) on solar inverters
+
+Same shape as A2 on =SolarInverter=. Choose =:sunlight%= as the
+primary reactive entry point (domain-correct: irradiance drives
+output via panel curve), with =:power= as a lower-level override.
+
+Acceptance: =(make-solar-inverter :sunlight% (lambda () 87.5))= ticks
+correctly through the existing PV curve.
+
+*** TODO A4. UI edit form support for dynamic values
+
+The right-pane form currently shows =:power= as a number input. With
+A2/A3 the value can be a lambda or symbol. Render a single text input
+that accepts either a numeric literal or a Lisp expression; the UI
+parses heuristically (digits-only → constant setter, otherwise →
+=:power <expr>= rewrite via =(make-meter :id N :power EXPR)=).
+
+Open: do we need a new "set this slot to a lambda" defun (e.g.
+=(set-meter-power-fn id (lambda () ...))=) for clean override-file
+rewrite, or is rebuilding the component the cleanest path? Decide
+when implementing — the existing immediate-write override flow
+should drive the answer.
+
+** B. Scenario framework
+
+A scenario is a Lisp file in =scenarios/<name>.lisp=, loaded after
+=build-topology= runs. It uses =(every)= / =(run-with-timer)= plus
+the new scenario defuns to schedule events. Independently, a Rust
+*reporter* observes telemetry continuously; =scenario-start= resets
+its accumulators, =scenario-stop= freezes them, and a report is
+fetchable at any time via =GET /api/scenario/report=.
+
+Components that should be "operational but silent / unresponsive"
+during a scenario already work via the existing =:telemetry-mode
+'silent= and =:command-mode 'timeout= knobs — scenarios just toggle
+those at scheduled times. No new component-level mechanism needed.
+
+*** TODO B1. Scenario journal foundation
+
+Goal: lifecycle + event log primitives.
+
+- =World= grows =scenario_journal: Mutex<ScenarioJournal>= with
+  ={ name, started_at, ended_at, events: Vec<ScenarioEvent> }=.
+- New defuns: =(scenario-start NAME)=, =(scenario-stop)=,
+  =(scenario-event KIND PAYLOAD)=, =(scenario-elapsed)=,
+  =(scenario-end-after MINUTES)=.
+- Endpoints: =GET /api/scenario= returns lifecycle summary; =GET
+  /api/scenario/events?since=&limit== returns the event slice.
+- Hook: =server.rs= setpoint handlers append a "setpoint" event to
+  the journal (this absorbs the old UI.org "setpoint inspector"
+  story — the journal *is* the inspector data source).
+
+Acceptance: in-process test starts a scenario, fires events, stops,
+asserts elapsed ≈ slept-duration ± tolerance and events round-trip.
+
+*** TODO B2. Main-meter tagging + peak metric
+
+- New plist arg =:main t= on =%make-meter=; stored as
+  =Meter::is_main: bool=.
+- =World::main_meter_id() -> Option<u64>= (panics if multiple are
+  flagged — config error).
+- Reporter: per-tick, if a sample comes from the main meter, update
+  =peak_main_meter_active_w=.
+- =GET /api/scenario/report= v1 returns
+  ={ peak_main_meter_w, scenario_elapsed_s }=.
+
+Acceptance: integration test spins meter power via lambda from 5kW
+to 50kW and back, asserts reported peak = 50kW.
+
+*** TODO B3. Battery / PV integrals
+
+Per-tick accumulation:
+
+- Per battery: =charge_wh += max(0, P) * dt=, =discharge_wh += max(0, -P) * dt=.
+- Per solar inverter: =produced_wh += max(0, P) * dt=.
+- Reporter aggregates totals and per-component breakdown.
+- Report adds: =total_battery_charged_wh=,
+  =total_battery_discharged_wh=, =per_battery: [{id, ...}]=,
+  =total_pv_produced_wh=, =per_pv_inverter: [{id, ...}]=.
+
+Acceptance: lambda-driven battery setpoint of +10 kW for 60 sim-seconds
+yields ≈ 167 Wh discharged (within rounding).
+
+*** TODO B4. SoC distribution + 15-min window peaks
+
+Two cheap-on-fetch additions:
+
+- SoC stats: walk current battery telemetry, compute mean / median /
+  mode (mode bucketed to integer percent).
+- 15-min window peaks: maintain a parallel ring of (window_start,
+  peak_w) entries for the main meter, one per 15-min wall-clock
+  window aligned to UTC. 4 entries/hour, ~96/day — bounded.
+
+Report adds: =soc_stats: {mean, median, mode_pct}=,
+=main_meter_window_peaks: [{window_start, peak_avg_w}]=.
+
+Acceptance: in-process test runs synthetic main-meter samples across
+two aligned windows, asserts peak per window matches.
+
+*** TODO B5. Random-outage helper
+
+Pure-Lisp helper in a new =sim/scenarios.lisp=:
+
+#+begin_src lisp
+(defun random-outage (ids &rest opts)
+  ;; opts plist: :min-every :max-every :min-duration :max-duration :kind
+  ;; picks a random id from IDS, sets :health to KIND for a random
+  ;; window, reverts, reschedules with random gap.
+  ...)
+#+end_src
+
+Needs =(random)= (uniform float 0..1) — small Rust defun if tulisp
+doesn't already expose one. Composes existing
+=(set-component-health)= + =(run-with-timer)=.
+
+Acceptance: example scenario file uses it; manual smoke shows
+outages firing in the UI.
+
+*** TODO B6. CSV telemetry export
+
+- =(scenario-record-csv DIR)= → World opens per-component
+  =csv::Writer<File>= sinks (one file per component, named
+  =<id>-<category>.csv=). Headers are category-specific.
+- Per-tick: if a writer exists for the component, append a row.
+- =scenario-stop= flushes and drops all writers.
+- =(scenario-stop-csv)= for explicit close mid-scenario.
+
+Acceptance: integration test records a 5-second scenario, asserts
+CSV rows ≈ 5 / =physics_tick_ms= and columns parse as floats.
+
+*** TODO B7. Named scenario save/load
+
+- =scenarios/= directory at the working root (gitignored by default
+  user choice; users can opt in).
+- =GET /api/scenarios= → list of available =.lisp= files.
+- =POST /api/scenario/load { name }= → server calls =(load
+  "scenarios/<name>.lisp")=.
+- UI dropdown wires to these endpoints.
+- "Save current overrides as scenario": copy
+  =config.ui-overrides.<id>.lisp= to =scenarios/<name>.lisp=.
+
+Acceptance: round-trip a scenario file via the UI; reload server,
+file is still listed and runs.
+
+*** TODO B8. Dashboard panel
+
+New tab/panel in the SPA: scenario report card. Polls
+=/api/scenario/report= every 2s (configurable). Renders the metrics
+in B2–B4 plus a live event-log scroller from
+=/api/scenario/events=. Reuses uPlot for the 15-min window peak
+chart.
+
+Acceptance: dashboard updates while a scenario runs; numbers match
+=/api/scenario/report= JSON.
+
+** C. Integration tests
+
+Today all 81 tests live in-source. Add a =tests/= crate that
+exercises the public surface end-to-end (gRPC + HTTP), with helpers
+that spawn a fresh server on a free port. These are integration
+tests for *switchyard the binary*, not just module-level coverage.
+
+*** TODO C1. Integration test harness + first round
+
+- =tests/common/mod.rs= with =spawn_test_server(config: &str) ->
+  TestServer= helper that:
+  - Writes the inline config to a tempdir.
+  - Picks a free TCP port for gRPC and another for the UI.
+  - Boots an =switchyard::Config=-driven server in a background
+    task on the test runtime.
+  - Returns =TestServer { grpc_addr, ui_addr, _tempdir }= whose
+    =Drop= cancels the task and removes the tempdir.
+- =tests/grpc.rs=: =ListElectricalComponents=,
+  =ListElectricalComponentConnections=, =SetElectricalComponentPower=
+  happy path, =SetPower= rejected when out of envelope, telemetry
+  stream samples N rows.
+- =tests/ui_http.rs=: =/api/topology=, =/api/eval=, =/api/overrides=,
+  =/api/persisted/delete= round-trip.
+
+Acceptance: =cargo test --test grpc --test ui_http= passes locally
+in ~5s and is the model for future integration tests.
+
+*** TODO C2. Hot-reload + timeout-tracker coverage
+
+- =tests/hot_reload.rs=: write a config, boot, edit the file, assert
+  the topology version bumps and the new component appears.
+- =tests/timeout.rs=: send a setpoint with a short
+  =request-lifetime=, wait, assert the component reset to default.
+
+Acceptance: tests exercise the watcher + tracker without flake.
+
+*** TODO C3. Scenario integration coverage (after B1–B4)
+
+Stress-test the scenario surface via the harness:
+
+- Spin up a tiny grid + meter + battery + battery inverter.
+- Drive a 10-sim-second scenario via lambda meter power.
+- Fetch =/api/scenario/report=, assert peak / charge / SoC numbers
+  within tolerance of analytical expectation.
+
+Acceptance: scenario test is deterministic across runs.
+
+** D. CI
+
+*** TODO D1. CI workflow
+
+Single GitHub Actions workflow at =.github/workflows/ci.yml= with
+three jobs:
+
+1. *Rust* — =cargo fmt --check=, =cargo clippy --all-targets
+   --all-features -- -D warnings=, =cargo test=. Caches
+   =~/.cargo/registry= + =target= keyed on =Cargo.lock=.
+2. *UI lint* — Node + ESLint on =ui-assets/app.js=. Vendor (=ui-assets/vendor/=)
+   excluded. Use a flat =eslint.config.js= in the repo root or
+   under =ui-assets/=.
+3. *Smoke* — boots the binary against the sample =config.lisp=,
+   curls =/api/topology=, asserts non-empty.
+
+Open choice: ESLint vs Biome. Biome is single-binary, no
+=node_modules=, faster — but ESLint has the broader plugin
+ecosystem. Default to Biome (ergonomics) unless the user has a
+preference; one =biome.json= and a single CI step.
+
+Triggers: =push= and =pull_request= against =main=.
+
+Acceptance: a green run on a clean checkout; a red run when
+=cargo fmt= or =eslint= would complain.
+
+** E. Smaller deferred items
+
+*** TODO E1. Compact: rewrite =build-topology= body
+
+UI button → =POST /api/compact=. Server walks =World=, emits a fresh
+=build-topology= defun body, replaces the existing one in
+=config.lisp= in place, deletes
+=config.ui-overrides.<microgrid-id>.lisp=. Needs the per-component
+=OriginalArgs= snapshot stored at registration time (each
+=AsPlist!=-derived args struct re-serialized via =tulisp-fmt=).
+
+Why deferred: real value depends on having heavy override files to
+flatten; until users accumulate one, hard to validate the output
+shape.
+
+*** TODO E2. Form auto-generation from =AsPlist!=
+
+Right-pane edit form is currently hardcoded per category in JS.
+Long-term: a =/api/component-schema= endpoint returns each
+=%make-*='s argument list and types from the =AsPlist!= macro
+output, and the UI builds the form from that. Removes the
+JS-vs-Rust schema drift.
+
+Why deferred: requires either a tulisp-side reflection API or a
+=switchyard::lisp::make= self-describing module. Hardcoded JS works
+fine for the current category count.
+
+* Bugs / open design questions
 
 ** d1. Rethink ~file-exists-p~ resolving against the config's load dir
 
-The current ~register_fs_helpers~ in ~src/lisp/mod.rs~ resolves
-relative paths in ~(file-exists-p PATH)~ against the config file's
-load directory (the same base ~(load PATH)~ uses). The motivation
-was to keep ~load-overrides~'s gate
+The current =register_fs_helpers= in =src/lisp/mod.rs= resolves
+relative paths in =(file-exists-p PATH)= against the config file's
+load directory (the same base =(load PATH)= uses). The motivation
+was to keep =load-overrides='s gate
 
 #+begin_src elisp
 (when (file-exists-p "config.ui-overrides.7.lisp")
   (load "config.ui-overrides.7.lisp"))
 #+end_src
 
-answering the same question both halves of that ~when~ ask — the
+answering the same question both halves of that =when= ask — the
 two used to disagree when the process CWD differed from the config
 dir, which broke the override-replay path inside
-~remove_persisted_override~ and the test that exercises it.
+=remove_persisted_override= and the test that exercises it.
 
 That's still a real coordination problem, but the fix is a little
 heavy-handed:
 
-- *Emacs divergence.* Real Elisp's ~file-exists-p~ resolves against
-  ~default-directory~, not the load path. Anyone porting code from
+- *Emacs divergence.* Real Elisp's =file-exists-p= resolves against
+  =default-directory=, not the load path. Anyone porting code from
   Emacs (or eyeballing the docstring) would expect CWD-relative
   resolution; ours quietly rebases.
-- *Surprises for non-override paths.* ~(file-exists-p
-  "telemetry.csv")~ etc. now also rebases — fine if the user
+- *Surprises for non-override paths.* =(file-exists-p
+  "telemetry.csv")= etc. now also rebases — fine if the user
   always means "next to config.lisp" but wrong if they meant CWD.
-- *Coupling to ~load_dir~ at registration time.* The closure
-  captures the path on ~Config::new~, so a later ~set_load_path~
+- *Coupling to =load_dir= at registration time.* The closure
+  captures the path on =Config::new=, so a later =set_load_path=
   on the ctx (if we ever expose one to Lisp) wouldn't be visible
-  to ~file-exists-p~. ~(load PATH)~ in tulisp reads ~ctx.load_path~
+  to =file-exists-p=. =(load PATH)= in tulisp reads =ctx.load_path=
   on every call.
 
 *Better directions to consider:*
 
-1. Drop the special handling in ~file-exists-p~ and instead change
-   the Lisp side: ~load-overrides~ in ~sim/common.lisp~ could build
+1. Drop the special handling in =file-exists-p= and instead change
+   the Lisp side: =load-overrides= in =sim/common.lisp= could build
    an absolute path before the gate, eg. by exposing the
-   override-file path as a Rust-side defun (~(overrides-path)~
+   override-file path as a Rust-side defun (=(overrides-path)=
    already exists; make it return an absolute path).
-2. Land a tulisp-level fix: add a ~ctx.load_path~ getter (currently
-   ~pub(crate)~) so a closure can resolve at call time, mirroring
-   ~(load PATH)~.
-3. Push a ~file-exists-p~ change upstream into tulisp itself,
-   matching ~(load)~'s resolution.
+2. Land a tulisp-level fix: add a =ctx.load_path= getter (currently
+   =pub(crate)=) so a closure can resolve at call time, mirroring
+   =(load PATH)=.
+3. Push a =file-exists-p= change upstream into tulisp itself,
+   matching =(load)='s resolution.
 
 (2) or (3) is probably the right answer; (1) is the smallest patch
 on the switchyard side.
 
-*Where the workaround lives today:* ~register_fs_helpers~ closes over
-~load_dir: PathBuf~, captured in ~register_runtime~ and propagated
-from ~Config::new~. The matching test
-(~ui::tests::persisted_remove_drops_form_immediately~) inlines a
-local ~load-overrides~ defun and relies on this resolution to find
+*Where the workaround lives today:* =register_fs_helpers= closes over
+=load_dir: PathBuf=, captured in =register_runtime= and propagated
+from =Config::new=. The matching test
+(=ui::tests::persisted_remove_drops_form_immediately=) inlines a
+local =load-overrides= defun and relies on this resolution to find
 the override file.
+
+** d2. Promote override file into ~config.lisp~
+
+Currently every successful eval lands in the per-microgrid override
+file (=config.ui-overrides.<id>.lisp=). The next step in that flow:
+a UI action that takes the override file's contents and appends them
+to =config.lisp= (somewhere — see below), then empties the override
+file. After the action the world is unchanged but the source-of-truth
+has shifted from "runtime edit" to "canonical config" and the entry
+is no longer editable from the UI overrides dialog.
+
+*Where it'd land:* a button in the chrome (probably called Persist
+or Promote), a server-side endpoint that does the file munging, and
+an entry in this UI dialog that confirms the move.
+
+*Open questions to settle before coding:*
+
+- Where in =config.lisp= does the appended content go? End of file?
+  Before a designated marker comment? Inside the
+  =(unless (boundp 'switchyard-loaded) …)= guard? Mid-topology? Most
+  user configs have a structure (timers near the top, topology in
+  the middle, =(load-overrides)= at the bottom) — blindly appending
+  at the end works mechanically but loses semantic grouping.
+- Does the action try to dedup against existing forms in
+  =config.lisp=? eg. if the override is
+  =(world-rename-component 1 "alpha")= and config.lisp already
+  =(world-rename-component 1 "main-grid")=, do we replace the
+  existing call, append after it, or just append at the end and let
+  last-write-win semantics carry the day?
+- Does the action run =tulisp-fmt= over the merged config.lisp, or
+  preserve the existing whitespace / comments verbatim and only
+  format the appended block?
+- After the move, the override file is empty and config.lisp grew.
+  Reloading should yield the same world (same forms, just
+  relocated). Worth a test that round-trips
+  add → promote → reload → state-equal.
+
+*Why deferred:* the immediate-write override file makes the override
+file the pending log. Promote-to-config.lisp is a one-way commit
+gate on top of that, but the design questions above need a real
+config sample to test against — easier to settle once a heavy
+switchyard config has accumulated some real overrides.
+
+** d3. Parallel-paths share semantic — does this match real installs?
+
+We currently model "child shared by N parents" as "each parent sees
+1/N of the child's flow" (parallel-conductor semantic). It's
+physically real for high-current buses split into N cables for
+ampacity, each with its own CT and meter, summed by an upstream
+aggregator. But that's an unusual SCADA-level topology.
+
+The more common multi-parent setup in real microgrids is *redundant
+observers* — two meters on the *same* wire (Class A + Class B,
+primary + backup) both reporting the full flow, with the SCADA layer
+deduping or selecting one. Under our current semantic, those two
+meters would each read half, which isn't what the user expects.
+
+If user feedback pushes us either way, options are:
+
+- *Keep parallel-share as default*, document the redundant-observer
+  use case as "express it via =:hidden t= on the backup meter so it
+  doesn't appear in the connections graph".
+- *Flip default to count-fully-per-parent*, and add an explicit
+  =:share <fraction>= plist arg for the parallel-conductor case.
+- *Add a topology-level kind annotation* (=:redundant-with <id>=,
+  =:parallel-with <id>=) so the connection graph itself encodes
+  intent. Most expressive, most invasive.
+
+** d4. Per-phase reactive setpoints
+
+The proto's =SetElectricalComponentPower= takes a single scalar
+=power= value, not per-phase. Real inverters can be commanded to
+dispatch unbalanced reactive across phases for voltage support. Out
+of scope for v1; would need a proto extension or a side-channel
+defun. Tracked here so we don't forget the gap.
+
+** d5. Per-source attribution under MxN
+
+Today an inverter publishes its *commanded* AC output as =measured=;
+the battery separately publishes the accepted (clamped) value. A
+SCADA client that wants to see "inverter 1 produced 7.5 kW of the
+13 kW total flowing into the shared battery" has to read both
+streams and reconcile. A future upgrade: track per-source pushes on
+the battery's accumulator (=Vec<(parent_id, p, q)>=), distribute
+the clamp ratio across sources, and let each inverter read its own
+=accepted_from(self.id)= to compute fair-share measured. Minor
+trade-off in trait surface.
