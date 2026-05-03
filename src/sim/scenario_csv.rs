@@ -16,7 +16,7 @@ use std::{
     collections::HashMap,
     fs::File,
     io::{BufWriter, Write},
-    path::{Path, PathBuf},
+    path::Path,
 };
 
 use chrono::{DateTime, Utc};
@@ -26,25 +26,24 @@ use crate::sim::component::{Category, Telemetry};
 const CSV_HEADER: &str = "ts_iso,active_power_w,reactive_power_var,dc_power_w,soc_pct\n";
 
 /// One CSV sink — owns the file handle until dropped.
-pub struct CsvSink {
+pub(crate) struct CsvSink {
     writer: BufWriter<File>,
-    pub path: PathBuf,
 }
 
 impl CsvSink {
     /// Open `dir/<id>-<category>.csv`, write the header, return
     /// the sink. Errors if the directory doesn't exist or isn't
     /// writable.
-    pub fn open(dir: &Path, id: u64, category: Category) -> std::io::Result<Self> {
+    pub(crate) fn open(dir: &Path, id: u64, category: Category) -> std::io::Result<Self> {
         let path = dir.join(format!("{id}-{}.csv", category_slug(category)));
         let mut writer = BufWriter::new(File::create(&path)?);
         writer.write_all(CSV_HEADER.as_bytes())?;
-        Ok(Self { writer, path })
+        Ok(Self { writer })
     }
 
     /// Append one row from a telemetry snapshot. Empty cells for
     /// fields the component doesn't publish.
-    pub fn write_row(&mut self, ts: DateTime<Utc>, snap: &Telemetry) -> std::io::Result<()> {
+    pub(crate) fn write_row(&mut self, ts: DateTime<Utc>, snap: &Telemetry) -> std::io::Result<()> {
         fn cell(v: Option<f32>) -> String {
             v.map(|x| x.to_string()).unwrap_or_default()
         }
@@ -74,4 +73,4 @@ fn category_slug(c: Category) -> &'static str {
 /// Bundle of active CSV sinks keyed by component id. Mutated under
 /// `World::scenario_csv` lock; the lock pattern is "open for the
 /// lifetime of the scenario, drop on stop".
-pub type CsvSinks = HashMap<u64, CsvSink>;
+pub(crate) type CsvSinks = HashMap<u64, CsvSink>;

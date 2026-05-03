@@ -147,7 +147,7 @@ struct WorldInner {
 
 /// Callback invoked at the start of every `tick_once`. Held behind an
 /// `Arc<dyn Fn>` so World's API doesn't depend on tulisp.
-pub type PreTickHook = Arc<dyn Fn(&World) + Send + Sync + 'static>;
+pub(crate) type PreTickHook = Arc<dyn Fn(&World) + Send + Sync + 'static>;
 
 /// Compute mean / median / integer-bucketed mode over a battery
 /// SoC sample set. Returns `None` for an empty input.
@@ -187,7 +187,7 @@ fn compute_soc_stats(socs: &[f32]) -> Option<SocStats> {
 /// Excludes the events themselves — those live behind a paginated
 /// `/api/scenario/events` endpoint with a `since=` cursor.
 #[derive(Debug, Clone, serde::Serialize)]
-pub struct ScenarioSummary {
+pub(crate) struct ScenarioSummary {
     pub name: Option<String>,
     pub started_at: Option<DateTime<Utc>>,
     pub ended_at: Option<DateTime<Utc>>,
@@ -198,7 +198,7 @@ pub struct ScenarioSummary {
 
 /// Snapshot of scenario-scoped metrics for `/api/scenario/report`.
 #[derive(Debug, Clone, serde::Serialize)]
-pub struct ScenarioReport {
+pub(crate) struct ScenarioReport {
     pub scenario_elapsed_s: f64,
     pub peak_main_meter_w: f64,
     pub main_meter_id: Option<u64>,
@@ -217,20 +217,20 @@ pub struct ScenarioReport {
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
-pub struct PerBatteryReport {
+pub(crate) struct PerBatteryReport {
     pub id: u64,
     pub charge_wh: f64,
     pub discharge_wh: f64,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
-pub struct PerPvReport {
+pub(crate) struct PerPvReport {
     pub id: u64,
     pub produced_wh: f64,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
-pub struct SocStats {
+pub(crate) struct SocStats {
     /// Arithmetic mean of every battery's current SoC.
     pub mean_pct: f64,
     /// Median (lower of the two middle values for an even count).
@@ -241,7 +241,7 @@ pub struct SocStats {
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
-pub struct WindowPeakEntry {
+pub(crate) struct WindowPeakEntry {
     pub window_start: DateTime<Utc>,
     pub peak_w: f64,
 }
@@ -275,7 +275,7 @@ impl World {
     /// Returns the count opened. Existing sinks are dropped first
     /// so a re-call replaces (rather than appends to) the prior
     /// recording.
-    pub fn scenario_open_csv(&self, dir: &std::path::Path) -> std::io::Result<usize> {
+    pub(crate) fn scenario_open_csv(&self, dir: &std::path::Path) -> std::io::Result<usize> {
         std::fs::create_dir_all(dir)?;
         let components = self.inner.components.read().clone();
         let mut sinks = CsvSinks::new();
@@ -290,7 +290,7 @@ impl World {
 
     /// Drop every active CSV sink. Each underlying `BufWriter`
     /// flushes on drop.
-    pub fn scenario_close_csv(&self) -> usize {
+    pub(crate) fn scenario_close_csv(&self) -> usize {
         let mut g = self.inner.scenario_csv.write();
         let count = g.len();
         g.clear();
@@ -300,7 +300,7 @@ impl World {
     /// Mark `id` as the main meter. Returns `Err` if a different
     /// meter already holds the flag — the make-path treats that
     /// as a config error and surfaces it as a Lisp error.
-    pub fn set_main_meter(&self, id: u64) -> Result<(), String> {
+    pub(crate) fn set_main_meter(&self, id: u64) -> Result<(), String> {
         let mut g = self.inner.main_meter_id.write();
         if let Some(existing) = *g
             && existing != id
@@ -313,13 +313,9 @@ impl World {
         Ok(())
     }
 
-    pub fn main_meter_id(&self) -> Option<u64> {
-        *self.inner.main_meter_id.read()
-    }
-
     /// Install the pre-tick hook. `Config::new` is the sole caller;
     /// later overwrites replace the previous closure.
-    pub fn set_pre_tick(&self, hook: PreTickHook) {
+    pub(crate) fn set_pre_tick(&self, hook: PreTickHook) {
         *self.inner.pre_tick.write() = Some(hook);
     }
 
@@ -328,31 +324,31 @@ impl World {
     /// Begin a fresh scenario at `now`. Empties the event ring,
     /// clears the stop marker, sets the name. Used by
     /// `(scenario-start)`.
-    pub fn scenario_start(&self, name: String, now: DateTime<Utc>) {
+    pub(crate) fn scenario_start(&self, name: String, now: DateTime<Utc>) {
         self.inner.scenario.write().start(name, now);
     }
 
     /// Mark the scenario as ended at `now`. Also closes any active
     /// CSV sinks so the file flushes before a downstream loader
     /// might pick it up. Idempotent.
-    pub fn scenario_stop(&self, now: DateTime<Utc>) {
+    pub(crate) fn scenario_stop(&self, now: DateTime<Utc>) {
         self.inner.scenario.write().stop(now);
         self.scenario_close_csv();
     }
 
     /// Append a journal event. Returns the assigned id.
-    pub fn scenario_record(&self, kind: String, payload: String, now: DateTime<Utc>) -> u64 {
+    pub(crate) fn scenario_record(&self, kind: String, payload: String, now: DateTime<Utc>) -> u64 {
         self.inner.scenario.write().record(kind, payload, now)
     }
 
     /// Wall-clock seconds since the scenario started. 0 if not
     /// running. Freezes once stopped.
-    pub fn scenario_elapsed_s(&self, now: DateTime<Utc>) -> f64 {
+    pub(crate) fn scenario_elapsed_s(&self, now: DateTime<Utc>) -> f64 {
         self.inner.scenario.read().elapsed_s(now)
     }
 
     /// Snapshot of scenario lifecycle for `/api/scenario`.
-    pub fn scenario_summary(&self, now: DateTime<Utc>) -> ScenarioSummary {
+    pub(crate) fn scenario_summary(&self, now: DateTime<Utc>) -> ScenarioSummary {
         let g = self.inner.scenario.read();
         ScenarioSummary {
             name: g.name.clone(),
@@ -366,14 +362,14 @@ impl World {
 
     /// Pull events with id > `since`, capped at `limit`. Used by
     /// `/api/scenario/events`.
-    pub fn scenario_events_since(&self, since: u64, limit: usize) -> Vec<ScenarioEvent> {
+    pub(crate) fn scenario_events_since(&self, since: u64, limit: usize) -> Vec<ScenarioEvent> {
         self.inner.scenario.read().events_since(since, limit)
     }
 
     /// Aggregate metrics for `/api/scenario/report`. Returns a
     /// snapshot. SoC stats are computed at fetch time from each
     /// battery's current telemetry — cheap, no accumulator needed.
-    pub fn scenario_report(&self, now: DateTime<Utc>) -> ScenarioReport {
+    pub(crate) fn scenario_report(&self, now: DateTime<Utc>) -> ScenarioReport {
         use crate::sim::Category;
         let g = self.inner.scenario.read();
         let mut total_charged = 0.0;
