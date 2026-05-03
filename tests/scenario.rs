@@ -42,6 +42,94 @@ async fn report(client: &reqwest::Client, s: &TestServer) -> Value {
         .unwrap()
 }
 
+async fn topology(client: &reqwest::Client, s: &TestServer) -> Value {
+    client
+        .get(format!("{}/api/topology", s.ui_url))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap()
+}
+
+async fn eval_or_panic(client: &reqwest::Client, s: &TestServer, body: &str) {
+    let r = client
+        .post(format!("{}/api/eval", s.ui_url))
+        .body(body.to_string())
+        .send()
+        .await
+        .unwrap();
+    let status = r.status();
+    let json: Value = r.json().await.unwrap();
+    assert!(
+        status.is_success() && json["ok"] == true,
+        "eval {body} failed: {status} {json}",
+    );
+}
+
+/// `(set-meter-power id (lambda () N))` round-trips through the
+/// HTTP /api/eval boundary, the polymorphic Lisp setter installs
+/// a DynamicScalar source on the meter, and the next physics tick
+/// exposes the resolved value via /api/topology's main-meter peak
+/// once a snapshot fires. Mirrors what the dashboard does when a
+/// scenario edits a curve from the side panel.
+#[tokio::test(flavor = "multi_thread")]
+async fn lambda_meter_power_resolves_through_http_eval() {
+    let s = TestServer::start(TOPOLOGY).await;
+    let client = reqwest::Client::new();
+
+    eval_or_panic(&client, &s, "(scenario-start \"lambda\")").await;
+    // Symbol form (the global mutates between snapshots — the
+    // integration test asserts the deref happens each tick).
+    eval_or_panic(&client, &s, "(setq curve 1234.5)").await;
+    eval_or_panic(&client, &s, "(set-meter-power 2 'curve)").await;
+
+    let mut now = chrono::Utc::now();
+    s.config.world().tick_once(now, std::time::Duration::from_millis(100));
+    s.config.world().record_history_snapshot(now);
+
+    let topo = topology(&client, &s).await;
+    // Telemetry isn't on /api/topology; assert via the report's
+    // main-meter peak instead.
+    let r = report(&client, &s).await;
+    let peak = r["peak_main_meter_w"].as_f64().unwrap();
+    assert!(
+        (peak - 1234.5).abs() < 1.0,
+        "expected ~1234.5 W peak via symbol curve, got {peak} (topo {topo})",
+    );
+
+    // Mutate the global; the next snapshot picks up the new value.
+    eval_or_panic(&client, &s, "(setq curve 4321.0)").await;
+    now += chrono::Duration::seconds(1);
+    s.config.world().tick_once(now, std::time::Duration::from_millis(100));
+    s.config.world().record_history_snapshot(now);
+    let r = report(&client, &s).await;
+    let peak = r["peak_main_meter_w"].as_f64().unwrap();
+    assert!(
+        (peak - 4321.0).abs() < 1.0,
+        "expected ~4321.0 W peak after symbol mutation, got {peak}",
+    );
+
+    // Lambda form: replace the source with a thunk and confirm
+    // the next snapshot resolves it.
+    eval_or_panic(
+        &client,
+        &s,
+        "(set-meter-power 2 (lambda () 9999.0))",
+    )
+    .await;
+    now += chrono::Duration::seconds(1);
+    s.config.world().tick_once(now, std::time::Duration::from_millis(100));
+    s.config.world().record_history_snapshot(now);
+    let r = report(&client, &s).await;
+    let peak = r["peak_main_meter_w"].as_f64().unwrap();
+    assert!(
+        (peak - 9999.0).abs() < 1.0,
+        "expected ~9999 W peak via lambda, got {peak}",
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn driver_run_aggregates_peak_charge_and_soc_stats() {
     let s = TestServer::start(TOPOLOGY).await;
