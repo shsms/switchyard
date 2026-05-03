@@ -17,7 +17,6 @@
       <span class="spacer"></span>
       <button id="help-btn" class="hdr-btn" title="Keyboard + mouse shortcuts">?</button>
       <button id="scenario-report-btn" class="hdr-btn">Report</button>
-      <button id="scenarios-btn" class="hdr-btn">Scenarios</button>
       <button id="defaults-btn" class="hdr-btn">Defaults</button>
       <span id="pending-pill" class="pending-pill" hidden>
         <span id="pending-count">0</span> overrides
@@ -95,7 +94,6 @@
         <ul class="help-list">
           <li><strong>Add component</strong> (lower side panel) — pick a category, click <em>Create</em>; an auto-id'd component appears. Wire it via <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+drag.</li>
           <li><strong>Defaults</strong> — per-category defaults (Lisp values); edits write to the override file.</li>
-          <li><strong>Scenarios</strong> — snapshot the override file as a named recipe; load to replay it on top of the current state.</li>
           <li><strong>Overrides pill</strong> — count of forms in <code>config.ui-overrides.&lt;microgrid-id&gt;.lisp</code>. Every successful canvas / REPL edit appends to that file immediately. Click the pill to open the dialog: tick the rows you want gone, hit <em>Delete selected</em>; the file rewrites and the world reloads in one round trip.</li>
         </ul>
         <h4>REPL</h4>

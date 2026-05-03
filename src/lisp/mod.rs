@@ -69,12 +69,6 @@ pub struct Config {
     extra_watches: Arc<Mutex<HashSet<PathBuf>>>,
 }
 
-#[derive(Debug, serde::Serialize)]
-pub struct PersistResult {
-    pub persisted: usize,
-    pub path: String,
-}
-
 /// One top-level form found in the per-microgrid override file. The
 /// `idx` is the form's 0-based position; stable until the next
 /// `remove_persisted_overrides` rewrites the file. `source` is the
@@ -346,118 +340,6 @@ impl Config {
         ))
     }
 
-    fn scenarios_dir(&self) -> PathBuf {
-        let load_dir = Path::new(&self.filename)
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| PathBuf::from("."));
-        load_dir.join("scenarios")
-    }
-
-    /// List scenarios (just the basenames without the `.lisp` ext)
-    /// available under `<load-dir>/scenarios/`. Returns an empty Vec
-    /// if the directory doesn't exist.
-    pub fn list_scenarios(&self) -> std::io::Result<Vec<String>> {
-        let dir = self.scenarios_dir();
-        if !dir.exists() {
-            return Ok(Vec::new());
-        }
-        let mut names = Vec::new();
-        for entry in fs::read_dir(&dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("lisp") {
-                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                    names.push(stem.to_string());
-                }
-            }
-        }
-        names.sort();
-        Ok(names)
-    }
-
-    /// Snapshot every form currently in the per-microgrid override
-    /// file to `scenarios/<name>.lisp`. Useful for capturing a
-    /// recent series of edits as a reusable recipe — load it later
-    /// to drop the same forms back into the override file.
-    pub fn save_scenario(&self, name: &str) -> std::io::Result<PersistResult> {
-        let entries = self.persisted_overrides();
-        let dir = self.scenarios_dir();
-        fs::create_dir_all(&dir)?;
-        let path = dir.join(format!("{name}.lisp"));
-        let mut file = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)?;
-        writeln!(file, "\n;; ── {} ──", Utc::now().to_rfc3339())?;
-        writeln!(file)?;
-        for entry in &entries {
-            let fmt = tulisp_fmt::format_with_width(&entry.source, 80)
-                .unwrap_or_else(|_| format!("{}\n", entry.source));
-            file.write_all(fmt.as_bytes())?;
-            writeln!(file)?;
-        }
-        file.flush()?;
-        Ok(PersistResult {
-            persisted: entries.len(),
-            path: path.to_string_lossy().into_owned(),
-        })
-    }
-
-    /// Replay `scenarios/<name>.lisp` on top of the current world
-    /// state. Each form evaluates and appends to the override file,
-    /// so a save → load round-trip ends with N new override entries
-    /// (one per scenario form).
-    ///
-    /// Atomicity: the whole scenario evals as one progn, so a
-    /// mid-file failure leaves no half-applied state. On parse or
-    /// eval error the override file is left untouched and the
-    /// world reloads to drop any in-progress mutation tulisp may
-    /// have committed before the error fired.
-    pub fn load_scenario(&self, name: &str) -> Result<usize, String> {
-        let path = self.scenarios_dir().join(format!("{name}.lisp"));
-        if !path.exists() {
-            return Err(format!("scenario {} not found", path.display()));
-        }
-        let path_str = path.to_string_lossy().into_owned();
-
-        let sources: Vec<String> = {
-            let mut ctx = self.ctx.borrow_mut();
-            let forms = ctx
-                .parse_file(&path_str)
-                .map_err(|e| format!("parse {}: {}", path.display(), e.format(&ctx)))?;
-            forms.base_iter().map(|f| f.to_string()).collect()
-        };
-        if sources.is_empty() {
-            return Ok(0);
-        }
-
-        let combined = sources.join("\n");
-        let eval_err = {
-            let mut ctx = self.ctx.borrow_mut();
-            ctx.eval_string(&combined)
-                .err()
-                .map(|e| format!("eval {}: {}", path.display(), e.format(&ctx)))
-        };
-        if let Some(err) = eval_err {
-            // tulisp doesn't roll back partial-progn mutations on
-            // its own; reloading drops them by re-running the base
-            // config + load-overrides on the un-augmented file.
-            self.reload();
-            return Err(err);
-        }
-
-        for src in &sources {
-            if let Err(e) = self.append_to_overrides_file(src) {
-                log::error!(
-                    "Failed to append scenario form to override file: {e}",
-                );
-            }
-        }
-        self.world.bump_version();
-        Ok(sources.len())
-    }
 
     pub fn reload(&self) {
         let start = std::time::Instant::now();
@@ -1077,24 +959,6 @@ mod tests {
         assert!(!body.contains("undefined-fn"));
     }
 
-    /// load_scenario must propagate Lisp errors. The previous
-    /// `let _ = self.eval(&src)` quietly dropped them, so a scenario
-    /// with bad syntax silently no-op'd.
-    #[test]
-    fn load_scenario_propagates_lisp_errors() {
-        let (cfg, dir) = config_with("(set-microgrid-id 9)");
-        let scenarios = dir.join("scenarios");
-        std::fs::create_dir_all(&scenarios).unwrap();
-        std::fs::write(scenarios.join("bad.lisp"), "(this-defun-doesnt-exist 1)").unwrap();
-
-        let res = cfg.load_scenario("bad");
-        assert!(res.is_err(), "expected error, got {res:?}");
-        assert!(
-            res.unwrap_err().contains("this-defun-doesnt-exist"),
-            "error should name the bad symbol",
-        );
-    }
-
     /// `(set-meter-power id (lambda () X))` installs a dynamic
     /// source. The next physics tick — or `World::tick_once` driven
     /// from a test — runs the pre-tick hook, refresh_inputs
@@ -1185,31 +1049,6 @@ mod tests {
             cfg.eval("(set-meter-power 7 \"garbage\")").is_ok(),
             "string is accepted as an eval source — fallback governs",
         );
-    }
-
-    /// load_scenario evaluates a driver script — the same surface
-    /// the old override-snapshot feature uses, but with the new
-    /// scenario-* defun calls inside. Verifies a driver file
-    /// running scenario-start + scenario-event lands in the
-    /// journal.
-    #[test]
-    fn load_scenario_runs_driver_script() {
-        let (cfg, dir) = config_with("(set-microgrid-id 9)");
-        let scenarios = dir.join("scenarios");
-        std::fs::create_dir_all(&scenarios).unwrap();
-        std::fs::write(
-            scenarios.join("warmup.lisp"),
-            "(scenario-start \"warmup\")\n\
-             (scenario-event 'note \"loaded via /api/scenarios/load\")",
-        )
-        .unwrap();
-
-        cfg.load_scenario("warmup").expect("scenario loads");
-        let summary = cfg.world().scenario_summary(chrono::Utc::now());
-        assert_eq!(summary.name.as_deref(), Some("warmup"));
-        assert_eq!(summary.event_count, 1);
-        let events = cfg.world().scenario_events_since(0, 10);
-        assert_eq!(events[0].kind, "note");
     }
 
     /// `(scenario-record-csv DIR)` opens one CSV per registered
@@ -1463,30 +1302,4 @@ mod tests {
         assert_eq!(id, 2);
     }
 
-    /// A scenario with a good form followed by a bad form must roll
-    /// back atomically — the first form's world-state mutation
-    /// can't stick after the load fails, and nothing lands in the
-    /// override file.
-    #[test]
-    fn load_scenario_partial_failure_is_atomic() {
-        let (cfg, dir) = config_with("(set-microgrid-id 9)");
-        let scenarios = dir.join("scenarios");
-        std::fs::create_dir_all(&scenarios).unwrap();
-        std::fs::write(
-            scenarios.join("mixed.lisp"),
-            "(%make-grid :id 99) (this-defun-doesnt-exist 1)",
-        )
-        .unwrap();
-
-        let res = cfg.load_scenario("mixed");
-        assert!(res.is_err(), "expected error, got {res:?}");
-        assert!(
-            cfg.world().get(99).is_none(),
-            "first form must not have been applied",
-        );
-        assert!(
-            cfg.persisted_overrides().is_empty(),
-            "override file shouldn't have grown",
-        );
-    }
 }

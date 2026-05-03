@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast::error::RecvError;
 
 use crate::{
-    lisp::{Config, PersistResult},
+    lisp::Config,
     sim::{
         Category,
         history::Metric,
@@ -69,9 +69,6 @@ fn router(config: Config) -> Router {
         )
         .route("/api/persisted/delete", post(persisted_bulk_remove))
         .route("/api/logs", get(logs_backfill))
-        .route("/api/scenarios", get(scenarios_list))
-        .route("/api/scenarios/save", post(scenarios_save))
-        .route("/api/scenarios/load", post(scenarios_load))
         .route("/api/scenario", get(scenario_summary))
         .route("/api/scenario/events", get(scenario_events))
         .route("/api/scenario/report", get(scenario_report))
@@ -475,11 +472,6 @@ async fn persisted_bulk_remove(
     }
 }
 
-#[derive(Serialize)]
-struct ScenariosListResponse {
-    names: Vec<String>,
-}
-
 /// Backfill recent log lines from the LogTap ring buffer. Returns
 /// an empty list when the binary didn't initialise a tap (test path).
 async fn logs_backfill() -> Json<Vec<crate::ui_log::LogEvent>> {
@@ -489,68 +481,6 @@ async fn logs_backfill() -> Json<Vec<crate::ui_log::LogEvent>> {
             .map(|t| t.snapshot())
             .unwrap_or_default(),
     )
-}
-
-async fn scenarios_list(
-    State(config): State<Config>,
-) -> Result<Json<ScenariosListResponse>, (StatusCode, String)> {
-    config
-        .list_scenarios()
-        .map(|names| Json(ScenariosListResponse { names }))
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("read failed: {e}")))
-}
-
-#[derive(Deserialize)]
-struct ScenarioName {
-    name: String,
-}
-
-#[derive(Serialize)]
-struct ScenarioSavedResponse {
-    persisted: usize,
-    path: String,
-}
-
-async fn scenarios_save(
-    State(config): State<Config>,
-    Query(q): Query<ScenarioName>,
-) -> Result<Json<ScenarioSavedResponse>, (StatusCode, String)> {
-    let name = sanitize_scenario_name(&q.name)?;
-    tokio::task::spawn_blocking(move || config.save_scenario(&name))
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("save panicked: {e}")))?
-        .map(|r: PersistResult| {
-            Json(ScenarioSavedResponse {
-                persisted: r.persisted,
-                path: r.path,
-            })
-        })
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("write failed: {e}")))
-}
-
-#[derive(Serialize)]
-struct ScenarioLoadResponse {
-    /// Pending entries pushed by the load — currently 0 on failure
-    /// or 1 on success (eval pushes one entry per call regardless of
-    /// how many forms the file contains). Renamed from the old
-    /// `loaded_lines` which had nothing to do with how much was
-    /// actually evaluated.
-    entries_added: usize,
-}
-
-async fn scenarios_load(
-    State(config): State<Config>,
-    Query(q): Query<ScenarioName>,
-) -> Result<Json<ScenarioLoadResponse>, (StatusCode, String)> {
-    let name = sanitize_scenario_name(&q.name)?;
-    tokio::task::spawn_blocking(move || config.load_scenario(&name))
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("load panicked: {e}")))?
-        // Lisp errors and IO errors both come back as String now, so
-        // we lose the ability to distinguish 404 from 422. Map both
-        // to BAD_REQUEST — the message names the failure kind.
-        .map(|entries_added| Json(ScenarioLoadResponse { entries_added }))
-        .map_err(|e| (StatusCode::BAD_REQUEST, e))
 }
 
 /// Snapshot of the running scenario's lifecycle. Empty (`name:
@@ -599,25 +529,6 @@ async fn scenario_events(
 /// frequently without scanning the whole event log.
 async fn scenario_report(State(config): State<Config>) -> Json<ScenarioReport> {
     Json(config.world().scenario_report(Utc::now()))
-}
-
-/// Reject path-traversal + obviously-bad characters in scenario
-/// names. Keep it conservative — local-only single-developer means
-/// anything weird is more likely a typo than an attack, but we still
-/// prefer to fail cleanly than to write to `../etc/passwd.lisp`.
-fn sanitize_scenario_name(name: &str) -> Result<String, (StatusCode, String)> {
-    if name.is_empty()
-        || name.contains('/')
-        || name.contains('\\')
-        || name.contains('.')
-        || name.starts_with('-')
-    {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            format!("invalid scenario name: {name:?}"),
-        ));
-    }
-    Ok(name.to_string())
 }
 
 /// WebSocket event push. Subscribers receive WorldEvent JSON for

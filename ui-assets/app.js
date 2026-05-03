@@ -1332,7 +1332,6 @@ function makeSidePanelToggle(btnId, render) {
 // Both side-panel toggles use the same chrome-button + swap-side-
 // panel pattern. The render functions below own the actual content.
 const setupDefaultsToggle = () => makeSidePanelToggle("defaults-btn", renderDefaults);
-const setupScenariosToggle = () => makeSidePanelToggle("scenarios-btn", renderScenarios);
 const setupScenarioReportToggle = () =>
   makeSidePanelToggle("scenario-report-btn", renderScenarioReport);
 
@@ -1420,56 +1419,6 @@ function renderScenarioEvents(events) {
     .join("");
 }
 
-async function renderScenarios() {
-  const res = await fetch("/api/scenarios");
-  const data = await res.json();
-  document.getElementById("add-form").style.display = "none";
-  const items = data.names.length
-    ? data.names
-        .map(
-          (n) =>
-            `<li><span class="sc-name">${escapeHtml(n)}</span>
-             <button class="hdr-btn" data-load="${escapeHtml(n)}">Load</button></li>`,
-        )
-        .join("")
-    : '<li class="hint">no scenarios saved yet</li>';
-  inspectEl.innerHTML = `
-    <h2>Scenarios</h2>
-    <p class="hint">
-      Save the current pending edits as a named recipe; load to replay
-      them into a new pending log (then Persist or Discard).
-    </p>
-    <div class="sc-save">
-      <input id="sc-save-name" placeholder="scenario-name" spellcheck="false" />
-      <button id="sc-save-btn" class="hdr-btn primary">Save current</button>
-    </div>
-    <h3>Saved</h3>
-    <ul class="sc-list">${items}</ul>
-  `;
-  document.getElementById("sc-save-btn").addEventListener("click", async () => {
-    const name = document.getElementById("sc-save-name").value.trim();
-    if (!name) return;
-    const r = await fetch(
-      `/api/scenarios/save?name=${encodeURIComponent(name)}`,
-      { method: "POST" },
-    );
-    if (r.ok) {
-      renderScenarios();
-    } else {
-      notify(`Save failed: ${await r.text()}`);
-    }
-  });
-  for (const btn of inspectEl.querySelectorAll("[data-load]")) {
-    btn.addEventListener("click", async () => {
-      const name = btn.dataset.load;
-      const r = await fetch(
-        `/api/scenarios/load?name=${encodeURIComponent(name)}`,
-        { method: "POST" },
-      );
-      if (!r.ok) notify(`Load failed: ${await r.text()}`);
-    });
-  }
-}
 
 async function renderDefaults() {
   const res = await fetch("/api/defaults");
@@ -1931,7 +1880,6 @@ async function refreshTopology() {
 async function init() {
   setupAddForm();
   setupDefaultsToggle();
-  setupScenariosToggle();
   setupScenarioReportToggle();
   setupSplitter();
   setupDrawerSplitter();

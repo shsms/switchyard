@@ -696,38 +696,6 @@ main {
 .sp-ok  { color: var(--good); }
 .sp-bad { color: var(--bad); }
 
-.sc-save {
-  display: flex;
-  gap: 0.5rem;
-  margin-bottom: 0.5rem;
-}
-.sc-save input {
-  flex: 1;
-  background: var(--bg);
-  color: var(--fg);
-  border: 1px solid var(--border);
-  border-radius: 3px;
-  padding: 4px 6px;
-  font-family: var(--font-mono);
-  font-size: 14px;
-}
-.sc-save input:focus { outline: 1px solid var(--accent); }
-.sc-list {
-  list-style: none;
-  padding: 0;
-  margin: 0.25rem 0 0;
-}
-.sc-list li {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 4px 0;
-  font-family: var(--font-mono);
-  font-size: 14px;
-  border-bottom: 1px solid var(--border);
-}
-.sc-name { color: var(--accent); }
-
 .sc-report-dl {
   font-family: var(--font-mono);
   font-size: 13px;

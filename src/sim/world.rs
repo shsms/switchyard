@@ -159,7 +159,8 @@ fn compute_soc_stats(socs: &[f32]) -> Option<SocStats> {
         socs.iter().map(|v| *v as f64).sum::<f64>() / socs.len() as f64;
     let mut sorted: Vec<f32> = socs.to_vec();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let median_pct = sorted[sorted.len() / 2 - usize::from(sorted.len() % 2 == 0)] as f64;
+    let median_pct =
+        sorted[sorted.len() / 2 - usize::from(sorted.len().is_multiple_of(2))] as f64;
     // Mode: integer-bucketed, lowest-bucket on tie.
     let mut histogram = [0u32; 101];
     for v in socs {
