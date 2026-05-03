@@ -500,6 +500,15 @@ fn register_scenario(ctx: &mut TulispContext, world: World) {
 /// to idle. Omitting it falls back to `default-request-lifetime-ms`,
 /// matching the gRPC behaviour. The reset fires from the loop in
 /// `Config::start_timeout_loop`.
+/// Lower bound on a non-zero request-lifetime that
+/// `(set-active-power)` can install. The timeout loop polls at
+/// 100 ms and the default physics tick is 100 ms, so a sub-150 ms
+/// lifetime can expire before the next physics tick observes the
+/// setpoint at all — the ramp would clear without ever leaving
+/// idle. `lifetime-ms = 0` is preserved as an explicit "expire
+/// immediately" escape (used by tests) and bypasses the clamp.
+const MIN_SET_ACTIVE_POWER_LIFETIME_MS: u64 = 150;
+
 fn register_setpoints(ctx: &mut TulispContext, world: World, metadata: Arc<RwLock<Metadata>>) {
     ctx.defun(
         "set-active-power",
@@ -511,7 +520,15 @@ fn register_setpoints(ctx: &mut TulispContext, world: World, metadata: Arc<RwLoc
                 .set_active_setpoint(watts as f32)
                 .map_err(|e| Error::invalid_argument(format!("set-active-power: {e}")))?;
             let lifetime = lifetime_ms
-                .map(|ms| Duration::from_millis(ms.max(0) as u64))
+                .map(|ms| {
+                    let raw = ms.max(0) as u64;
+                    let clamped = if raw == 0 {
+                        0
+                    } else {
+                        raw.max(MIN_SET_ACTIVE_POWER_LIFETIME_MS)
+                    };
+                    Duration::from_millis(clamped)
+                })
                 .unwrap_or_else(|| metadata.read().default_request_lifetime);
             world.add_timeout(id as u64, lifetime);
             Ok(true)
