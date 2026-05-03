@@ -234,7 +234,7 @@ under =/api/scenarios/= while the new lifecycle lives under
 Acceptance: round-trip a scenario file via the UI; reload server,
 file is still listed and runs.
 
-*** TODO B8. Dashboard panel
+*** DONE B8. Dashboard panel
 
 New tab/panel in the SPA: scenario report card. Polls
 =/api/scenario/report= every 2s (configurable). Renders the metrics

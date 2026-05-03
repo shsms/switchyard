@@ -979,9 +979,15 @@ function makePlot(container, metric, xs, ys) {
 
 function clearSide() {
   liveCharts.clear();
+  if (scenarioReportTimer != null) {
+    clearInterval(scenarioReportTimer);
+    scenarioReportTimer = null;
+  }
   inspectEl.innerHTML =
     '<p class="hint">Click a node to inspect. Right-click for the context menu.</p>';
 }
+
+let scenarioReportTimer = null;
 
 // Map from a topology component to its public Lisp constructor.
 // Inverters split on subtype ("battery" / "solar"); everything else
@@ -1327,6 +1333,92 @@ function makeSidePanelToggle(btnId, render) {
 // panel pattern. The render functions below own the actual content.
 const setupDefaultsToggle = () => makeSidePanelToggle("defaults-btn", renderDefaults);
 const setupScenariosToggle = () => makeSidePanelToggle("scenarios-btn", renderScenarios);
+const setupScenarioReportToggle = () =>
+  makeSidePanelToggle("scenario-report-btn", renderScenarioReport);
+
+async function renderScenarioReport() {
+  document.getElementById("add-form").style.display = "none";
+  inspectEl.innerHTML = `
+    <h2>Scenario report</h2>
+    <p class="hint">Live aggregate metrics for the running scenario.
+       Polls every 2 s while this panel is open.</p>
+    <div id="sc-report-card"><span class="hint">loading…</span></div>
+    <h3>Recent events</h3>
+    <ul id="sc-report-events" class="sc-events"><li class="hint">—</li></ul>
+  `;
+  // Initial paint, then start polling.
+  await refreshScenarioReport();
+  scenarioReportTimer = setInterval(refreshScenarioReport, 2000);
+}
+
+async function refreshScenarioReport() {
+  try {
+    const [reportRes, eventsRes] = await Promise.all([
+      fetch("/api/scenario/report"),
+      fetch("/api/scenario/events?limit=50"),
+    ]);
+    if (!reportRes.ok || !eventsRes.ok) return;
+    const r = await reportRes.json();
+    const ev = await eventsRes.json();
+    const card = document.getElementById("sc-report-card");
+    if (card) card.innerHTML = renderScenarioCard(r);
+    const list = document.getElementById("sc-report-events");
+    if (list) list.innerHTML = renderScenarioEvents(ev.events);
+  } catch (_e) {
+    // Network blip; let the next tick try again. Don't tear down
+    // the panel — the user can read the previous values until the
+    // server is back.
+  }
+}
+
+function renderScenarioCard(r) {
+  const fmt = (v, unit = "W") =>
+    v == null ? "—" : `${(v / 1000).toFixed(2)} k${unit}`;
+  const soc = r.soc_stats
+    ? `${r.soc_stats.mean_pct.toFixed(1)} % mean ·
+       ${r.soc_stats.median_pct.toFixed(1)} % median ·
+       ${r.soc_stats.mode_pct ?? "—"} % mode`
+    : "—";
+  const peakRows = r.main_meter_window_peaks.length
+    ? r.main_meter_window_peaks
+        .slice(-6)
+        .map((w) => {
+          const ts = new Date(w.window_start).toISOString().slice(11, 16);
+          return `<tr><td>${ts}Z</td><td>${(w.peak_w / 1000).toFixed(2)} kW</td></tr>`;
+        })
+        .join("")
+    : `<tr><td colspan="2" class="hint">no windows yet</td></tr>`;
+  return `
+    <dl class="sc-report-dl">
+      <dt>elapsed</dt><dd>${r.scenario_elapsed_s.toFixed(1)} s</dd>
+      <dt>main-meter peak</dt><dd>${fmt(r.peak_main_meter_w)}</dd>
+      <dt>battery charge</dt><dd>${fmt(r.total_battery_charged_wh, "Wh")}</dd>
+      <dt>battery discharge</dt><dd>${fmt(r.total_battery_discharged_wh, "Wh")}</dd>
+      <dt>PV produced</dt><dd>${fmt(r.total_pv_produced_wh, "Wh")}</dd>
+      <dt>battery SoC</dt><dd>${soc}</dd>
+    </dl>
+    <h3>15-min main-meter peaks (last 6)</h3>
+    <table class="sc-report-tbl">
+      <thead><tr><th>window</th><th>peak</th></tr></thead>
+      <tbody>${peakRows}</tbody>
+    </table>
+  `;
+}
+
+function renderScenarioEvents(events) {
+  if (!events.length) {
+    return '<li class="hint">no events yet</li>';
+  }
+  return events
+    .slice(-20)
+    .reverse()
+    .map((e) => {
+      const t = new Date(e.ts).toISOString().slice(11, 19);
+      return `<li><code>${t}Z</code> <strong>${escapeHtml(e.kind)}</strong>
+              ${escapeHtml(e.payload)}</li>`;
+    })
+    .join("");
+}
 
 async function renderScenarios() {
   const res = await fetch("/api/scenarios");
@@ -1840,6 +1932,7 @@ async function init() {
   setupAddForm();
   setupDefaultsToggle();
   setupScenariosToggle();
+  setupScenarioReportToggle();
   setupSplitter();
   setupDrawerSplitter();
   setupOverridesDialog();
