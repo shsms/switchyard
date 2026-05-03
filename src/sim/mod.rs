@@ -3,6 +3,7 @@ pub mod bounds;
 pub mod chp;
 pub mod component;
 pub mod decay;
+pub mod dynamic_scalar;
 pub mod events;
 pub mod ev_charger;
 pub mod grid;
