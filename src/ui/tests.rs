@@ -130,6 +130,31 @@ async fn eval_endpoint_reports_lisp_errors() {
 }
 
 #[tokio::test]
+async fn format_endpoint_pretty_prints_lisp() {
+    let cfg = config_with("").await;
+    let (status, body) = call(
+        cfg,
+        post("/api/format?width=20", "(when (< x 5)(inc x)(princ x))"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    // Width 20 forces (when …) to break header-then-body, with each
+    // body form on its own line at +2.
+    assert_eq!(
+        String::from_utf8_lossy(&body),
+        "(when (< x 5)\n  (inc x)\n  (princ x))\n"
+    );
+}
+
+#[tokio::test]
+async fn format_endpoint_returns_400_on_parse_error() {
+    let cfg = config_with("").await;
+    let (status, body) = call(cfg, post("/api/format", "(unbalanced")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(!String::from_utf8_lossy(&body).is_empty());
+}
+
+#[tokio::test]
 async fn history_endpoint_returns_recent_samples() {
     // Build a world with a battery, then drive the sampler twice
     // synchronously so the rings have content to query. Battery

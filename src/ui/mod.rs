@@ -69,6 +69,7 @@ fn router(config: Config) -> Router {
         .route("/assets/{*path}", get(asset))
         .route("/api/topology", get(topology))
         .route("/api/eval", post(eval))
+        .route("/api/format", post(format))
         .route("/api/history", get(history))
         .route("/api/defaults", get(defaults))
         .route("/api/setpoints", get(setpoints))
@@ -247,6 +248,28 @@ async fn eval(State(config): State<Config>, body: String) -> impl IntoResponse {
             }),
         ),
     }
+}
+
+#[derive(Deserialize)]
+struct FormatQuery {
+    /// Column budget for the formatter. Optional; defaults to 80.
+    /// Clamped to a sane range so a stray client can't make
+    /// `tulisp-fmt` chew through pathological inputs.
+    width: Option<usize>,
+}
+
+/// Pretty-print a Lisp source string via `tulisp-fmt`. The body is
+/// the raw source; the response is the formatted source as
+/// text/plain. Returns 400 with the formatter's error message on
+/// parse failure so the REPL can keep the user's input untouched
+/// and surface the diagnostic.
+async fn format(
+    Query(q): Query<FormatQuery>,
+    body: String,
+) -> Result<String, (StatusCode, String)> {
+    let width = q.width.unwrap_or(80).clamp(20, 200);
+    tulisp_fmt::format_with_width(&body, width)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))
 }
 
 #[derive(Deserialize)]
