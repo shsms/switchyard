@@ -1875,6 +1875,51 @@ function setupRepl() {
     refreshOverlay();
   }
 
+  // Send the current textarea contents through /api/format and
+  // replace them with the result. Cursor preservation is best-
+  // effort: we count non-whitespace characters before the old
+  // cursor and place the new cursor after the same count of
+  // non-whitespace characters in the formatted output. The
+  // formatter only rearranges whitespace, so this lands the
+  // cursor at the same logical token.
+  async function formatInput() {
+    const src = input.value;
+    if (!src.trim()) return;
+    const oldCursor = input.selectionStart;
+    let nonWsBefore = 0;
+    for (let i = 0; i < oldCursor; i++) {
+      if (!/\s/.test(src[i])) nonWsBefore++;
+    }
+    let res;
+    try {
+      res = await fetch("/api/format?width=60", {
+        method: "POST",
+        body: src,
+      });
+    } catch (_) {
+      return;
+    }
+    if (!res.ok) return;
+    let formatted = await res.text();
+    // tulisp-fmt always emits a trailing newline; the textarea
+    // looks tidier without one for typical REPL fragments.
+    if (formatted.endsWith("\n")) formatted = formatted.slice(0, -1);
+    let newCursor = formatted.length;
+    let seen = 0;
+    for (let i = 0; i < formatted.length; i++) {
+      if (!/\s/.test(formatted[i])) {
+        if (seen === nonWsBefore) {
+          newCursor = i;
+          break;
+        }
+        seen++;
+      }
+    }
+    input.value = formatted;
+    input.setSelectionRange(newCursor, newCursor);
+    refreshOverlay();
+  }
+
   async function run() {
     const src = input.value.trim();
     if (!src) return;
@@ -1951,6 +1996,14 @@ function setupRepl() {
     if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
       e.preventDefault();
       run();
+      return;
+    }
+    // Tab when the completion popup isn't open: roundtrip the
+    // textarea contents through /api/format. The popup-open case
+    // is handled in the block above.
+    if (e.key === "Tab" && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      e.preventDefault();
+      formatInput();
       return;
     }
     // Electric-pair: skip if user is also holding a modifier (so
