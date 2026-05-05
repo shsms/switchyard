@@ -1804,6 +1804,62 @@ function rainbowHighlight(src) {
   return out;
 }
 
+// Walk text[0..cursor] tracking columns and a stack of open-paren
+// columns, skipping over string and ;-line-comment regions. The
+// indent for a newline at `cursor` is the innermost still-open
+// paren's column + 2; if no paren is open we land at column 0.
+function indentForNewline(text, cursor) {
+  let col = 0;
+  const stack = [];
+  let inString = false;
+  let inComment = false;
+  for (let i = 0; i < cursor; i++) {
+    const ch = text[i];
+    if (inComment) {
+      if (ch === "\n") {
+        inComment = false;
+        col = 0;
+      } else {
+        col++;
+      }
+      continue;
+    }
+    if (inString) {
+      if (ch === "\\" && i + 1 < cursor) {
+        col += 2;
+        i++;
+        continue;
+      }
+      if (ch === "\"") inString = false;
+      if (ch === "\n") col = 0;
+      else col++;
+      continue;
+    }
+    if (ch === ";") {
+      inComment = true;
+      col++;
+      continue;
+    }
+    if (ch === "\"") {
+      inString = true;
+      col++;
+      continue;
+    }
+    if (ch === "\n") {
+      col = 0;
+      continue;
+    }
+    if (ch === "(" || ch === "[" || ch === "{") {
+      stack.push(col);
+    } else if (ch === ")" || ch === "]" || ch === "}") {
+      stack.pop();
+    }
+    col++;
+  }
+  if (stack.length === 0) return 0;
+  return stack[stack.length - 1] + 2;
+}
+
 function setupRepl() {
   const form = document.getElementById("repl-form");
   const input = document.getElementById("repl-input");
@@ -2004,6 +2060,26 @@ function setupRepl() {
     if (e.key === "Tab" && !e.ctrlKey && !e.metaKey && !e.altKey) {
       e.preventDefault();
       formatInput();
+      return;
+    }
+    // Plain Enter: walk back through the typed text to the
+    // innermost still-open paren and indent the new line at its
+    // column + 2. Strings / comments are skipped during the walk
+    // so a `;` inside a comment (and an unbalanced `(` inside a
+    // string) doesn't perturb the depth count. Doesn't replicate
+    // tulisp-fmt's special-form rules (let bindings align under
+    // first arg, etc.) — Tab roundtrips through the formatter for
+    // canonical layout.
+    if (e.key === "Enter" && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      const cursor = input.selectionStart;
+      const end = input.selectionEnd;
+      const indent = indentForNewline(input.value, cursor);
+      const insert = `\n${" ".repeat(indent)}`;
+      const v = input.value;
+      e.preventDefault();
+      input.value = v.slice(0, cursor) + insert + v.slice(end);
+      input.setSelectionRange(cursor + insert.length, cursor + insert.length);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
       return;
     }
     // Electric-pair: skip if user is also holding a modifier (so
