@@ -1725,16 +1725,58 @@ function wordAtCursor(input) {
 // stand out instead of silently absorbing whatever colour the
 // stack happened to be at.
 const RAINBOW_DEPTHS = 7;
+// Symbols that head a list and are syntax keywords rather than
+// callable functions. Drives the .repl-special-form class so the
+// shape of a form is visible at a glance: `defun`, `let`, `when`
+// pop one colour; ordinary function calls get a different one.
+const SPECIAL_FORMS = new Set([
+  "defun", "defmacro", "defvar", "defconst", "defspecial",
+  "let", "let*", "letrec",
+  "if", "when", "unless", "cond", "case", "pcase",
+  "progn", "prog1", "prog2",
+  "lambda", "function",
+  "while", "dolist", "dotimes",
+  "condition-case", "catch", "throw", "unwind-protect",
+  "setq", "setq-default",
+  "and", "or", "not",
+  "quote",
+  "if-let", "when-let", "while-let",
+  "save-excursion", "save-restriction", "with-current-buffer",
+]);
 function rainbowHighlight(src) {
   let out = "";
   let depth = 0;
   let inString = false;
   let inComment = false;
   let buf = "";
+  // True when the next non-whitespace symbol token in `buf` is the
+  // head of a freshly-opened list. Set on `(`, cleared once the
+  // head is emitted (or on `)` for safety).
+  let expectingHead = false;
+  // Flush `buf` as plain text, except when `expectingHead` is set
+  // — then split off the first non-whitespace token, classify it
+  // as a special-form or function-call head, and clear the flag.
+  // String / comment / mismatched-paren spans bypass this path
+  // and pass an explicit class.
   const flush = (cls) => {
     if (!buf) return;
     if (cls) {
       out += `<span class="${cls}">${escapeHtml(buf)}</span>`;
+    } else if (expectingHead) {
+      const m = buf.match(/^(\s*)(\S+)([\s\S]*)$/);
+      if (m) {
+        const [, ws, head, rest] = m;
+        const headCls = SPECIAL_FORMS.has(head)
+          ? "repl-special-form"
+          : "repl-function-head";
+        out += escapeHtml(ws);
+        out += `<span class="${headCls}">${escapeHtml(head)}</span>`;
+        out += escapeHtml(rest);
+        expectingHead = false;
+      } else {
+        // Buffer is whitespace-only; the head is still pending.
+        out += escapeHtml(buf);
+      }
     } else {
       out += escapeHtml(buf);
     }
@@ -1781,6 +1823,7 @@ function rainbowHighlight(src) {
       const cls = `paren-${depth % RAINBOW_DEPTHS}`;
       out += `<span class="${cls}">${ch}</span>`;
       depth++;
+      expectingHead = true;
       continue;
     }
     if (closes.has(ch)) {
@@ -1792,6 +1835,10 @@ function rainbowHighlight(src) {
         const cls = `paren-${depth % RAINBOW_DEPTHS}`;
         out += `<span class="${cls}">${ch}</span>`;
       }
+      // The head of the just-closed form was already consumed (or
+      // the form was empty); the parent's head was consumed
+      // earlier. Either way, no head is pending here.
+      expectingHead = false;
       continue;
     }
     buf += ch;

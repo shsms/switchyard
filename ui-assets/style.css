@@ -485,6 +485,10 @@ main {
 .paren-mismatch { color: #f55; background: rgba(255, 80, 80, 0.18); }
 .repl-string { color: #e8a366; }
 .repl-comment { color: #888; font-style: italic; }
+/* Special-form heads (defun / let / when / …): syntax keywords. */
+.repl-special-form { color: #c08cf0; font-weight: bold; }
+/* Any other symbol immediately after `(` — a function call. */
+.repl-function-head { color: #7ab8ff; }
 
 #repl-completions {
   position: absolute;
