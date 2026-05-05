@@ -1,282 +1,117 @@
 #+TITLE: Switchyard — roadmap and deferred work
 
-The realized design (rewrite narrative, UI phase 1+2 detail) used to live
-in =PLAN.md= and =UI.org=; this file is the forward-looking residue.
+Forward-looking residue. The reactive-input + scenario framework
++ integration-test + CI tracks all landed; what's left are smaller
+deferred items, a new browser-automation push, and a handful of
+open design questions.
 
 * Roadmap
 
-The big-picture goal is to make switchyard a faithful microgrid stand-in
-for testing downstream control apps: long-running, scriptable scenarios
-that drive the simulator through realistic stress events, with metrics
-the developer can ask about at any time.
-
-The work splits into five tracks, each with self-contained sub-tasks.
-A → B is the natural order (reactive inputs unblock scenario drivers).
-C and D can land any time; E is housekeeping.
-
-** A. Reactive plist values
-
-Today =:power= on a meter and =:sunlight%= on a solar inverter take
-constants, and curves are driven by =(every)= callbacks calling the
-=(set-meter-power)= / =(set-solar-sunlight)= setters. We want to also
-accept a *lambda* or a *symbol* in those plist slots, so a scenario
-can express "consumer power follows this curve" declaratively instead
-of as side-effecting timers.
-
-The architectural pivot: =SimulatedComponent::tick()= must not call
-back into the Lisp interpreter (CLAUDE.md rule). Solution: a new
-=refresh_inputs(&self, &mut TulispContext)= trait method that the
-scheduler invokes *before* the tick loop, holding the interpreter
-lock once. Lambdas/symbols are derefed there into per-component
-atomics; tick reads the atomic.
-
-*** DONE A1. =refresh_inputs= trait hook + scheduler wiring
-
-Goal: introduce the hook with no behavior change. Foundation for A2 / A3.
-
-- New trait method on =SimulatedComponent= with a default no-op impl.
-- =World::spawn_physics= acquires the =TulispContext= lock once per
-  tick, calls =refresh_inputs= on every component in registration
-  order, releases the lock, then calls =tick()= on every component
-  (which never re-enters Lisp).
-- New =sim::dynamic_scalar::DynamicScalar= helper: holds either a
-  constant =f64= or a =TulispObject= (function or symbol); =refresh=
-  calls/derefs into an =AtomicU64= bit-pattern; =get= reads it.
-- Test: a meter wired with a constant ticks unchanged; a meter wired
-  with a lambda updates each tick.
-
-Acceptance: =cargo test= passes; lock contention measured via a
-=/api/diag= counter (optional).
-
-*** DONE A2. Reactive =:power= on meters
-
-Goal: =(make-meter :power (lambda () 1234.5))= and
-=(make-meter :power 'consumer-power)= work alongside the existing
-=:power 25000.0= numeric form.
-
-- =MeterArgs.power= becomes =Option<LispValue>= (already passes
-  through =AsPlist!= via =LispValue= wrapper).
-- =Meter= grows a =DynamicScalar= field replacing the current
-  =power_w: AtomicF32=.
-- =refresh_inputs= populates it; =tick= reads the resolved value.
-- =(set-meter-power id W)= still works (sets the constant slot).
-
-Acceptance: existing meter tests untouched; new test covers
-function and symbol cases.
-
-*** DONE A3. Reactive =:sunlight%= (or =:power=) on solar inverters
-
-Same shape as A2 on =SolarInverter=. Choose =:sunlight%= as the
-primary reactive entry point (domain-correct: irradiance drives
-output via panel curve), with =:power= as a lower-level override.
-
-Acceptance: =(make-solar-inverter :sunlight% (lambda () 87.5))= ticks
-correctly through the existing PV curve.
-
-*** DONE A4. UI edit form support for dynamic values
-
-The right-pane form currently shows =:power= as a number input. With
-A2/A3 the value can be a lambda or symbol. Render a single text input
-that accepts either a numeric literal or a Lisp expression; the UI
-parses heuristically (digits-only → constant setter, otherwise →
-=:power <expr>= rewrite via =(make-meter :id N :power EXPR)=).
-
-Open: do we need a new "set this slot to a lambda" defun (e.g.
-=(set-meter-power-fn id (lambda () ...))=) for clean override-file
-rewrite, or is rebuilding the component the cleanest path? Decide
-when implementing — the existing immediate-write override flow
-should drive the answer.
-
-** B. Scenario framework
-
-A scenario is a Lisp file in =scenarios/<name>.lisp=, loaded after
-=build-topology= runs. It uses =(every)= / =(run-with-timer)= plus
-the new scenario defuns to schedule events. Independently, a Rust
-*reporter* observes telemetry continuously; =scenario-start= resets
-its accumulators, =scenario-stop= freezes them, and a report is
-fetchable at any time via =GET /api/scenario/report=.
-
-Components that should be "operational but silent / unresponsive"
-during a scenario already work via the existing =:telemetry-mode
-'silent= and =:command-mode 'timeout= knobs — scenarios just toggle
-those at scheduled times. No new component-level mechanism needed.
-
-*** DONE B1. Scenario journal foundation
-
-Goal: lifecycle + event log primitives.
-
-- =World= grows =scenario_journal: Mutex<ScenarioJournal>= with
-  ={ name, started_at, ended_at, events: Vec<ScenarioEvent> }=.
-- New defuns: =(scenario-start NAME)=, =(scenario-stop)=,
-  =(scenario-event KIND PAYLOAD)=, =(scenario-elapsed)=,
-  =(scenario-end-after MINUTES)=.
-- Endpoints: =GET /api/scenario= returns lifecycle summary; =GET
-  /api/scenario/events?since=&limit== returns the event slice.
-- Hook: =server.rs= setpoint handlers append a "setpoint" event to
-  the journal (this absorbs the old UI.org "setpoint inspector"
-  story — the journal *is* the inspector data source).
-
-Acceptance: in-process test starts a scenario, fires events, stops,
-asserts elapsed ≈ slept-duration ± tolerance and events round-trip.
-
-*** DONE B2. Main-meter tagging + peak metric
-
-- New plist arg =:main t= on =%make-meter=; stored as
-  =Meter::is_main: bool=.
-- =World::main_meter_id() -> Option<u64>= (panics if multiple are
-  flagged — config error).
-- Reporter: per-tick, if a sample comes from the main meter, update
-  =peak_main_meter_active_w=.
-- =GET /api/scenario/report= v1 returns
-  ={ peak_main_meter_w, scenario_elapsed_s }=.
-
-Acceptance: integration test spins meter power via lambda from 5kW
-to 50kW and back, asserts reported peak = 50kW.
-
-*** DONE B3. Battery / PV integrals
-
-Per-tick accumulation:
-
-- Per battery: =charge_wh += max(0, P) * dt=, =discharge_wh += max(0, -P) * dt=.
-- Per solar inverter: =produced_wh += max(0, P) * dt=.
-- Reporter aggregates totals and per-component breakdown.
-- Report adds: =total_battery_charged_wh=,
-  =total_battery_discharged_wh=, =per_battery: [{id, ...}]=,
-  =total_pv_produced_wh=, =per_pv_inverter: [{id, ...}]=.
-
-Acceptance: lambda-driven battery setpoint of +10 kW for 60 sim-seconds
-yields ≈ 167 Wh discharged (within rounding).
-
-*** DONE B4. SoC distribution + 15-min window peaks
-
-Two cheap-on-fetch additions:
-
-- SoC stats: walk current battery telemetry, compute mean / median /
-  mode (mode bucketed to integer percent).
-- 15-min window peaks: maintain a parallel ring of (window_start,
-  peak_w) entries for the main meter, one per 15-min wall-clock
-  window aligned to UTC. 4 entries/hour, ~96/day — bounded.
-
-Report adds: =soc_stats: {mean, median, mode_pct}=,
-=main_meter_window_peaks: [{window_start, peak_avg_w}]=.
-
-Acceptance: in-process test runs synthetic main-meter samples across
-two aligned windows, asserts peak per window matches.
-
-*** DONE B5. Random-outage helper
-
-Pure-Lisp helper in a new =sim/scenarios.lisp=:
-
-#+begin_src lisp
-(defun random-outage (ids &rest opts)
-  ;; opts plist: :min-every :max-every :min-duration :max-duration :kind
-  ;; picks a random id from IDS, sets :health to KIND for a random
-  ;; window, reverts, reschedules with random gap.
-  ...)
-#+end_src
-
-Needs =(random)= (uniform float 0..1) — small Rust defun if tulisp
-doesn't already expose one. Composes existing
-=(set-component-health)= + =(run-with-timer)=.
-
-Acceptance: example scenario file uses it; manual smoke shows
-outages firing in the UI.
-
-*** DONE B6. CSV telemetry export
-
-- =(scenario-record-csv DIR)= → World opens per-component
-  =csv::Writer<File>= sinks (one file per component, named
-  =<id>-<category>.csv=). Headers are category-specific.
-- Per-tick: if a writer exists for the component, append a row.
-- =scenario-stop= flushes and drops all writers.
-- =(scenario-stop-csv)= for explicit close mid-scenario.
-
-Acceptance: integration test records a 5-second scenario, asserts
-CSV rows ≈ 5 / =physics_tick_ms= and columns parse as floats.
-
-*** DONE B8. Dashboard panel
-
-New tab/panel in the SPA: scenario report card. Polls
-=/api/scenario/report= every 2s (configurable). Renders the metrics
-in B2–B4 plus a live event-log scroller from
-=/api/scenario/events=. Reuses uPlot for the 15-min window peak
-chart.
-
-Acceptance: dashboard updates while a scenario runs; numbers match
-=/api/scenario/report= JSON.
-
-** C. Integration tests
-
-Today all 81 tests live in-source. Add a =tests/= crate that
-exercises the public surface end-to-end (gRPC + HTTP), with helpers
-that spawn a fresh server on a free port. These are integration
-tests for *switchyard the binary*, not just module-level coverage.
-
-*** DONE C1. Integration test harness + first round
-
-- =tests/common/mod.rs= with =spawn_test_server(config: &str) ->
-  TestServer= helper that:
-  - Writes the inline config to a tempdir.
-  - Picks a free TCP port for gRPC and another for the UI.
-  - Boots an =switchyard::Config=-driven server in a background
-    task on the test runtime.
-  - Returns =TestServer { grpc_addr, ui_addr, _tempdir }= whose
-    =Drop= cancels the task and removes the tempdir.
-- =tests/grpc.rs=: =ListElectricalComponents=,
-  =ListElectricalComponentConnections=, =SetElectricalComponentPower=
-  happy path, =SetPower= rejected when out of envelope, telemetry
-  stream samples N rows.
-- =tests/ui_http.rs=: =/api/topology=, =/api/eval=, =/api/overrides=,
-  =/api/persisted/delete= round-trip.
-
-Acceptance: =cargo test --test grpc --test ui_http= passes locally
-in ~5s and is the model for future integration tests.
-
-*** DONE C2. Hot-reload + timeout-tracker coverage
-
-- =tests/hot_reload.rs=: write a config, boot, edit the file, assert
-  the topology version bumps and the new component appears.
-- =tests/timeout.rs=: send a setpoint with a short
-  =request-lifetime=, wait, assert the component reset to default.
-
-Acceptance: tests exercise the watcher + tracker without flake.
-
-*** DONE C3. Scenario integration coverage (after B1–B4)
-
-Stress-test the scenario surface via the harness:
-
-- Spin up a tiny grid + meter + battery + battery inverter.
-- Drive a 10-sim-second scenario via lambda meter power.
-- Fetch =/api/scenario/report=, assert peak / charge / SoC numbers
-  within tolerance of analytical expectation.
-
-Acceptance: scenario test is deterministic across runs.
-
-** D. CI
-
-*** DONE D1. CI workflow
-
-Single GitHub Actions workflow at =.github/workflows/ci.yml= with
-three jobs:
-
-1. *Rust* — =cargo fmt --check=, =cargo clippy --all-targets
-   --all-features -- -D warnings=, =cargo test=. Caches
-   =~/.cargo/registry= + =target= keyed on =Cargo.lock=.
-2. *UI lint* — Node + ESLint on =ui-assets/app.js=. Vendor (=ui-assets/vendor/=)
-   excluded. Use a flat =eslint.config.js= in the repo root or
-   under =ui-assets/=.
-3. *Smoke* — boots the binary against the sample =config.lisp=,
-   curls =/api/topology=, asserts non-empty.
-
-Open choice: ESLint vs Biome. Biome is single-binary, no
-=node_modules=, faster — but ESLint has the broader plugin
-ecosystem. Default to Biome (ergonomics) unless the user has a
-preference; one =biome.json= and a single CI step.
-
-Triggers: =push= and =pull_request= against =main=.
-
-Acceptance: a green run on a clean checkout; a red run when
-=cargo fmt= or =eslint= would complain.
+** F. Browser-driven UI tests
+
+The Rust integration tests in =tests/= cover the HTTP and gRPC
+boundaries but stop at the JSON shape — none of them exercise the
+SPA. The dashboard panel, the topology canvas's drag / connect
+gestures, the REPL's autocomplete + electric-pair + rainbow
+overlay, and the chart-update path through the WebSocket are all
+unverified by anything other than manual smoke. The plan below
+turns that into automated coverage.
+
+Tool choice: *Playwright* (Node, headless Chromium / WebKit /
+Firefox, auto-wait built in, native screenshot diff). It's the
+default for projects without a JS framework — the alternative
+(Cypress) is Chrome-mostly and heavier; Selenium is verbose. One
+=playwright.config.ts= + a =tests-browser/= directory.
+
+Determinism is the real pain. The topology graph layout is
+seeded but not reproducible across machines (font metrics,
+vis-network's animation timing); the physics tick + history
+sampler push WS frames continuously; consumer-curve / cloud-curve
+animations move power around at 200 ms. Tests need to either
+freeze the world at known points or assert on stable structure
+rather than pixel-exact screenshots.
+
+*** TODO F1. Playwright harness + first round of functional tests
+
+Lay the foundation; cover surfaces that don't need pixel-perfect
+output to verify.
+
+- Add =tests-browser/= with =package.json=, =playwright.config.ts=,
+  and a single browser project (Chromium) — keep CI fast.
+- Fixture =tests-browser/fixtures/server.ts= that boots the
+  switchyard binary on a free UI port (and a free gRPC port to
+  not collide with anything else), waits for the
+  =Switchyard UI listening= readiness marker, returns
+  ={ uiUrl }=. Tear-down kills the process.
+- Tests: page loads at =/=, =/api/topology= returns a non-empty
+  graph, clicking a node populates the inspect pane, the REPL
+  textarea accepts =42= and renders =42= in the output.
+
+Acceptance: =npm test= passes on a clean checkout in <30 s; one
+flake-free pass over 10 consecutive runs.
+
+*** TODO F2. Scenario flow + REPL interaction tests
+
+Build on F1 to cover the more state-ful flows.
+
+- Drive a small scenario through =/api/eval= (=(scenario-start
+  …)=, =(set-meter-power 100 (lambda () N))=), open the Report
+  panel, assert =peak_main_meter_w= updates within a few
+  polling cycles.
+- REPL: type =(set=, assert the autocomplete popup shows
+  =set-meter-power=, Tab inserts it. Type =(=, assert the
+  electric-pair handler inserts =)= and the cursor lands
+  between. Inspect the rainbow overlay's DOM (=.paren-0= /
+  =.paren-1=) for a known input string.
+- WebSocket-driven chart update: register a battery, drive a
+  setpoint via gRPC, wait for the next history sample, assert
+  the charts panel renders a non-empty series for that
+  component.
+
+Acceptance: each flow runs deterministically when the server is
+fresh; tests don't share state between runs.
+
+*** TODO F3. Visual regression on a small set of stable views
+
+Pixel-exact snapshots only where the surface is reliably stable.
+Avoids the topology-layout flake.
+
+Candidates:
+- Help dialog (=#help-dialog= contents) — pure markup, font-sensitive
+  but small.
+- Scenario report card with deterministic synthetic numbers
+  (drive via =/api/eval= setting fixed values, then snapshot).
+- REPL textarea with a canned input showing all 7 paren depths
+  + a string + a comment, snapshot the overlay.
+
+Skip the topology canvas: vis-network's animation + minor
+font-metric drift across runners makes pixel diffs flake.
+
+Use Playwright's =toMatchSnapshot()=; baselines committed under
+=tests-browser/__screenshots__/=. Tolerance set to a small pixel-
+diff threshold rather than 0 so anti-aliasing variance doesn't
+fail every run.
+
+Acceptance: three snapshot tests, baselines checked in, second
+run on the same machine matches.
+
+*** TODO F4. CI integration for the browser tests
+
+Add a fourth job to =.github/workflows/ci.yml=:
+
+- Sets up Node, runs =npx playwright install --with-deps chromium=
+  (cached on the lockfile hash).
+- Builds =cargo build --bin switchyard= (cache shared with the
+  rust job).
+- Runs =npm --prefix tests-browser test=.
+
+On failure, upload =playwright-report/= as an artifact so
+screenshots / traces are inspectable post-run. Run on
+=push= + =pull_request= same as the other jobs.
+
+Acceptance: CI green on this PR; introducing a UI regression
+flips it red and the artifact contains a trace pointing at the
+broken assertion.
 
 ** E. Smaller deferred items
 
