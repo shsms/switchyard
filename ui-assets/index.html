@@ -56,6 +56,11 @@
         <div id="repl-output"></div>
         <form id="repl-form">
           <div id="repl-input-wrap">
+            <!-- Rainbow-paren overlay. The textarea sits on top with
+                 transparent text; this layer renders the same content
+                 with depth-coloured parens. aria-hidden because it's
+                 a visual mirror of the textarea, not its own input. -->
+            <pre id="repl-input-overlay" aria-hidden="true"></pre>
             <textarea id="repl-input" rows="2" spellcheck="false"
                       autocomplete="off"
                       placeholder="(eval lisp here — ctrl/cmd+enter to run, tab to complete)"></textarea>

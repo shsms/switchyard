@@ -1718,13 +1718,112 @@ function wordAtCursor(input) {
   return { prefix: v.slice(start, c), start, end: c };
 }
 
+// Render `src` as HTML with paren depth highlighting + simple
+// string / comment colouring. Walks character-by-character so we
+// don't have to ship a real parser. Mismatched closes (more
+// closes than opens at some prefix) get their own class so they
+// stand out instead of silently absorbing whatever colour the
+// stack happened to be at.
+const RAINBOW_DEPTHS = 7;
+function rainbowHighlight(src) {
+  let out = "";
+  let depth = 0;
+  let inString = false;
+  let inComment = false;
+  let buf = "";
+  const flush = (cls) => {
+    if (!buf) return;
+    if (cls) {
+      out += `<span class="${cls}">${escapeHtml(buf)}</span>`;
+    } else {
+      out += escapeHtml(buf);
+    }
+    buf = "";
+  };
+  const opens = new Set(["(", "[", "{"]);
+  const closes = new Set([")", "]", "}"]);
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i];
+    if (inComment) {
+      buf += ch;
+      if (ch === "\n") {
+        flush("repl-comment");
+        inComment = false;
+      }
+      continue;
+    }
+    if (inString) {
+      buf += ch;
+      if (ch === "\\" && i + 1 < src.length) {
+        buf += src[++i];
+        continue;
+      }
+      if (ch === "\"") {
+        flush("repl-string");
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === ";") {
+      flush(null);
+      buf = ch;
+      inComment = true;
+      continue;
+    }
+    if (ch === "\"") {
+      flush(null);
+      buf = ch;
+      inString = true;
+      continue;
+    }
+    if (opens.has(ch)) {
+      flush(null);
+      const cls = `paren-${depth % RAINBOW_DEPTHS}`;
+      out += `<span class="${cls}">${ch}</span>`;
+      depth++;
+      continue;
+    }
+    if (closes.has(ch)) {
+      flush(null);
+      if (depth === 0) {
+        out += `<span class="paren-mismatch">${ch}</span>`;
+      } else {
+        depth--;
+        const cls = `paren-${depth % RAINBOW_DEPTHS}`;
+        out += `<span class="${cls}">${ch}</span>`;
+      }
+      continue;
+    }
+    buf += ch;
+  }
+  // Flush trailing text (string / comment / plain).
+  flush(inString ? "repl-string" : inComment ? "repl-comment" : null);
+  // Browsers swallow a textarea's trailing newline visually; add a
+  // sentinel so the overlay's height matches the textarea row count.
+  if (src.endsWith("\n")) out += " ";
+  return out;
+}
+
 function setupRepl() {
   const form = document.getElementById("repl-form");
   const input = document.getElementById("repl-input");
+  const overlay = document.getElementById("repl-input-overlay");
   const output = document.getElementById("repl-output");
   const completions = document.getElementById("repl-completions");
   let selectedIdx = 0;
   let active = []; // current list of candidates
+
+  // Electric-pair: typed open chars insert their close + leave the
+  // cursor between. Closing char typed when the next char is the
+  // same close just steps over instead of doubling up. Backspace
+  // immediately after an empty pair eats both halves.
+  const PAIRS = { "(": ")", "[": "]", "{": "}", "\"": "\"" };
+  const CLOSES = new Set(Object.values(PAIRS));
+
+  function refreshOverlay() {
+    overlay.innerHTML = rainbowHighlight(input.value);
+    overlay.scrollTop = input.scrollTop;
+  }
 
   function renderCompletions() {
     if (!active.length) {
@@ -1771,6 +1870,9 @@ function setupRepl() {
     input.setSelectionRange(newCursor, newCursor);
     active = [];
     renderCompletions();
+    // Programmatic .value assignment doesn't fire `input`; nudge
+    // the overlay (and other input listeners) explicitly.
+    refreshOverlay();
   }
 
   async function run() {
@@ -1797,6 +1899,7 @@ function setupRepl() {
       entry.appendChild(out);
     }
     input.value = "";
+    refreshOverlay();
     output.scrollTop = output.scrollHeight;
   }
 
@@ -1804,7 +1907,13 @@ function setupRepl() {
     e.preventDefault();
     run();
   });
-  input.addEventListener("input", refresh);
+  input.addEventListener("input", () => {
+    refreshOverlay();
+    refresh();
+  });
+  input.addEventListener("scroll", () => {
+    overlay.scrollTop = input.scrollTop;
+  });
   input.addEventListener("blur", () => {
     // Defer hide so click-on-li handlers fire first.
     setTimeout(() => {
@@ -1842,8 +1951,57 @@ function setupRepl() {
     if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
       e.preventDefault();
       run();
+      return;
+    }
+    // Electric-pair: skip if user is also holding a modifier (so
+    // Ctrl-9 etc. on layouts that produce `(` directly still
+    // works as the user expects).
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+    const v = input.value;
+    const s = input.selectionStart;
+    const e2 = input.selectionEnd;
+    if (e.key in PAIRS) {
+      e.preventDefault();
+      const open = e.key;
+      const close = PAIRS[open];
+      // Step-over when typing a quote and cursor is already
+      // immediately before that same quote.
+      if (open === close && s === e2 && v[s] === open) {
+        input.setSelectionRange(s + 1, s + 1);
+        return;
+      }
+      if (s === e2) {
+        input.value = v.slice(0, s) + open + close + v.slice(s);
+        input.setSelectionRange(s + 1, s + 1);
+      } else {
+        input.value = v.slice(0, s) + open + v.slice(s, e2) + close + v.slice(e2);
+        input.setSelectionRange(s + 1, e2 + 1);
+      }
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      return;
+    }
+    if (CLOSES.has(e.key) && s === e2 && v[s] === e.key) {
+      // Cursor sitting right before a matching close — just step
+      // past instead of double-typing.
+      e.preventDefault();
+      input.setSelectionRange(s + 1, s + 1);
+      return;
+    }
+    if (e.key === "Backspace" && s === e2 && s > 0) {
+      const before = v[s - 1];
+      const after = v[s];
+      if (before in PAIRS && PAIRS[before] === after) {
+        e.preventDefault();
+        input.value = v.slice(0, s - 1) + v.slice(s + 1);
+        input.setSelectionRange(s - 1, s - 1);
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      }
     }
   });
+  // Initial paint so the overlay shows whatever the textarea was
+  // pre-filled with (e.g. browser back-button restored content).
+  refreshOverlay();
 }
 
 function openWebSocket(onTopologyChanged) {

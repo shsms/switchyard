@@ -438,19 +438,53 @@ main {
   position: relative; /* anchor for the absolutely-positioned completion list */
 }
 
-#repl-input {
+/* The overlay and textarea share every layout-affecting property so
+   their glyphs sit on the same pixel grid. The textarea is on top
+   with transparent text + visible caret; the overlay underneath
+   renders the same content with rainbow-coloured parens. */
+#repl-input,
+#repl-input-overlay {
   width: 100%;
   box-sizing: border-box;
-  background: var(--bg-elev);
-  color: var(--fg);
   border: 1px solid var(--border);
   border-radius: 3px;
   padding: 0.4rem 0.5rem;
   font-family: var(--font-mono);
   font-size: 14px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+}
+#repl-input {
+  position: relative;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--fg);
   resize: none;
+  z-index: 1;
 }
 #repl-input:focus { outline: 1px solid var(--accent); }
+#repl-input::selection { background: rgba(120, 160, 220, 0.35); color: transparent; }
+#repl-input-overlay {
+  position: absolute;
+  inset: 0;
+  background: var(--bg-elev);
+  color: var(--fg);
+  pointer-events: none;
+  overflow: hidden;
+  z-index: 0;
+}
+.paren-0 { color: #d33; }
+.paren-1 { color: #d80; }
+.paren-2 { color: #cc0; }
+.paren-3 { color: #2c2; }
+.paren-4 { color: #29c; }
+.paren-5 { color: #46c; }
+.paren-6 { color: #c4c; }
+.paren-mismatch { color: #f55; background: rgba(255, 80, 80, 0.18); }
+.repl-string { color: #e8a366; }
+.repl-comment { color: #888; font-style: italic; }
 
 #repl-completions {
   position: absolute;
