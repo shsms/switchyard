@@ -1616,11 +1616,25 @@ const COMPLETIONS = [
   "set-socket-addr",
   "set-default-request-lifetime-ms",
   "get-microgrid-id",
+  // Scenarios — lifecycle, journal + reporter, CSV recording.
+  // Lifecycle defuns are Rust-side; the *-end-after / random-*
+  // helpers are Lisp wrappers in sim/common.lisp + sim/scenarios.lisp.
+  "scenario-start",
+  "scenario-stop",
+  "scenario-event",
+  "scenario-elapsed",
+  "scenario-end-after",
+  "scenario-record-csv",
+  "scenario-stop-csv",
+  "random-outage",
+  "random-pick",
+  "random-uniform",
   // Utilities
   "every",
   "run-with-timer",
   "cancel-timer",
   "sleep-for",
+  "timerp",
   "now-seconds",
   "window-elapsed",
   "load",
