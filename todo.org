@@ -140,6 +140,96 @@ Why deferred: requires either a tulisp-side reflection API or a
 =switchyard::lisp::make= self-describing module. Hardcoded JS works
 fine for the current category count.
 
+** G. REPL editing experience
+
+The eval box already has rainbow-paren depth colouring, basic
+string + comment colouring, electric-pair insertion, mismatched-
+close highlighting, and Tab-completion against a hardcoded symbol
+list. What's missing — auto-indent on =Enter=, format-current-
+input, and head-vs-symbol token classes — would close the gap
+between this and a normal Emacs-flavoured Lisp buffer.
+
+*** TODO G1. =/api/format= endpoint + Tab-format the REPL
+
+Switchyard already depends on =tulisp-fmt=
+(=src/ui/mod.rs:382=, =:427=) for the overrides dialog and for
+override-file rewrites. A =POST /api/format= that runs
+=tulisp_fmt::format_with_width= over the request body and returns
+the formatted source is a 10-line addition.
+
+In the REPL: bind =Tab= (when the completion popup is *not* open)
+to roundtrip the textarea contents through that endpoint. Replace
+the textarea value with the result; preserve cursor position
+relative to the formatted output (best-effort: count
+non-whitespace chars before the cursor, find the same offset in
+the output).
+
+Don't trigger format on each keystroke — only on explicit Tab.
+Avoids round-trip latency in the hot typing path and keeps the
+completion popup as the default Tab behaviour when it's open.
+
+Acceptance: typing
+=(when (< x 5)(inc x)(princ x))= and hitting Tab reformats it to
+the canonical multi-line shape; cursor stays at the same logical
+position in the new layout.
+
+*** TODO G2. Lisp-aware auto-indent on =Enter=
+
+Pure-JS approximation, no server hop. On =Enter=:
+
+- Walk the input from start up to the cursor, counting
+  non-string / non-comment opens vs closes; record the column of
+  the most recent still-open paren.
+- Insert =\n= followed by =open_col + 2= spaces.
+
+Doesn't replicate =tulisp-fmt='s =SpecialKind= logic
+(=let= bindings align under the first arg, etc.) — that's what
+G1's Tab-format covers. The point of G2 is the cheap-and-good-
+enough common case so the user isn't typing leading spaces by
+hand on every newline.
+
+One subtlety: when the typed line is itself empty and the cursor
+is just after =Enter=, hitting =Enter= again should outdent (so
+two =Enter= s in a row leaves a blank line at column 0, not at
+the indented column). Match Emacs Lisp mode's behaviour here.
+
+Acceptance: =(defun foo (x)= followed by =Enter= places the
+cursor at column 2 under the open paren of =defun=.
+
+*** TODO G3. Token-class colouring in the overlay
+
+Extend =rainbowHighlight= (=ui-assets/app.js:1721=) so the
+overlay distinguishes more token classes, not just depth-coloured
+parens + the existing string / comment / mismatch classes:
+
+- *Strings* — already coloured via =repl-string=; keep distinct.
+- *Special-form heads* — symbols that head a list and live in a
+  hardcoded set (=defun=, =defmacro=, =defvar=, =defconst=, =let=,
+  =let*=, =if=, =when=, =unless=, =cond=, =case=, =progn=,
+  =lambda=, =while=, =dolist=, =dotimes=, =condition-case=,
+  =catch=, =throw=, =setq=, =and=, =or=, =not=, =quote=). Distinct
+  CSS class — these are syntax keywords, not user-callable.
+- *Function-call heads* — any other symbol immediately after =(=.
+  Different class from special-forms and from a plain symbol
+  reference, so the *shape* of the form pops at a glance.
+- *Other symbols* — plain identifier appearance (no class beyond
+  inheriting the overlay's default colour).
+- *Keywords* (=:foo=) — its own class.
+- *Quoted symbols* / *quasi-quoted forms* — colour the leading
+  ='= / =`= / =,= / =,@= so quoting is visible.
+- *Numeric literals* — its own class for ints, floats, =#x=,
+  =#o=, =#b= bases.
+
+The walker already tracks =depth= and string / comment state;
+add a small lookahead after each =(= to grab the next symbol
+token, classify it, and emit the right span. Hardcode the
+special-form list at the top of the file alongside =RAINBOW_DEPTHS=.
+
+Acceptance: pasting =(defun foo (x) (when (< x 5) (princ "hi")))=
+into the textarea shows =defun= and =when= in the special-form
+class, =foo= and =princ= and =<= in the function-call class,
+=x= as a plain symbol, =5= as a number, ="hi"= as a string.
+
 * Bugs / open design questions
 
 ** d1. Rethink ~file-exists-p~ resolving against the config's load dir
