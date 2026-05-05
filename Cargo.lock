@@ -2203,7 +2203,7 @@ checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 [[package]]
 name = "tulisp"
 version = "0.28.0"
-source = "git+https://github.com/shsms/tulisp?branch=fmt#500f3013249295d9363586219c86b68d581f68ef"
+source = "git+https://github.com/shsms/tulisp?branch=fmt#bf05f5fd53778edc0020fbaaa0ca4c17fcbc0ff5"
 
 [[package]]
 name = "tulisp-async"
@@ -2217,7 +2217,7 @@ dependencies = [
 [[package]]
 name = "tulisp-fmt"
 version = "0.1.0"
-source = "git+https://github.com/shsms/tulisp?branch=fmt#500f3013249295d9363586219c86b68d581f68ef"
+source = "git+https://github.com/shsms/tulisp?branch=fmt#bf05f5fd53778edc0020fbaaa0ca4c17fcbc0ff5"
 
 [[package]]
 name = "tungstenite"
