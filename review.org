@@ -79,7 +79,7 @@ active_power_w that was never actually delivered.
 Fix: track the dispatched-to-children sum, set ~measured_w~ to that
 (zero when ~healthy~ is empty).
 
-** H5. ~SetpointError::NotHealthy~ is defined but never raised
+** H5. ~SetpointError::NotHealthy~ is defined but never raised :DONE:
 [[file:src/sim/component.rs::23][component.rs:23]],
 [[file:src/server.rs::493][server.rs:493]]
 

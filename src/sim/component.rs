@@ -27,7 +27,15 @@ pub enum SetpointError {
     /// [-30000, 30000]" while the actual rejection was on the
     /// [-10000, 10000] window they themselves set up.
     OutOfBounds { value: f32, envelope: VecBounds },
-    NotHealthy,
+    /// The component type doesn't accept this operation (e.g. a
+    /// meter being asked for an active-power setpoint). Maps to
+    /// `tonic::Status::unimplemented` server-side.
+    ///
+    /// Health-based rejection is *not* in here: the server's
+    /// `do_set_power` gates on `runtime.health != Health::Ok`
+    /// before reaching the component, returning its own
+    /// `failed_precondition` status. Adding a component-side
+    /// variant would just be a second source of the same error.
     Unsupported,
 }
 
@@ -37,7 +45,6 @@ impl fmt::Display for SetpointError {
             Self::OutOfBounds { value, envelope } => {
                 write!(f, "set-point {value} W out of bounds {envelope}")
             }
-            Self::NotHealthy => write!(f, "component is not healthy"),
             Self::Unsupported => write!(f, "operation not supported by this component type"),
         }
     }

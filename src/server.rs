@@ -491,7 +491,6 @@ fn setpoint_error_to_status(err: SetpointError) -> tonic::Status {
     use SetpointError::*;
     match err {
         OutOfBounds { .. } => tonic::Status::failed_precondition(err.to_string()),
-        NotHealthy => tonic::Status::failed_precondition(err.to_string()),
         Unsupported => tonic::Status::unimplemented(err.to_string()),
     }
 }
