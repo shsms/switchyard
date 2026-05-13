@@ -55,7 +55,7 @@ Fix: implement ~augment_active_bounds~ on EV charger (carry a
 that augmentation is meter / inverter only and reject earlier in
 the gRPC handler.
 
-** H4. Inverter publishes commanded P even when no child accepted it
+** H4. Inverter publishes commanded P even when no child accepted it :DONE:
 [[file:src/sim/inverter/battery_inverter.rs::171][battery_inverter.rs:171]]
 
 In ~tick~:

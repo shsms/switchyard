@@ -155,7 +155,16 @@ impl SimulatedComponent for BatteryInverter {
             .into_iter()
             .filter(|id| world.runtime_of(*id).health == Health::Ok)
             .collect();
-        if !healthy.is_empty() {
+        if healthy.is_empty() {
+            // No child accepted the push → no AC output. Publishing the
+            // commanded value would be a fiction: telemetry would say
+            // "I delivered P W" when the bus is electrically inert.
+            // The ramp state stays at commanded_p so the inverter
+            // resumes delivering instantly if a child comes back
+            // healthy on a later tick.
+            *self.measured_w.lock() = 0.0;
+            self.reactive.override_published(0.0);
+        } else {
             let n = healthy.len() as f32;
             let p_share = commanded_p / n;
             let q_share = commanded_q / n;
@@ -164,12 +173,14 @@ impl SimulatedComponent for BatteryInverter {
                     child.set_dc_active_reactive(p_share, q_share);
                 }
             }
+            // The published value is what we *commanded* the (healthy)
+            // children to take, not what any individual child clipped
+            // to — battery telemetry separately exposes the accepted
+            // value, so a SCADA client wanting to see saturation reads
+            // both.
+            *self.measured_w.lock() = commanded_p;
+            self.reactive.override_published(commanded_q);
         }
-        // Inverter publishes the *commanded* AC output. Battery
-        // telemetry separately exposes the accepted (clamped) value,
-        // so a SCADA client that wants to see saturation reads both.
-        *self.measured_w.lock() = commanded_p;
-        self.reactive.override_published(commanded_q);
     }
 
     fn telemetry(&self, world: &World) -> Telemetry {
@@ -287,5 +298,77 @@ fn power_state(p: f32) -> &'static str {
         "discharging"
     } else {
         "ready"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sim::{Battery, battery::BatteryConfig};
+
+    fn setup_inverter_with_battery() -> (World, u64, u64) {
+        let w = World::new();
+        let bat = Battery::new(
+            100,
+            Duration::from_secs(1),
+            BatteryConfig {
+                rated_lower_w: -10000.0,
+                rated_upper_w: 10000.0,
+                capacity_wh: 100_000.0,
+                soc_protect_margin_pct: 0.0,
+                ..Default::default()
+            },
+        );
+        w.register(bat);
+        let inv = BatteryInverter::new(
+            200,
+            Duration::from_secs(1),
+            BatteryInverterConfig {
+                rated_lower_w: -10000.0,
+                rated_upper_w: 10000.0,
+                command_delay: Duration::ZERO,
+                ramp_rate_w_per_s: f32::INFINITY,
+                ..Default::default()
+            },
+            vec![],
+        );
+        w.register(inv);
+        w.connect(200, 100);
+        (w, 100, 200)
+    }
+
+    /// When every downstream battery is unhealthy the inverter delivers
+    /// nothing — telemetry has to mirror that, not the ramp's
+    /// in-flight commanded value. Pre-fix the inverter published the
+    /// commanded P even though no child accepted it.
+    #[test]
+    fn no_healthy_children_means_zero_published() {
+        let (w, bat_id, inv_id) = setup_inverter_with_battery();
+        let inv = w.get(inv_id).unwrap();
+
+        inv.set_active_setpoint(3000.0).unwrap();
+        inv.tick(&w, Utc::now(), Duration::from_millis(100));
+        // Healthy children: commanded value is delivered + published.
+        assert!((inv.aggregate_power_w(&w) - 3000.0).abs() < 1.0);
+
+        w.set_health(bat_id, Health::Error);
+        inv.tick(&w, Utc::now(), Duration::from_millis(100));
+        assert!(
+            inv.aggregate_power_w(&w).abs() < 1.0,
+            "expected 0 W with no healthy children, got {}",
+            inv.aggregate_power_w(&w),
+        );
+        // Reactive side mirrors the same rule.
+        assert!(
+            inv.aggregate_reactive_var(&w).abs() < 1.0,
+            "expected 0 VAR with no healthy children, got {}",
+            inv.aggregate_reactive_var(&w),
+        );
+
+        // Recovery: bring the battery back, the inverter resumes
+        // delivering on the next tick (ramp.actual stayed at 3000).
+        w.set_health(bat_id, Health::Ok);
+        inv.tick(&w, Utc::now(), Duration::from_millis(100));
+        assert!((inv.aggregate_power_w(&w) - 3000.0).abs() < 1.0);
     }
 }
