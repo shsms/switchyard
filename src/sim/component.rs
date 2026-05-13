@@ -19,7 +19,14 @@ pub enum Category {
 
 #[derive(Debug, Clone)]
 pub enum SetpointError {
-    OutOfBounds { value: f32, lower: f32, upper: f32 },
+    /// `envelope` is the *effective* envelope (rated ∩ live
+    /// augmentations, possibly ∩ reactive cap) — not the rated
+    /// envelope. A client whose request was rejected because they
+    /// just augmented the bounds tighter needs to see the narrowed
+    /// envelope in the error, otherwise the message reads "out of
+    /// [-30000, 30000]" while the actual rejection was on the
+    /// [-10000, 10000] window they themselves set up.
+    OutOfBounds { value: f32, envelope: VecBounds },
     NotHealthy,
     Unsupported,
 }
@@ -27,11 +34,9 @@ pub enum SetpointError {
 impl fmt::Display for SetpointError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::OutOfBounds {
-                value,
-                lower,
-                upper,
-            } => write!(f, "set-point {value} W out of bounds [{lower}, {upper}]"),
+            Self::OutOfBounds { value, envelope } => {
+                write!(f, "set-point {value} W out of bounds {envelope}")
+            }
             Self::NotHealthy => write!(f, "component is not healthy"),
             Self::Unsupported => write!(f, "operation not supported by this component type"),
         }

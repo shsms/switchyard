@@ -218,12 +218,11 @@ impl SimulatedComponent for BatteryInverter {
         // so children-summing happens in tick(). Validation here uses our
         // own (post-augmentation) bounds — anything beyond that is a hard
         // protocol error; the SoC clamp is enforced silently via tick().
-        let eff = self.bounds.lock().effective();
-        if !eff.contains(power_w) {
+        let envelope = self.bounds.lock().effective();
+        if !envelope.contains(power_w) {
             return Err(SetpointError::OutOfBounds {
                 value: power_w,
-                lower: self.cfg.rated_lower_w,
-                upper: self.cfg.rated_upper_w,
+                envelope,
             });
         }
         self.delay.set_target(Utc::now(), power_w);
@@ -304,6 +303,8 @@ fn power_state(p: f32) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::proto::common::metrics::Bounds;
+    use crate::sim::bounds::VecBounds;
     use crate::sim::{Battery, battery::BatteryConfig};
 
     fn setup_inverter_with_battery() -> (World, u64, u64) {
@@ -335,6 +336,53 @@ mod tests {
         w.register(inv);
         w.connect(200, 100);
         (w, 100, 200)
+    }
+
+    /// A setpoint rejected because the live augmentation narrowed the
+    /// envelope must surface the *augmented* bounds in the error, not
+    /// the rated ones — a client that just installed the augmentation
+    /// reads "out of [-5000, 5000]" and knows exactly which limit
+    /// they're up against.
+    #[test]
+    fn out_of_bounds_error_reports_augmented_envelope() {
+        let (_w, _bat_id, inv_id) = setup_inverter_with_battery();
+        let w = World::new();
+        let inv = BatteryInverter::new(
+            inv_id,
+            Duration::from_secs(1),
+            BatteryInverterConfig {
+                rated_lower_w: -10_000.0,
+                rated_upper_w: 10_000.0,
+                command_delay: Duration::ZERO,
+                ramp_rate_w_per_s: f32::INFINITY,
+                ..Default::default()
+            },
+            vec![],
+        );
+        w.register(inv);
+        let inv = w.get(inv_id).unwrap();
+
+        inv.augment_active_bounds(
+            Utc::now(),
+            VecBounds(vec![Bounds {
+                lower: Some(-5_000.0),
+                upper: Some(5_000.0),
+            }]),
+            Duration::from_secs(60),
+        );
+
+        let err = inv
+            .set_active_setpoint(8_000.0)
+            .expect_err("8 kW exceeds augmented envelope");
+        match err {
+            SetpointError::OutOfBounds { value, envelope } => {
+                assert_eq!(value, 8_000.0);
+                let b = envelope.0.first().expect("single-bucket envelope");
+                assert_eq!(b.lower, Some(-5_000.0));
+                assert_eq!(b.upper, Some(5_000.0));
+            }
+            other => panic!("expected OutOfBounds, got {other:?}"),
+        }
     }
 
     /// When every downstream battery is unhealthy the inverter delivers

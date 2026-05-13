@@ -187,12 +187,11 @@ impl SimulatedComponent for SolarInverter {
     }
 
     fn set_active_setpoint(&self, power_w: f32) -> Result<(), SetpointError> {
-        let eff = self.bounds.lock().effective();
-        if !eff.contains(power_w) {
+        let envelope = self.bounds.lock().effective();
+        if !envelope.contains(power_w) {
             return Err(SetpointError::OutOfBounds {
                 value: power_w,
-                lower: self.cfg.rated_lower_w,
-                upper: self.cfg.rated_upper_w,
+                envelope,
             });
         }
         self.delay.set_target(Utc::now(), power_w);

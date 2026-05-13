@@ -225,8 +225,7 @@ impl SimulatedComponent for EvCharger {
         if !envelope.contains(power_w) {
             return Err(SetpointError::OutOfBounds {
                 value: power_w,
-                lower: self.cfg.rated_lower_w,
-                upper: self.cfg.rated_upper_w,
+                envelope,
             });
         }
         self.delay.set_target(Utc::now(), power_w);
