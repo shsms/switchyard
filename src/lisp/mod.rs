@@ -465,23 +465,43 @@ impl Config {
             }
         }
 
+        // Debounce window. Editors typically fire several notify
+        // events for a single save (write + close-after-write +
+        // plugin reformat); we coalesce anything arriving within
+        // this window into one reload. 150 ms is comfortably above
+        // the inotify event-batch latency on a busy machine and
+        // still feels instant to a human editing.
+        const DEBOUNCE: Duration = Duration::from_millis(150);
+
         while let Some(res) = rx.recv().await {
-            match res {
-                Ok(event) => {
-                    if let notify::EventKind::Modify(_) = event.kind {
-                        tokio::time::sleep(Duration::from_millis(50)).await;
-                        // Reload errors are logged by `reload()`; the
-                        // watcher loop intentionally keeps going so a
-                        // typo doesn't kill the live-edit feedback
-                        // path. Recovery is the next save.
-                        let _ = self.reload();
-                    }
-                }
+            let event = match res {
+                Ok(e) => e,
                 Err(e) => {
                     log::error!("watch error: {:?}", e);
                     return;
                 }
+            };
+            if !matches!(event.kind, notify::EventKind::Modify(_)) {
+                continue;
             }
+            // After the first Modify, drain any further events that
+            // arrive within DEBOUNCE; each additional event restarts
+            // the window. Once the window goes quiet, fire one reload.
+            // Reload errors are logged by `reload()`; the loop
+            // intentionally keeps going so a typo doesn't kill the
+            // live-edit feedback path.
+            loop {
+                match tokio::time::timeout(DEBOUNCE, rx.recv()).await {
+                    Ok(Some(Ok(_))) => continue,
+                    Ok(Some(Err(e))) => {
+                        log::error!("watch error: {:?}", e);
+                        return;
+                    }
+                    Ok(None) => return,
+                    Err(_) => break,
+                }
+            }
+            let _ = self.reload();
         }
     }
 }

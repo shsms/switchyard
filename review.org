@@ -150,7 +150,7 @@ this ("retain semantics") but the docstring says "Drop a single
 parent → child edge." Either fix the doc or change to remove only
 the first matching edge.
 
-** M2. ~Config::watch~ has minimal debouncing
+** M2. ~Config::watch~ has minimal debouncing :DONE:
 [[file:src/lisp/mod.rs::445][lisp/mod.rs:445]]
 
 50 ms ~sleep~ after each ~Modify~ event before reload, but no
