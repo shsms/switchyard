@@ -605,6 +605,17 @@ impl World {
     /// the config DSL on hot-reload. Also resets the id allocator so a
     /// reloaded config sees the same ids the previous load saw,
     /// matching microsim's `(setq comp--id--counter 1000)` behaviour.
+    ///
+    /// Reset *also* clears scenario-scoped state (the journal,
+    /// per-component CSV sinks, the main-meter flag) so a hot-reload
+    /// truly starts from scratch — leaving them in place leaked stale
+    /// integrals against gone-and-reborn ids and blocked a reload
+    /// from claiming a *different* meter as main.
+    ///
+    /// Grid state is environmental (set by the config's `every`
+    /// timer); we deliberately keep it across reloads so the first
+    /// tick after reload still has plausible per-phase voltage /
+    /// frequency values.
     pub fn reset(&self) {
         self.inner.components.write().clear();
         self.inner.by_id.write().clear();
@@ -613,10 +624,11 @@ impl World {
         self.inner.name_overrides.write().clear();
         self.inner.histories.write().clear();
         self.inner.setpoint_logs.write().clear();
+        *self.inner.scenario.write() = ScenarioJournal::default();
+        *self.inner.main_meter_id.write() = None;
+        // `clear()` drops every sink; each BufWriter flushes on drop.
+        self.inner.scenario_csv.write().clear();
         self.inner.next_id.store(FIRST_AUTO_ID, Ordering::Relaxed);
-        // The grid state is environmental (set by the config's `every`
-        // timer); we deliberately keep it across reloads so the first
-        // tick after reload still has plausible values.
     }
 
     /// Remove a component from the registry and drop every edge that
@@ -1285,5 +1297,47 @@ mod tests {
         );
         w.reset();
         assert!(w.inner.histories.read().is_empty());
+    }
+
+    /// Beyond histories, `reset()` also flushes the scenario journal,
+    /// the main-meter flag, and any open CSV sinks. Leaving these
+    /// across a hot-reload leaks stale integrals against ids that
+    /// have since been re-registered and blocks a reload from
+    /// claiming a different meter as `:main`.
+    #[test]
+    fn reset_clears_scenario_and_main_meter() {
+        use crate::sim::setpoints::{SetpointEvent, SetpointKind, SetpointOutcome};
+        let w = World::new();
+        w.register(Stub(1));
+        w.set_main_meter(1).unwrap();
+        w.log_setpoint(
+            1,
+            SetpointEvent {
+                ts: Utc::now(),
+                kind: SetpointKind::ActivePower,
+                value: 1234.0,
+                outcome: SetpointOutcome::Accepted {
+                    effective_value: Some(1234.0),
+                },
+            },
+        );
+        w.scenario_start("smoke".into(), Utc::now());
+        w.scenario_record("k".into(), "v".into(), Utc::now());
+
+        w.reset();
+
+        assert!(
+            w.inner.setpoint_logs.read().is_empty(),
+            "setpoint_logs must clear",
+        );
+        assert!(
+            w.inner.scenario.read().started_at.is_none(),
+            "scenario journal must reset",
+        );
+        assert_eq!(w.inner.scenario.read().event_count(), 0);
+        assert!(
+            w.inner.main_meter_id.read().is_none(),
+            "main_meter_id must clear so reload can pick a different meter",
+        );
     }
 }
