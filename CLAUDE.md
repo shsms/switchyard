@@ -65,13 +65,17 @@ in config.lisp). swctl points there by default; override with `--addr`.
 
 ## Dependencies
 
-- `tulisp = { git = "https://github.com/shsms/tulisp", branch = "vm",
-  features = ["sync"] }` — uses `AsPlist!` from the `vm` branch. Don't
-  downgrade or switch to a path dep without coordination.
-- `tulisp-async = { path = "../tulisp-async" }` — local sibling. Provides
-  `run-with-timer`, `cancel-timer`, `sleep-for`. `TokioExecutor::new` calls
-  `Handle::current()`, so `Config::new` must be invoked inside a running
-  tokio runtime.
+- `tulisp = { git = "https://github.com/shsms/tulisp", branch = "fmt",
+  features = ["sync", "etags"] }` — pinned to the `fmt` branch for
+  AsPlist!, etags, and other downstream-touching features. Don't
+  downgrade or swap branches without coordination.
+- `tulisp-async = { git = "https://github.com/tulisp/tulisp-async" }`
+  — same-ctx timer primitives (`run-with-timer`, `cancel-timer`,
+  `sleep-for`). `TokioExecutor::new` calls `Handle::current()`, so
+  `Config::new` must be invoked inside a running tokio runtime.
+  `register` returns a `Handle`; the pre-tick hook owns one clone
+  and ticks it each physics step — without that, no timer body
+  ever runs (the same-ctx model has no background firing thread).
 - Proto root reused from `../microsim/submodules/frequenz-api-microgrid`
   (override with `SWITCHYARD_PROTO_ROOT`).
 
@@ -123,10 +127,18 @@ config.lisp does.
 
 ## Lisp gotchas (current tulisp-vm)
 
-- **Timer bodies see global symbols / defuns but get a fresh ctx.**
-  `setq` and `defun` results survive into the timer's ctx because
-  tulisp symbols own their global bindings ctx-independently. Do not
-  rely on `let*`-bound state to leak across firings.
+- **Timer bodies run on the calling ctx.** Same-ctx tulisp-async
+  funcalls bodies on the parent `TulispContext`, so a lambda's
+  lexical captures (`let*`-bound state, the surrounding closure
+  environment) are preserved across firings. defuns/defvars/global
+  setq results are visible as you'd expect.
+- **`(every …)` callbacks fire on the physics-tick cadence.** The
+  `Config` pre-tick hook drains tulisp-async's pending-firings
+  mailbox once per `tick_once`. With `physics_tick_ms = 100`, a
+  `(run-with-timer 0.05 …)` waits up to 100 ms before firing; a
+  zero-delay one fires on the next tick, not immediately after the
+  eval. Tests that need a fire without spinning the physics loop
+  can call `world.tick_once(…)` directly.
 
 ## Adding a runtime knob
 
