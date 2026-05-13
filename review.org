@@ -161,7 +161,7 @@ fsync) triggers two reloads. Same for plugin-driven reformatters.
 Fix: collect events in a window (e.g. 100 ms after the last event)
 and reload once. Standard ~notify~ debouncer pattern.
 
-** M3. Reactive defaults "either-or" overriding is non-obvious
+** M3. Reactive defaults "either-or" overriding is non-obvious :DONE:
 [[file:src/lisp/make.rs::511][make.rs:511]] and
 [[file:src/lisp/make.rs::601][make.rs:601]]
 

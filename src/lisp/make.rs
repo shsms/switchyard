@@ -497,26 +497,29 @@ pub fn register(ctx: &mut TulispContext, world: World) {
                 cfg.stream_jitter_pct = v as f32;
             }
             // Reactive capability semantics:
-            //   neither arg present  → microsim-compatible PF=0.35 default
-            //   either arg present   → override the default with both
-            //                          (the unspecified one is "disabled")
-            //   value ≤ 0.0          → that constraint is disabled
-            // This lets the user write
-            //   :reactive-apparent-va 32000.0     ;; kVA only
-            //   :reactive-pf-limit 0.0 :reactive-apparent-va 0.0 ;; unrestricted
-            //   :reactive-pf-limit 0.5            ;; tighter PF, no kVA
-            // without needing a third "mode" symbol. Each reactive arg
-            // pulls from the per-component plist first, then the
-            // category alist.
+            //   value ≤ 0.0  → that constraint is disabled
+            //   absent       → inherit the existing field on cfg.reactive
+            //                  (i.e. the BatteryInverterConfig::default
+            //                  microsim_default, which sets PF=0.35)
+            // Each reactive arg pulls from the per-component plist
+            // first, then the category alist. Per-field merge means
+            // `:reactive-apparent-va 50000` adds a kVA cap *without*
+            // silently dropping the inherited PF limit; previously
+            // that subtle interaction was the easy way to ship a
+            // misconfigured inverter.
+            let merge_reactive = |input: Option<f64>, fallback: Option<f32>| -> Option<f32> {
+                match input {
+                    Some(v) if v > 0.0 => Some(v as f32),
+                    Some(_) => None,
+                    None => fallback,
+                }
+            };
             let reactive_pf = a.reactive_pf_limit.or(d.reactive_pf_limit);
             let reactive_va = a.reactive_apparent_va.or(d.reactive_apparent_va);
-            if reactive_pf.is_some() || reactive_va.is_some() {
-                cfg.reactive = crate::sim::reactive::ReactiveCapability {
-                    pf_limit: reactive_pf.and_then(|v| if v > 0.0 { Some(v as f32) } else { None }),
-                    apparent_va: reactive_va
-                        .and_then(|v| if v > 0.0 { Some(v as f32) } else { None }),
-                };
-            }
+            cfg.reactive = crate::sim::reactive::ReactiveCapability {
+                pf_limit: merge_reactive(reactive_pf, cfg.reactive.pf_limit),
+                apparent_va: merge_reactive(reactive_va, cfg.reactive.apparent_va),
+            };
             if let Some(v) = a.reactive_command_delay_ms.or(d.reactive_command_delay_ms) {
                 cfg.reactive_command_delay = Duration::from_millis(v.max(0) as u64);
             }
@@ -592,21 +595,23 @@ pub fn register(ctx: &mut TulispContext, world: World) {
             if let Some(v) = a.stream_jitter_pct.or(d.stream_jitter_pct) {
                 cfg.stream_jitter_pct = v as f32;
             }
-            // Same opt-in semantics as make-battery-inverter:
-            // mentioning either reactive arg overrides the default
-            // ReactiveCapability with both, treating 0.0 / negative as
-            // "this constraint is disabled". Absent both → keep the
-            // microsim-style PF=0.35 default. Each reactive arg pulls
-            // from per-component plist first, then category alist.
+            // Same per-field merge as make-battery-inverter: 0 / negative
+            // disables the named constraint; absent inherits whatever
+            // SolarInverterConfig::default (== microsim_default PF=0.35)
+            // had on that field.
+            let merge_reactive = |input: Option<f64>, fallback: Option<f32>| -> Option<f32> {
+                match input {
+                    Some(v) if v > 0.0 => Some(v as f32),
+                    Some(_) => None,
+                    None => fallback,
+                }
+            };
             let reactive_pf = a.reactive_pf_limit.or(d.reactive_pf_limit);
             let reactive_va = a.reactive_apparent_va.or(d.reactive_apparent_va);
-            if reactive_pf.is_some() || reactive_va.is_some() {
-                cfg.reactive = crate::sim::reactive::ReactiveCapability {
-                    pf_limit: reactive_pf.and_then(|v| if v > 0.0 { Some(v as f32) } else { None }),
-                    apparent_va: reactive_va
-                        .and_then(|v| if v > 0.0 { Some(v as f32) } else { None }),
-                };
-            }
+            cfg.reactive = crate::sim::reactive::ReactiveCapability {
+                pf_limit: merge_reactive(reactive_pf, cfg.reactive.pf_limit),
+                apparent_va: merge_reactive(reactive_va, cfg.reactive.apparent_va),
+            };
             if let Some(v) = a.reactive_command_delay_ms.or(d.reactive_command_delay_ms) {
                 cfg.reactive_command_delay = Duration::from_millis(v.max(0) as u64);
             }
