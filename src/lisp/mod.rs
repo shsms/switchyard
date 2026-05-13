@@ -109,7 +109,12 @@ impl Config {
         // Rust; lisp's only job is wiring + scripting the world
         // around it. Must be called inside a tokio runtime —
         // TokioExecutor::new captures Handle::current().
-        tulisp_async::register(&mut ctx, Arc::new(tulisp_async::TokioExecutor::new()));
+        //
+        // The returned `Handle` is what the pre-tick hook ticks each
+        // physics step to fire pending timer firings. Without it the
+        // mailbox would just accumulate.
+        let timer_handle =
+            tulisp_async::register(&mut ctx, Arc::new(tulisp_async::TokioExecutor::new()));
 
         // One-per-process loop that walks World's TimeoutTracker and
         // calls reset_setpoint on each elapsed entry. Both gRPC's
@@ -124,18 +129,24 @@ impl Config {
 
         let ctx = SharedMut::new(ctx);
 
-        // Pre-tick hook: hold the interpreter lock once per tick and
+        // Pre-tick hook: hold the interpreter lock once per tick,
         // refresh every component's Lisp-driven inputs (lambda-bound
-        // `:power`, `:sunlight%`, …) before any `tick` runs. Lets
-        // components read the resolved scalar from an atomic in
-        // `tick` without re-entering the interpreter — see
-        // `dynamic_scalar::DynamicScalar`.
+        // `:power`, `:sunlight%`, …), then drain any timer firings
+        // whose deadline has passed. Lets components read the
+        // resolved scalar from an atomic in `tick` without re-entering
+        // the interpreter — see `dynamic_scalar::DynamicScalar` —
+        // and gives `(every …)` callbacks a fire cadence anchored to
+        // the physics tick.
+        //
+        // The hook owns the only `Handle` clone we keep outside ctx;
+        // that's enough to keep the mailbox alive between ticks.
         let hook_ctx = ctx.clone();
         world.set_pre_tick(Arc::new(move |w| {
             let mut guard = hook_ctx.borrow_mut();
             for c in w.components() {
                 c.refresh_inputs(&mut guard);
             }
+            timer_handle.tick(&mut guard);
         }));
 
         Self {
@@ -195,7 +206,11 @@ impl Config {
             .map_err(|e| Error::os_error(format!("set_load_path({}): {e}", load_dir.display())))?;
 
         register_runtime(&mut ctx, &world, metadata, load_dir);
-        tulisp_async::register(&mut ctx, Arc::new(tulisp_async::TokioExecutor::new()));
+        // The Handle is unused here — tags_table is a one-shot parse
+        // pass, no timers ever fire — but `register` still installs
+        // the four builtins so that `(run-with-timer …)` etc. show up
+        // in the generated TAGS file.
+        let _ = tulisp_async::register(&mut ctx, Arc::new(tulisp_async::TokioExecutor::new()));
 
         ctx.tags_table(Some(roots))
     }
@@ -941,6 +956,23 @@ mod tests {
         // tulisp-async spawned during init.
         std::mem::forget(rt);
         (cfg, dir)
+    }
+
+    /// The pre-tick hook drains tulisp-async's pending-timer queue
+    /// each physics step. Without that, run-with-timer would just
+    /// accumulate PendingTasks (same-ctx model — nothing fires them
+    /// asynchronously). A zero-delay one-shot timer plus one
+    /// tick_once is the tightest expression of the contract.
+    #[test]
+    fn pre_tick_drains_pending_timers() {
+        let (cfg, _dir) = config_with(
+            "(set-microgrid-id 9)
+             (setq fired 0)
+             (run-with-timer 0 nil (lambda () (setq fired 1)))",
+        );
+        cfg.world()
+            .tick_once(chrono::Utc::now(), Duration::from_millis(100));
+        assert_eq!(cfg.eval_silent("fired").unwrap(), "1");
     }
 
     /// set-active-power applies a setpoint and arms the timeout tracker.
