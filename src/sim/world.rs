@@ -484,6 +484,18 @@ impl World {
         self.inner.events.subscribe()
     }
 
+    /// Broadcast a `ConfigError` on the world event bus. Used by the
+    /// watcher's reload-failure path so UI subscribers can render a
+    /// "config invalid" banner instead of seeing the post-reset
+    /// empty world without explanation. Fire-and-forget — a send
+    /// error means there are no live subscribers, which is fine.
+    pub fn broadcast_config_error(&self, message: String) {
+        let _ = self.inner.events.send(WorldEvent::ConfigError {
+            ts_ms: chrono::Utc::now().timestamp_millis(),
+            message,
+        });
+    }
+
     pub fn next_id(&self) -> u64 {
         self.inner.next_id.fetch_add(1, Ordering::Relaxed)
     }

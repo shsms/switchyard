@@ -236,7 +236,7 @@ struct ScenarioEventsResponse {
 Client compares ~since~ against ~earliest_id~ and surfaces "lost
 N events."
 
-** M8. ~Config::reload~ leaves the world reset when eval fails
+** M8. ~Config::reload~ leaves the world reset when eval fails :DONE:
 [[file:src/lisp/mod.rs::397][lisp/mod.rs:397]]
 
 ~reload~ runs ~world.reset()~ before ~eval_file~. If the eval

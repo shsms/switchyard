@@ -487,9 +487,10 @@ impl Config {
             // After the first Modify, drain any further events that
             // arrive within DEBOUNCE; each additional event restarts
             // the window. Once the window goes quiet, fire one reload.
-            // Reload errors are logged by `reload()`; the loop
-            // intentionally keeps going so a typo doesn't kill the
-            // live-edit feedback path.
+            // Reload errors are logged by `reload()` and surfaced on
+            // the world event bus so the UI can show a banner; the
+            // loop intentionally keeps going so a typo doesn't kill
+            // the live-edit feedback path.
             loop {
                 match tokio::time::timeout(DEBOUNCE, rx.recv()).await {
                     Ok(Some(Ok(_))) => continue,
@@ -501,7 +502,9 @@ impl Config {
                     Err(_) => break,
                 }
             }
-            let _ = self.reload();
+            if let Err(msg) = self.reload() {
+                self.world.broadcast_config_error(msg);
+            }
         }
     }
 }
