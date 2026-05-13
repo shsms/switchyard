@@ -14,6 +14,34 @@ use tokio_stream::wrappers::ReceiverStream;
 
 use crate::lisp::Config;
 use crate::proto::common::metrics::Metric;
+
+/// Per the Frequenz Microgrid API, request_lifetime on both
+/// SetElectricalComponentPower and AugmentElectricalComponentBounds
+/// must fit in this window. 10 s is long enough for a control loop
+/// to apply and settle; 15 min caps how long a forgotten request
+/// can park a component away from its default. Out-of-range values
+/// are rejected with InvalidArgument; absent values fall back to
+/// `Metadata::default_request_lifetime` (configurable from lisp).
+const REQUEST_LIFETIME_MIN_S: u64 = 10;
+const REQUEST_LIFETIME_MAX_S: u64 = 15 * 60;
+
+fn resolve_lifetime(
+    req_lifetime_s: Option<u64>,
+    fallback: Duration,
+) -> Result<Duration, tonic::Status> {
+    match req_lifetime_s {
+        Some(s) => {
+            if !(REQUEST_LIFETIME_MIN_S..=REQUEST_LIFETIME_MAX_S).contains(&s) {
+                return Err(tonic::Status::invalid_argument(format!(
+                    "request_lifetime {s} s outside [{REQUEST_LIFETIME_MIN_S}, \
+                     {REQUEST_LIFETIME_MAX_S}] s",
+                )));
+            }
+            Ok(Duration::from_secs(s))
+        }
+        None => Ok(fallback),
+    }
+}
 use crate::proto::common::microgrid::electrical_components::ElectricalComponentConnection;
 use crate::proto::common::microgrid::{Microgrid, MicrogridStatus};
 use crate::proto::microgrid::{
@@ -116,16 +144,10 @@ impl MicrogridServer {
             return Err(setpoint_error_to_status(e));
         }
 
-        let duration = if let Some(dur) = req.request_lifetime {
-            if !(10..=15 * 60).contains(&dur) {
-                return Err(tonic::Status::invalid_argument(
-                    "Request lifetime must be between 10 seconds and 15 minutes.",
-                ));
-            }
-            Duration::from_secs(dur)
-        } else {
-            self.config.metadata().default_request_lifetime
-        };
+        let duration = resolve_lifetime(
+            req.request_lifetime,
+            self.config.metadata().default_request_lifetime,
+        )?;
         world.add_timeout(req.electrical_component_id, duration);
 
         let (tx, rx) = tokio::sync::mpsc::channel(1);
@@ -401,8 +423,11 @@ impl microgrid_server::Microgrid for MicrogridServer {
             )));
         }
 
-        let lifetime_s = req.request_lifetime.unwrap_or(5).clamp(5, 15 * 60);
-        let lifetime = Duration::from_secs(lifetime_s);
+        let lifetime = resolve_lifetime(
+            req.request_lifetime,
+            self.config.metadata().default_request_lifetime,
+        )?;
+        let lifetime_s = lifetime.as_secs() as i64;
         let now = chrono::Utc::now();
         let id = req.electrical_component_id;
 
@@ -410,7 +435,7 @@ impl microgrid_server::Microgrid for MicrogridServer {
         let response = match world.get(id) {
             Some(component) => {
                 component.augment_active_bounds(now, VecBounds::new(req.bounds), lifetime);
-                let expiry = now + chrono::Duration::seconds(lifetime_s as i64);
+                let expiry = now + chrono::Duration::seconds(lifetime_s);
                 Ok(tonic::Response::new(
                     AugmentElectricalComponentBoundsResponse {
                         valid_until_time: Some(prost_types::Timestamp {

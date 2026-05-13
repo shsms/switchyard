@@ -96,7 +96,7 @@ flows through ~SetpointError~) or remove the variant. Right now
 it's misleading: a reader assumes components self-gate on health,
 but actually they don't.
 
-** H6. ~request_lifetime~ ranges differ between SetPower and Augment
+** H6. ~request_lifetime~ ranges differ between SetPower and Augment :DONE:
 [[file:src/server.rs::120][server.rs:120]],
 [[file:src/server.rs::404][server.rs:404]]
 
