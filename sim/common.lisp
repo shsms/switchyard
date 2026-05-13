@@ -44,13 +44,22 @@ hot-reload starts from a clean slate."
   "Call :call every :milliseconds ms. First firing happens after the
 interval has elapsed — not synchronously at load time — so a config
 file can put `every` blocks anywhere relative to the topology they
-reference. The handle is pushed onto `active-timers` so reset-state
-can cancel it on reload."
+reference.
+
+Optional :args is a list passed as positional arguments to the
+callback on every firing — `(every :call 'fire :args (list 1001))`
+calls `(fire 1001)` each tick, saving a closing lambda. Defaults
+to no extra args.
+
+The handle is pushed onto `active-timers` so reset-state can
+cancel it on reload."
   (let* ((ms (plist-get plist :milliseconds))
          (func (plist-get plist :call))
+         (args (plist-get plist :args))
          (secs (/ ms 1000.0)))
     (setq active-timers
-          (cons (run-with-timer secs secs func) active-timers))))
+          (cons (apply 'run-with-timer secs secs func args)
+                active-timers))))
 
 ;; -----------------------------------------------------------------------------
 ;; UI override file loader

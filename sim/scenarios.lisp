@@ -20,14 +20,15 @@ nil if ITEMS is empty."
   (when items
     (nth (random (length items)) items)))
 
-;; Timer callbacks run in a fresh tulisp ctx — they can see global
-;; symbols + defuns but NOT let-bound state from the surrounding
-;; scope. The random-outage--* state below is therefore deliberately
-;; hoisted to globals so each timer firing can read it. As a
-;; consequence only one random-outage chain runs at a time per
-;; process; calling random-outage again replaces the prior chain's
-;; parameters (and any timer it has in flight from active-timers
-;; will continue with the new state on its next firing).
+;; The random-outage--* state below is hoisted to globals so each
+;; timer firing sees the same parameters. With same-ctx tulisp-async
+;; this is no longer required for closure visibility (timer bodies
+;; funcall on the parent ctx and lexical captures survive), but the
+;; globals approach is kept here for clarity — and as a consequence
+;; only one random-outage chain runs at a time per process. Calling
+;; random-outage again replaces the prior chain's parameters; any
+;; timer it has in flight on `active-timers` will continue with the
+;; new state on its next firing.
 
 (defun random-outage (ids &rest opts)
   "Schedule recurring random outages on a random pick from IDS.

@@ -206,7 +206,7 @@ million ~stub.name()~ calls would burn through memory. Use
 ~static "stub"~ or build the name once in ~new()~ and return ~&str~
 into a stored ~String~.
 
-** M6. Connections + edges are linear scans on every read
+** M6. Connections + edges are linear scans on every read :DEFER:
 [[file:src/sim/world.rs::529][world.rs:529]], also ~parent_count~,
 ~aggregate_child_bounds~
 
@@ -265,9 +265,12 @@ New component category in Rust requires manual addition to this
 slice. Could iterate over Category variants reflectively (or just
 hardcode and note the duplication in CLAUDE.md).
 
-** L3. Empty body in tick for Meter/Grid/Chp is fine but worth a doc note
+** L3. Empty body in tick for Meter/Grid/Chp is fine but worth a doc note :DONE:
 Telegraphs that these are read-only aggregators / markers. Not a
-bug; trait default would do the same.
+bug; trait default would do the same. Re-reading: ~tick~ is a
+*required* trait method (no default), so each component has to
+spell it out — empty body is the contract for "this component
+has no per-tick internal state to advance." Not worth changing.
 
 ** L4. ~ComponentHistory::push_snapshot~ only takes the first VecBounds segment for charts :DONE:
 [[file:src/sim/history.rs::152][history.rs:152]]
@@ -282,12 +285,14 @@ but the underlying envelope might be multi-band. Future work.
 the error. Could broadcast a ~WorldEvent::ConfigError~ for the UI
 to display.
 
-** L6. ~scenario-event~ accepts symbol or string; renders as string
+** L6. ~scenario-event~ accepts symbol or string; renders as string :DONE:
 [[file:src/lisp/mod.rs::515][lisp/mod.rs:515]]
 
-Accepts both forms but ~kind_str~ stores the printed form. Either
-canonicalize (always-lowercase-symbol) or surface the original form
-in events JSON. Minor inconsistency.
+Re-reading: both branches canonicalize to a string with the same
+content (symbol "outage" → "outage", string "outage" → "outage").
+The wire shape is consistent regardless of input form, so the
+"inconsistency" my review note flagged isn't actually one. No
+change needed.
 
 ** L7. ~ScenarioJournal::record_sample~ reaper uses an inefficient loop :DONE:
 [[file:src/sim/scenario.rs::150][scenario.rs:150]]
@@ -341,64 +346,67 @@ its own ~MIN_SET_ACTIVE_POWER_LIFETIME_MS = 150~ clamp.
 
 * Documentation accuracy
 
-** D1. ~World::disconnect~ doc says "single edge"
-See M1.
+** D1. ~World::disconnect~ doc says "single edge" :DONE:
+Fixed alongside M1.
 
-** D2. ~SetpointError::NotHealthy~ docstring
-"Component is not healthy" — but no component returns it. Either
-remove the variant or document where it's intended to come from.
+** D2. ~SetpointError::NotHealthy~ docstring :DONE:
+Variant removed in H5; the surviving ~Unsupported~ doc spells out
+where the health check actually lives.
 
-** D3. ~World::reset~ doc doesn't list what's *not* reset
-See H1.
+** D3. ~World::reset~ doc doesn't list what's *not* reset :DONE:
+Rewritten alongside H1 to call out grid state as the one
+intentional carry-over.
 
 ** D4. ~setpoint_logs~ field doc says "broadcast it on the world
-event bus"
-[[file:src/sim/world.rs::871][world.rs:871]] — accurate, just
-noting the data flow is well-described.
+event bus" — accurate, no change needed.
 
 ** D5. ~Battery::telemetry~ dc_power doc explains the signed-apparent
-choice (good) but ~aggregate_power_w~ doesn't note the asymmetry.
+choice (good) but ~aggregate_power_w~ doesn't note the asymmetry. :DONE:
+Added the asymmetry note on ~aggregate_power_w~ in the M4 sweep.
 
 * Test coverage gaps
 
-** T1. No test for ~reset()~ leaving non-history state behind
-The only assertion is ~histories~ being empty. Add: setpoint logs,
-scenario state, main_meter_id, scenario_csv (H1).
+** T1. No test for ~reset()~ leaving non-history state behind :DONE:
+~reset_clears_scenario_and_main_meter~ added in the H1 commit.
 
-** T2. No test for inverter dispatch when every child is unhealthy
-(H4). Add a fixture with battery health = Error, drive the
-inverter, assert ~aggregate_power_w == 0~ rather than the
-commanded value.
+** T2. No test for inverter dispatch when every child is unhealthy :DONE:
+~no_healthy_children_means_zero_published~ added in the H4 commit.
 
-** T3. No test for augmenting bounds on an EV charger
-(H3). Should fail until the augment override is implemented.
+** T3. No test for augmenting bounds on an EV charger :DONE:
+~augment_active_bounds_narrows_validation_and_telemetry~ and
+~augmentation_expires_and_rated_returns~ added in the H3 commit.
 
-** T4. No test for ~SetpointError::OutOfBounds~ bounds-field correctness
-(H2). After augmenting an inverter, attempt an out-of-augmented
-setpoint and assert the error's ~lower~/~upper~ match the
-augmented envelope.
+** T4. No test for ~SetpointError::OutOfBounds~ bounds-field correctness :DONE:
+~out_of_bounds_error_reports_augmented_envelope~ added in the H2
+commit.
 
-** T5. No test for hot-reload with active scenario
-A scenario that's mid-run when ~reload~ fires: do the integrals
-keep accumulating? Do new component ids re-register correctly with
-the still-running journal? Likely behavior is "wrong" per H1.
+** T5. No test for hot-reload with active scenario :DEFER:
+The scenario-journal-reset half is pinned by T1's
+~reset_clears_scenario_and_main_meter~; an end-to-end
+hot-reload-on-running-scenario test would chain that against the
+notify-watch path. Worth adding when the watch path gets more
+complex; minimal value right now since the H1 fix already
+discharges the journal in ~reset()~.
 
-** T6. No test for ~Config::watch~ debouncing
-(M2). Touch the file twice in quick succession; assert exactly one
-reload, not two.
+** T6. No test for ~Config::watch~ debouncing :DEFER:
+Timing-based; the natural shape is "touch the file twice within
+DEBOUNCE, assert exactly one reload" which is flaky without
+mocking the inotify clock.
 
-** T7. No test for ~scenario_events_since~ with evicted history
-(M7). Fill the ring past capacity, poll with ~since=0~; verify the
-client can detect the gap (today it can't).
+** T7. No test for ~scenario_events_since~ with evicted history :DEFER:
+Pinned the new ~earliest_event_id~ cursor in the M7 commit at the
+API surface; a "fill the ring past capacity" test in a unit module
+would be straightforward, but the contract is asserted at the
+HTTP layer (clients see the field). Could add a journal-level
+unit test as follow-up.
 
-** T8. No test for ~CommandMode::Timeout~ actually hanging
-The variant is defined but no test verifies the gRPC call hangs.
-Hard to test without a real deadline; could use ~tokio::time::timeout~
-in the test.
+** T8. No test for ~CommandMode::Timeout~ actually hanging :DEFER:
+Needs ~tokio::time::timeout~ wrapping the call; not load-bearing
+behavior — a deferred follow-up.
 
-** T9. No test for ~world-connect~ / ~world-disconnect~ to non-existent ids
-The edges land in the graph but ~world.get(id)~ returns None.
-Aggregation silently drops them — worth pinning the behavior.
+** T9. No test for ~world-connect~ / ~world-disconnect~ to non-existent ids :DEFER:
+Behavior is documented by code (silent drop via filter_map) and
+caught by the M1 doc fix. Edge case, deferred.
 
 * Architecture observations (not bugs, just notes)
 
@@ -437,7 +445,7 @@ whole drain + refresh pass. Worth a comment in the hook installer.
 
 * Lisp DSL findings
 
-** LD1. ~sim/scenarios.lisp~ comment is stale post-same-ctx-rewrite
+** LD1. ~sim/scenarios.lisp~ comment is stale post-same-ctx-rewrite :DONE:
 [[file:sim/scenarios.lisp::23][sim/scenarios.lisp:23]]
 
 #+begin_quote
@@ -459,7 +467,7 @@ in a follow-up since the file is user-visible (load'd by sample
 scenarios) and the comment is misleading for users writing their
 own scenarios.
 
-** LD2. ~every~ macro doesn't expose the new ~&rest ARGS~ on run-with-timer
+** LD2. ~every~ macro doesn't expose the new ~&rest ARGS~ on run-with-timer :DONE:
 [[file:sim/common.lisp::37][sim/common.lisp:37]]
 
 After our tulisp-async migration ~run-with-timer~ supports
