@@ -216,7 +216,7 @@ ops per tick. Fine today. If scaled to thousands of components,
 consider a ~HashMap<u64, Vec<u64>>~ index alongside the Vec
 (rebuilt on edit).
 
-** M7. ~scenario_events_since~ silently swallows the gap on eviction
+** M7. ~scenario_events_since~ silently swallows the gap on eviction :DONE:
 [[file:src/sim/scenario.rs::281][scenario.rs:281]]
 
 The capped ring (~SCENARIO_EVENT_CAPACITY = 4096~) evicts oldest.

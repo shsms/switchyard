@@ -193,7 +193,15 @@ pub(crate) struct ScenarioSummary {
     pub ended_at: Option<DateTime<Utc>>,
     pub elapsed_s: f64,
     pub event_count: usize,
+    /// One past the highest event id ever recorded. Stable cursor
+    /// for `/api/scenario/events?since=N` — clients pass this back
+    /// unchanged to mean "anything newer than what I last saw".
     pub next_event_id: u64,
+    /// Lowest event id still retained in the ring. Clients compare
+    /// their `since` cursor against this: if `since < earliest_event_id`
+    /// they're polling into a window that has already been evicted,
+    /// so some events were missed.
+    pub earliest_event_id: u64,
 }
 
 /// Snapshot of scenario-scoped metrics for `/api/scenario/report`.
@@ -357,6 +365,7 @@ impl World {
             elapsed_s: g.elapsed_s(now),
             event_count: g.event_count(),
             next_event_id: g.next_event_id(),
+            earliest_event_id: g.earliest_event_id(),
         }
     }
 

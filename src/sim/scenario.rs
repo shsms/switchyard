@@ -294,6 +294,15 @@ impl ScenarioJournal {
     pub fn next_event_id(&self) -> u64 {
         self.next_id
     }
+
+    /// Smallest event id currently retained. After the ring evicts
+    /// `K` events this is `K` — so a polling client comparing
+    /// `since` against this can tell whether their cursor fell
+    /// inside the evicted window and how many entries they lost.
+    /// Returns `next_event_id` when the ring is empty (no gap).
+    pub fn earliest_event_id(&self) -> u64 {
+        self.events.front().map(|e| e.id).unwrap_or(self.next_id)
+    }
 }
 
 #[cfg(test)]

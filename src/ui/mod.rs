@@ -557,6 +557,11 @@ struct ScenarioEventsResponse {
     /// have arrived since last poll, but new ones might before the
     /// next).
     next_event_id: u64,
+    /// Lowest event id still in the ring. Clients comparing
+    /// `earliest_event_id > since` know their cursor was inside
+    /// the evicted window and they missed `earliest_event_id - since`
+    /// entries.
+    earliest_event_id: u64,
 }
 
 async fn scenario_events(
@@ -566,10 +571,11 @@ async fn scenario_events(
     let since = q.since.unwrap_or(0);
     let limit = q.limit.unwrap_or(200).min(1000);
     let events = config.world().scenario_events_since(since, limit);
-    let next_event_id = config.world().scenario_summary(Utc::now()).next_event_id;
+    let summary = config.world().scenario_summary(Utc::now());
     Json(ScenarioEventsResponse {
         events,
-        next_event_id,
+        next_event_id: summary.next_event_id,
+        earliest_event_id: summary.earliest_event_id,
     })
 }
 
