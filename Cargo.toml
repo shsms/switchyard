@@ -11,8 +11,8 @@ prost = "0.14.0"
 prost-types = "0.14.0"
 tokio = { version = "1.43.1", features = ["rt", "rt-multi-thread", "macros", "sync", "time"] }
 tokio-stream = "0.1.15"
-tulisp = { git = "https://github.com/shsms/tulisp", branch = "fmt", features = ["sync", "etags"] }
-tulisp-fmt = { git = "https://github.com/shsms/tulisp", branch = "fmt" }
+tulisp = { git = "https://github.com/shsms/tulisp", features = ["sync", "etags"] }
+tulisp-fmt = { git = "https://github.com/tulisp/tulisp-fmt" }
 tulisp-async = { git = "https://github.com/tulisp/tulisp-async" }
 notify = "6.1.1"
 futures = "0.3.30"
