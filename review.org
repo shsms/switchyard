@@ -39,7 +39,7 @@ rated, not effective, with a documented rationale ("avoid bouncing
 between accept/reject as the cell tops up"). Inconsistency: clients
 seeing OutOfBounds responses can't tell which discipline applied.
 
-** H3. EV charger silently drops AugmentBounds requests
+** H3. EV charger silently drops AugmentBounds requests :DONE:
 [[file:src/sim/ev_charger.rs::117][ev_charger.rs:117]]
 
 Battery inverter, solar inverter, and battery override

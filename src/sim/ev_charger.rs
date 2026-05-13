@@ -10,7 +10,7 @@ use parking_lot::Mutex;
 
 use crate::sim::{
     Category, SetpointError, SimulatedComponent, Telemetry, World,
-    bounds::VecBounds,
+    bounds::{ComponentBounds, VecBounds},
     decay::{SocProtect, soc_protected_bounds},
     ramp::{CommandDelay, Ramp},
 };
@@ -54,6 +54,10 @@ pub struct EvCharger {
     state: Mutex<EvState>,
     delay: CommandDelay,
     ramp: Ramp,
+    /// Rated bounds + a queue of time-limited augmentations applied
+    /// via `AugmentElectricalComponentBounds`. The SoC-protective
+    /// derate is composed on top at tick time — see `tick`.
+    bounds: Mutex<ComponentBounds>,
 }
 
 #[derive(Debug, Clone)]
@@ -79,6 +83,7 @@ impl EvCharger {
         );
         let delay = CommandDelay::new(cfg.command_delay);
         let ramp = Ramp::new(cfg.ramp_rate_w_per_s, 0.0);
+        let bounds = ComponentBounds::rated(cfg.rated_lower_w, cfg.rated_upper_w);
         Self {
             id,
             name: format!("ev-charger-{id}"),
@@ -91,6 +96,7 @@ impl EvCharger {
             }),
             delay,
             ramp,
+            bounds: Mutex::new(bounds),
         }
     }
 
@@ -132,11 +138,16 @@ impl SimulatedComponent for EvCharger {
     }
 
     fn tick(&self, _world: &World, now: DateTime<Utc>, dt: Duration) {
-        // 1. Refresh SoC-derated bounds and snapshot them for the rest
+        // 1. Drop any expired augmentations before recomputing
+        //    bounds — otherwise a just-elapsed narrowing would clip
+        //    the ramp for one extra tick.
+        self.bounds.lock().drop_expired(now);
+
+        // 2. Refresh SoC-derated bounds and snapshot them for the rest
         //    of the tick under a single lock acquisition. Splitting
         //    `(self.state.lock().lo, self.state.lock().up)` would
         //    re-enter the same parking_lot::Mutex and deadlock.
-        let (lower, upper) = {
+        let (soc_lo, soc_hi) = {
             let mut s = self.state.lock();
             let (l, u) = self.refresh_bounds(s.soc_pct);
             s.effective_lower_w = l;
@@ -144,11 +155,27 @@ impl SimulatedComponent for EvCharger {
             (l, u)
         };
 
-        // 2. Promote pending command + clamp into the new envelope.
+        // 3. Compose the effective envelope: SoC-protected ∩ rated ∩
+        //    augmentations. Both sides are single-bucket today, so
+        //    the intersection is single-bucket too. If
+        //    augmentations don't overlap SoC-protected at all (rare
+        //    — a client narrowed the rated range tighter than the
+        //    derate), refuse to charge or discharge.
+        let aug_eff = self.bounds.lock().effective();
+        let envelope = VecBounds::single(soc_lo, soc_hi).intersect(&aug_eff);
+        let (lower, upper) = envelope
+            .0
+            .first()
+            .map(|b| (b.lower.unwrap_or(soc_lo), b.upper.unwrap_or(soc_hi)))
+            .unwrap_or((0.0, 0.0));
+
+        // 4. Promote pending command + clamp into the composed
+        //    envelope.
         if let Some(target) = self.delay.poll(now) {
             self.ramp.set_target(target.clamp(lower, upper));
         } else {
-            // Pull existing target back if SoC just narrowed it.
+            // Pull existing target back if SoC or a fresh
+            // augmentation just narrowed it.
             let t = self.ramp.target();
             let clamped = t.clamp(lower, upper);
             if (clamped - t).abs() > f32::EPSILON {
@@ -156,7 +183,7 @@ impl SimulatedComponent for EvCharger {
             }
         }
 
-        // 3. Slew + integrate SoC. ΔSoC = P · dt / capacity, in %.
+        // 5. Slew + integrate SoC. ΔSoC = P · dt / capacity, in %.
         // Clamping at the SoC boundary prevents unphysical "extra"
         // charge from accumulating when the protective taper is
         // disabled — same fix as Battery.
@@ -182,17 +209,20 @@ impl SimulatedComponent for EvCharger {
             capacity_wh: Some(self.cfg.capacity_wh),
             per_phase_voltage_v: Some(grid.voltage_per_phase),
             frequency_hz: Some(grid.frequency_hz),
-            active_power_bounds: Some(VecBounds::single(s.effective_lower_w, s.effective_upper_w)),
+            active_power_bounds: self.effective_active_bounds(),
             cable_state: Some("ev-charging-cable-locked-at-ev"),
             ..Default::default()
         }
     }
 
     fn set_active_setpoint(&self, power_w: f32) -> Result<(), SetpointError> {
-        // Validate against rated, not SoC-derated — the SoC clamp is
-        // enforced silently per tick to avoid bouncing between accept/
-        // reject as the cell tops up.
-        if power_w < self.cfg.rated_lower_w || power_w > self.cfg.rated_upper_w {
+        // Validate against rated ∩ augmentations, not SoC-derated —
+        // the SoC clamp stays silent (avoids bouncing accept / reject
+        // as the cell tops up). Augmentations are an explicit
+        // narrowing the client just asked for and expects to take
+        // effect, so they belong in the validation envelope.
+        let envelope = self.bounds.lock().effective();
+        if !envelope.contains(power_w) {
             return Err(SetpointError::OutOfBounds {
                 value: power_w,
                 lower: self.cfg.rated_lower_w,
@@ -201,6 +231,15 @@ impl SimulatedComponent for EvCharger {
         }
         self.delay.set_target(Utc::now(), power_w);
         Ok(())
+    }
+
+    fn augment_active_bounds(
+        &self,
+        ts: DateTime<Utc>,
+        bounds: VecBounds,
+        lifetime: Duration,
+    ) {
+        self.bounds.lock().add_augmentation(ts, bounds, lifetime);
     }
 
     fn reset_setpoint(&self) {
@@ -218,6 +257,98 @@ impl SimulatedComponent for EvCharger {
 
     fn effective_active_bounds(&self) -> Option<VecBounds> {
         let s = self.state.lock();
-        Some(VecBounds::single(s.effective_lower_w, s.effective_upper_w))
+        let soc = VecBounds::single(s.effective_lower_w, s.effective_upper_w);
+        drop(s);
+        let aug = self.bounds.lock().effective();
+        Some(soc.intersect(&aug))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::proto::common::metrics::Bounds;
+
+    fn charger() -> EvCharger {
+        EvCharger::new(
+            300,
+            Duration::from_secs(1),
+            EvChargerConfig {
+                rated_lower_w: 0.0,
+                rated_upper_w: 22_000.0,
+                soc_protect_margin_pct: 0.0,
+                command_delay: Duration::ZERO,
+                ramp_rate_w_per_s: f32::INFINITY,
+                ..Default::default()
+            },
+        )
+    }
+
+    /// Augmenting the active-power bounds tightens both the
+    /// validation envelope and the telemetry-reported bounds. Before
+    /// the override on `augment_active_bounds` the call silently
+    /// dropped — the rated bounds stayed in effect and clients saw
+    /// a setpoint they thought they'd narrowed go through.
+    #[test]
+    fn augment_active_bounds_narrows_validation_and_telemetry() {
+        let w = World::new();
+        let ev = charger();
+        ev.augment_active_bounds(
+            Utc::now(),
+            VecBounds(vec![Bounds {
+                lower: Some(0.0),
+                upper: Some(5_000.0),
+            }]),
+            Duration::from_secs(60),
+        );
+
+        // Effective bounds now reflect the augmentation.
+        let eff = ev.effective_active_bounds().unwrap();
+        assert_eq!(eff.0.len(), 1);
+        assert_eq!(eff.0[0].lower, Some(0.0));
+        assert_eq!(eff.0[0].upper, Some(5_000.0));
+
+        // A setpoint inside the augmented envelope still works.
+        assert!(ev.set_active_setpoint(3_000.0).is_ok());
+        ev.tick(&w, Utc::now(), Duration::from_millis(100));
+        assert!((ev.aggregate_power_w(&w) - 3_000.0).abs() < 1.0);
+
+        // A setpoint outside the augmented envelope is rejected even
+        // though it's still inside rated.
+        assert!(matches!(
+            ev.set_active_setpoint(10_000.0),
+            Err(SetpointError::OutOfBounds { .. })
+        ));
+    }
+
+    /// Once the augmentation's lifetime elapses, `tick` reaps it and
+    /// the rated bounds come back in full.
+    #[test]
+    fn augmentation_expires_and_rated_returns() {
+        let w = World::new();
+        let ev = charger();
+        let t0 = Utc::now();
+        ev.augment_active_bounds(
+            t0,
+            VecBounds(vec![Bounds {
+                lower: Some(0.0),
+                upper: Some(5_000.0),
+            }]),
+            Duration::from_millis(50),
+        );
+
+        // Pre-expiry: narrowed.
+        let eff = ev.effective_active_bounds().unwrap();
+        assert_eq!(eff.0[0].upper, Some(5_000.0));
+
+        // Tick past the lifetime — `drop_expired` reaps inside tick.
+        ev.tick(
+            &w,
+            t0 + chrono::Duration::milliseconds(100),
+            Duration::from_millis(50),
+        );
+
+        let eff = ev.effective_active_bounds().unwrap();
+        assert_eq!(eff.0[0].upper, Some(22_000.0));
     }
 }
