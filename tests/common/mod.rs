@@ -59,7 +59,7 @@ impl TestServer {
         let path = tempdir.path().join("config.lisp");
         std::fs::write(&path, config_body).expect("write config");
 
-        let config = Config::new(path.to_str().unwrap());
+        let config = Config::new(path.to_str().unwrap()).expect("config eval");
         // Physics + history sampler match the prod boot sequence.
         World::clone(&config.world()).spawn_physics();
         World::clone(&config.world()).spawn_history_sampler();

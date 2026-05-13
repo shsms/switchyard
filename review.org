@@ -108,7 +108,7 @@ inconsistency isn't documented. A client SDK shared between the
 two endpoints will discover the 5 vs 10 s mismatch the hard way.
 Worth a doc note even if it's spec-driven.
 
-** H7. ~Config::new~ swallows file-eval errors
+** H7. ~Config::new~ swallows file-eval errors :DONE:
 [[file:src/lisp/mod.rs::121][lisp/mod.rs:121]]
 
 #+begin_src rust

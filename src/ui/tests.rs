@@ -26,7 +26,7 @@ async fn config_with(body: &str) -> Config {
     std::fs::create_dir_all(&p).unwrap();
     let path = p.join("config.lisp");
     write!(std::fs::File::create(&path).unwrap(), "{body}").unwrap();
-    Config::new(path.to_str().unwrap())
+    Config::new(path.to_str().unwrap()).expect("config eval")
 }
 
 static UNIQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);

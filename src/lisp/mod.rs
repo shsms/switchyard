@@ -82,7 +82,13 @@ pub struct PersistedOverride {
 }
 
 impl Config {
-    pub fn new(filename: &str) -> Self {
+    /// Build a config from `filename`. Returns the formatted lisp
+    /// error on parse / eval failure — caller decides whether to
+    /// panic (binary boot) or surface in the UI (hot reload). On
+    /// error the world is left empty (no components registered)
+    /// rather than partially built; the caller is expected to retry
+    /// or abort.
+    pub fn new(filename: &str) -> Result<Self, String> {
         let mut ctx = TulispContext::new();
         let world = World::new();
         let metadata = Arc::new(RwLock::new(Metadata::default()));
@@ -97,7 +103,7 @@ impl Config {
             _ => PathBuf::from("."),
         };
         ctx.set_load_path(Some(&load_dir))
-            .unwrap_or_else(|e| panic!("set_load_path({}): {:?}", load_dir.display(), e));
+            .map_err(|e| format!("set_load_path({}): {e}", load_dir.display()))?;
 
         register_runtime(&mut ctx, &world, metadata.clone(), load_dir.clone());
         register_watches(&mut ctx, load_dir.clone(), extra_watches.clone());
@@ -124,7 +130,9 @@ impl Config {
         Self::start_timeout_loop(world.clone());
 
         if let Err(e) = ctx.eval_file(filename) {
-            log::error!("Tulisp error:\n{}", e.format(&ctx));
+            let formatted = e.format(&ctx);
+            log::error!("Tulisp error:\n{formatted}");
+            return Err(formatted);
         }
 
         let ctx = SharedMut::new(ctx);
@@ -149,13 +157,13 @@ impl Config {
             timer_handle.tick(&mut guard);
         }));
 
-        Self {
+        Ok(Self {
             filename: filename.to_string(),
             ctx,
             world,
             metadata,
             extra_watches,
-        }
+        })
     }
 
     fn start_timeout_loop(world: World) {
@@ -378,7 +386,16 @@ impl Config {
             file.flush()?;
         }
         fs::rename(&tmp, &path)?;
-        self.reload();
+        // A reload error after a successful rewrite leaves the file
+        // on disk and the world reset to empty — the next save
+        // (or a manual `reload`) is the recovery path. Surface the
+        // error as IO so the HTTP handler can return 5xx; the
+        // user's already lost the broken forms either way.
+        if let Err(msg) = self.reload() {
+            return Err(std::io::Error::other(format!(
+                "reload after rewrite failed: {msg}"
+            )));
+        }
         Ok(dropped)
     }
 
@@ -394,14 +411,19 @@ impl Config {
         ))
     }
 
-    pub fn reload(&self) {
+    /// Re-evaluate the config file, resetting World state first.
+    /// Returns the formatted lisp error on failure — the world is
+    /// left in its post-reset (empty) state in that case so the
+    /// next reload starts from a known baseline.
+    pub fn reload(&self) -> Result<(), String> {
         let start = std::time::Instant::now();
         self.world.reset();
         {
             let mut ctx = self.ctx.borrow_mut();
             if let Err(e) = ctx.eval_file(&self.filename) {
-                log::error!("Tulisp error:\n{}", e.format(&ctx));
-                return;
+                let formatted = e.format(&ctx);
+                log::error!("Tulisp error:\n{formatted}");
+                return Err(formatted);
             }
         }
         // Tell UI subscribers the World rebuilt. Catches the
@@ -413,6 +435,7 @@ impl Config {
             "Reloaded config in {:.1}ms",
             start.elapsed().as_secs_f64() * 1000.0
         );
+        Ok(())
     }
 
     pub async fn watch(self) {
@@ -447,7 +470,11 @@ impl Config {
                 Ok(event) => {
                     if let notify::EventKind::Modify(_) = event.kind {
                         tokio::time::sleep(Duration::from_millis(50)).await;
-                        self.reload();
+                        // Reload errors are logged by `reload()`; the
+                        // watcher loop intentionally keeps going so a
+                        // typo doesn't kill the live-edit feedback
+                        // path. Recovery is the next save.
+                        let _ = self.reload();
                     }
                 }
                 Err(e) => {
@@ -951,11 +978,41 @@ mod tests {
         let path = dir.join("config.lisp");
         std::fs::write(&path, body).unwrap();
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let cfg = rt.block_on(async { Config::new(path.to_str().unwrap()) });
+        let cfg = rt
+            .block_on(async { Config::new(path.to_str().unwrap()) })
+            .expect("config eval");
         // Drop the runtime — Config keeps its own handles to whatever
         // tulisp-async spawned during init.
         std::mem::forget(rt);
         (cfg, dir)
+    }
+
+    /// `Config::new` returns Err on lisp eval failure rather than
+    /// silently logging — the binary panics with a useful message
+    /// and tests get a clear assertion target rather than a
+    /// half-built World.
+    #[test]
+    fn config_new_returns_err_on_bad_lisp() {
+        let mut dir = std::env::temp_dir();
+        dir.push(format!(
+            "switchyard-cfg-bad-{}-{}",
+            std::process::id(),
+            UNIQ.fetch_add(1, Ordering::Relaxed),
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.lisp");
+        std::fs::write(&path, "(this-is-not-a-defun-anywhere 42)").unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let res = rt.block_on(async { Config::new(path.to_str().unwrap()) });
+        std::mem::forget(rt);
+        let err = match res {
+            Ok(_) => panic!("expected lisp error for undefined fn"),
+            Err(e) => e,
+        };
+        assert!(
+            err.contains("this-is-not-a-defun-anywhere"),
+            "error should name the offending symbol: {err}",
+        );
     }
 
     /// The pre-tick hook drains tulisp-async's pending-timer queue

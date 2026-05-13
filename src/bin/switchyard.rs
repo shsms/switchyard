@@ -40,7 +40,10 @@ async fn main() {
     let cfg_path = PathBuf::from(cfg_path);
     log::info!("Loading config from {}", cfg_path.display());
 
-    let config = Config::new(cfg_path.to_str().unwrap());
+    let config = Config::new(cfg_path.to_str().unwrap()).unwrap_or_else(|e| {
+        log::error!("Failed to load config:\n{e}");
+        std::process::exit(1);
+    });
     let world = config.world();
     log::info!(
         "Loaded {} components, {} connections",
