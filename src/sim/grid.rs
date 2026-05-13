@@ -42,6 +42,11 @@ impl SimulatedComponent for Grid {
         Duration::from_secs(1)
     }
     fn tick(&self, _world: &World, _now: DateTime<Utc>, _dt: Duration) {}
+    /// Grid is a topology root; per-phase voltage / frequency reads
+    /// belong on the meter directly downstream of it (those are the
+    /// fields a real control app subscribes to). Returning only
+    /// id + category here keeps the stream lean and matches how
+    /// microsim modelled the grid connection point.
     fn telemetry(&self, _world: &World) -> Telemetry {
         Telemetry {
             id: self.id,

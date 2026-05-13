@@ -1,5 +1,14 @@
 //! Tracks the deadline by which the most recent set-power request for
 //! each component expires. Mirrors microsim's TimeoutTracker.
+//!
+//! Implementation is a `HashMap<u64, Instant>` swept by
+//! `remove_expired` once per timeout-loop tick (100 ms cadence).
+//! Sweep is O(N) over active entries; with typical scales (tens of
+//! components, occasional setpoint churn) that's a non-issue. For
+//! large microgrids with thousands of active timeouts the natural
+//! upgrade is a `BinaryHeap<(Instant, u64)>` so the sweep pops only
+//! the earliest-due entry. Defer that until the scan shows up in a
+//! profile.
 
 use std::{
     collections::HashMap,

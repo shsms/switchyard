@@ -297,7 +297,7 @@ async fn history(
     State(config): State<Config>,
     Query(q): Query<HistoryQuery>,
 ) -> Result<Json<HistoryResponse>, (StatusCode, String)> {
-    let metric = parse_metric(&q.metric).ok_or_else(|| {
+    let metric: Metric = q.metric.parse().map_err(|_| {
         (
             StatusCode::BAD_REQUEST,
             format!("unknown metric '{}'", q.metric),
@@ -319,20 +319,6 @@ async fn history(
         metric: q.metric,
         samples,
     }))
-}
-
-fn parse_metric(s: &str) -> Option<Metric> {
-    match s {
-        "active_power_w" => Some(Metric::ActivePowerW),
-        "reactive_power_var" => Some(Metric::ReactivePowerVar),
-        "frequency_hz" => Some(Metric::FrequencyHz),
-        "soc_pct" => Some(Metric::SocPct),
-        "active_power_lower_bound_w" => Some(Metric::ActivePowerLowerBoundW),
-        "active_power_upper_bound_w" => Some(Metric::ActivePowerUpperBoundW),
-        "reactive_power_lower_bound_var" => Some(Metric::ReactivePowerLowerBoundVar),
-        "reactive_power_upper_bound_var" => Some(Metric::ReactivePowerUpperBoundVar),
-        _ => None,
-    }
 }
 
 #[derive(Deserialize)]
@@ -376,6 +362,14 @@ struct DefaultsResponse {
     entries: Vec<DefaultsEntry>,
 }
 
+/// Category names the defaults endpoint walks to fetch each
+/// `*-defaults` alist out of the running interpreter. Order is
+/// stable so the UI's defaults editor renders the same sections
+/// every time. New component categories need to be added here AND
+/// to the corresponding `(setq foo-defaults '((...)))` block in
+/// `sim/defaults.lisp` (otherwise the endpoint silently drops the
+/// new category — `eval_silent` on an unbound symbol fails and
+/// the entry is skipped).
 const DEFAULT_CATEGORIES: &[&str] = &[
     "grid",
     "meter",

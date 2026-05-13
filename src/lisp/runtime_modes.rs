@@ -40,7 +40,7 @@ macro_rules! impl_lisp_symbol_enum {
                 })?;
                 Self::from_str(&sym).map_err(|_| {
                     ::tulisp::Error::invalid_argument(format!(
-                        "unknown :{} '{sym}; expected one of {}",
+                        "unknown :{} '{sym}'; expected one of {}",
                         $label, $expected
                     ))
                 })

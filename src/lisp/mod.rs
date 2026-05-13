@@ -39,7 +39,12 @@ pub struct Metadata {
     /// Fallback request lifetime when a `SetElectricalComponentPower`
     /// caller doesn't supply `request_lifetime`. Mirrors microsim's
     /// `retain-requests-duration-ms`. Tunable via
-    /// `(set-default-request-lifetime-ms N)`.
+    /// `(set-default-request-lifetime-ms N)`. The gRPC handler's
+    /// per-request validation in `server::resolve_lifetime` clamps
+    /// to `[REQUEST_LIFETIME_MIN_S, REQUEST_LIFETIME_MAX_S]`; this
+    /// default isn't clamped (a config that wants short / long
+    /// fallbacks is responsible for picking values that align with
+    /// its operational expectations).
     pub default_request_lifetime: Duration,
 }
 

@@ -148,9 +148,7 @@ impl ScenarioJournal {
             entry.0 += v;
             entry.1 += 1;
             while self.window_avgs.len() > WINDOW_AVG_CAPACITY {
-                if let Some(&oldest) = self.window_avgs.keys().next() {
-                    self.window_avgs.remove(&oldest);
-                }
+                self.window_avgs.pop_first();
             }
         }
     }

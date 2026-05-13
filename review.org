@@ -251,14 +251,14 @@ can show a banner.
 
 * Low severity — polish
 
-** L1. ~ui::parse_metric~ is hand-maintained
+** L1. ~ui::parse_metric~ is hand-maintained :DONE:
 [[file:src/ui/mod.rs::324][ui/mod.rs:324]]
 
 Match arm per ~Metric~ variant. Adding a metric without touching
 this returns ~unknown metric~ from the UI. Derive ~FromStr~ for
 ~Metric~ off ~Metric::as_str~ to keep it in sync.
 
-** L2. ~DEFAULT_CATEGORIES~ is a hardcoded list
+** L2. ~DEFAULT_CATEGORIES~ is a hardcoded list :DONE:
 [[file:src/ui/mod.rs::379][ui/mod.rs:379]]
 
 New component category in Rust requires manual addition to this
@@ -269,7 +269,7 @@ hardcode and note the duplication in CLAUDE.md).
 Telegraphs that these are read-only aggregators / markers. Not a
 bug; trait default would do the same.
 
-** L4. ~ComponentHistory::push_snapshot~ only takes the first VecBounds segment for charts
+** L4. ~ComponentHistory::push_snapshot~ only takes the first VecBounds segment for charts :DONE:
 [[file:src/sim/history.rs::152][history.rs:152]]
 
 For multi-segment bounds (e.g. forbidden gap), only the first
@@ -277,7 +277,7 @@ For multi-segment bounds (e.g. forbidden gap), only the first
 Worth surfacing in the API: ~/api/history~ returns a single series
 but the underlying envelope might be multi-band. Future work.
 
-** L5. ~Config::reload~ doesn't return / surface eval errors
+** L5. ~Config::reload~ doesn't return / surface eval errors :DONE:
 ~reload(&self)~ returns ~()~. The watcher loop has nowhere to send
 the error. Could broadcast a ~WorldEvent::ConfigError~ for the UI
 to display.
@@ -289,7 +289,7 @@ Accepts both forms but ~kind_str~ stores the printed form. Either
 canonicalize (always-lowercase-symbol) or surface the original form
 in events JSON. Minor inconsistency.
 
-** L7. ~ScenarioJournal::record_sample~ reaper uses an inefficient loop
+** L7. ~ScenarioJournal::record_sample~ reaper uses an inefficient loop :DONE:
 [[file:src/sim/scenario.rs::150][scenario.rs:150]]
 
 #+begin_src rust
@@ -303,7 +303,7 @@ while self.window_avgs.len() > WINDOW_AVG_CAPACITY {
 BTreeMap has ~pop_first~ — single call, no key clone. Tiny perf
 nit; runs at most once per sample.
 
-** L8. Unmatched single quote in runtime_modes error message
+** L8. Unmatched single quote in runtime_modes error message :DONE:
 [[file:src/lisp/runtime_modes.rs::43][runtime_modes.rs:43]]
 
 #+begin_src rust
@@ -315,14 +315,14 @@ Cosmetic; renders as ~unknown :health 'borked; expected one of ...~.
 Likely intentional (treating ~'borked~ as the symbol literal) but
 inconsistent with normal English quoting.
 
-** L9. Empty Grid telemetry
+** L9. Empty Grid telemetry :DONE:
 [[file:src/sim/grid.rs::45][grid.rs:45]]
 
 Telemetry returns only id + category. A control app reading grid
 voltage / frequency goes to the meter, not the grid. Probably
 intentional but worth a doc note.
 
-** L10. ~timeout_tracker~'s ~remove_expired~ walks the whole map
+** L10. ~timeout_tracker~'s ~remove_expired~ walks the whole map :DONE:
 [[file:src/timeout_tracker.rs::26][timeout_tracker.rs:26]]
 
 O(N) over registered components per poll (100 ms interval). For
@@ -330,7 +330,7 @@ typical scales, fine. For thousands of components with active
 timeouts, a ~BinaryHeap<(Instant, u64)>~ would let the loop pop the
 single earliest entry.
 
-** L11. Default ~default_request_lifetime~ is 60 s
+** L11. Default ~default_request_lifetime~ is 60 s :DONE:
 [[file:src/lisp/mod.rs::53][lisp/mod.rs:53]]
 
 Hardcoded; ~(set-default-request-lifetime-ms N)~ can override. The
@@ -473,7 +473,7 @@ through. Adding a ~:args~ plist field would let users write
 instead of having to construct a closing lambda. Cosmetic;
 flagged in our last conversation about tulisp-async.
 
-** LD3. ~scenario-end-after~ takes minutes, not seconds
+** LD3. ~scenario-end-after~ takes minutes, not seconds :DONE:
 [[file:sim/common.lisp::71][sim/common.lisp:71]]
 
 Most other DSL ops are in seconds (e.g. ~run-with-timer~) or
@@ -482,7 +482,7 @@ minutes. Surface in the docstring (already mentions "MINUTES"
 explicitly) but a consistency-with-the-rest argument could
 push toward seconds.
 
-** LD4. ~active-timers~ is process-global
+** LD4. ~active-timers~ is process-global :DONE:
 [[file:sim/common.lisp::21][sim/common.lisp:21]]
 
 Single global list. If two distinct scenario scripts ever load

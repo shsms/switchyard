@@ -47,6 +47,30 @@ impl Metric {
     }
 }
 
+impl std::str::FromStr for Metric {
+    type Err = ();
+
+    /// Parse a metric name (the string `as_str` returns) back into
+    /// the enum. Used by the HTTP layer where the metric arrives as
+    /// a query-string field. `Err(())` for an unknown name.
+    fn from_str(s: &str) -> Result<Self, ()> {
+        // Single source of truth: enumerate ALL once here so a new
+        // variant in the enum stays in lockstep with both as_str
+        // and from_str.
+        const ALL: &[Metric] = &[
+            Metric::ActivePowerW,
+            Metric::ReactivePowerVar,
+            Metric::FrequencyHz,
+            Metric::SocPct,
+            Metric::ActivePowerLowerBoundW,
+            Metric::ActivePowerUpperBoundW,
+            Metric::ReactivePowerLowerBoundVar,
+            Metric::ReactivePowerUpperBoundVar,
+        ];
+        ALL.iter().copied().find(|m| m.as_str() == s).ok_or(())
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Sample {
     pub ts: DateTime<Utc>,
@@ -146,9 +170,12 @@ impl ComponentHistory {
         if let Some(b) = &snapshot.active_power_bounds {
             // Charts plot a single envelope band, so take the first
             // bounds segment. Components that emit multi-segment
-            // VecBounds (split by a forbidden gap) lose the inner
-            // detail in the chart view; live values still go through
-            // the gRPC stream un-collapsed.
+            // VecBounds (split by a forbidden gap — e.g. an
+            // augmentation that disjointly narrows the rated range)
+            // lose the inner detail in the chart view; live values
+            // still go through the gRPC stream un-collapsed. If the
+            // UI ever needs the gap, push every segment instead and
+            // teach the chart to plot piecewise.
             if let Some(first) = b.0.first() {
                 if let Some(v) = first.lower {
                     record(self, Metric::ActivePowerLowerBoundW, v);

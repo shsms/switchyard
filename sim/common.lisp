@@ -18,6 +18,12 @@
 ;; Live timer handles created by `every` and friends. Tracked so that
 ;; reset-state can cancel them on a config reload — otherwise the old
 ;; callbacks keep firing into a fresh, unrelated World.
+;;
+;; Process-global by design. If two distinct scenario scripts ever
+;; share a process (rare with the current single-Config design),
+;; reset-state would cancel both. Switchyard runs one Config per
+;; process, so today there's no namespace conflict; revisit if a
+;; multi-config layout shows up.
 (unless (boundp 'active-timers)
   (setq active-timers nil))
 
@@ -70,9 +76,11 @@ so user-driven mutations apply on top of the canonical graph."
 
 (defun scenario-end-after (minutes)
   "Schedule a single-shot timer that runs (scenario-stop) after
-MINUTES wall-clock minutes. Useful for fixed-duration runs like
-`(scenario-end-after 60)` to cap the scenario at one hour. The
-handle goes through `every`'s tracker so a reload cancels it."
+MINUTES wall-clock MINUTES (not seconds — most other DSL ops are
+seconds or milliseconds; this one is minutes because the use case
+is fixed-duration runs sized in minutes, e.g.
+`(scenario-end-after 60)` for a one-hour cap). The handle goes
+through `every`'s tracker so a reload cancels it."
   (let ((secs (* minutes 60.0)))
     (setq active-timers
           (cons (run-with-timer secs nil 'scenario-stop)
