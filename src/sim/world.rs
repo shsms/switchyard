@@ -648,8 +648,14 @@ impl World {
         was_present
     }
 
-    /// Drop a single parent → child edge. Returns true if the edge
-    /// existed. Doesn't touch either endpoint's registration.
+    /// Drop every `(parent, child)` edge from the graph. Returns
+    /// true if at least one edge was removed. Doesn't touch either
+    /// endpoint's registration.
+    ///
+    /// Duplicates collapse — if `(world-connect …)` was called
+    /// twice with the same pair, one disconnect removes both. The
+    /// connections graph carries no positional identity, so there's
+    /// no "remove only the first instance" semantics.
     pub fn disconnect(&self, parent: u64, child: u64) -> bool {
         let mut edges = self.inner.connections.write();
         let before = edges.len();
@@ -1211,22 +1217,32 @@ mod tests {
 
     /// Components used as stubs in the mutation-method tests below.
     /// All they need to do is identify themselves; physics is irrelevant.
-    struct Stub(u64);
+    struct Stub {
+        id: u64,
+        name: String,
+    }
+    impl Stub {
+        fn new(id: u64) -> Self {
+            Self {
+                id,
+                name: format!("stub-{id}"),
+            }
+        }
+    }
     impl std::fmt::Display for Stub {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "stub-{}", self.0)
+            f.write_str(&self.name)
         }
     }
     impl SimulatedComponent for Stub {
         fn id(&self) -> u64 {
-            self.0
+            self.id
         }
         fn category(&self) -> crate::sim::Category {
             crate::sim::Category::Meter
         }
         fn name(&self) -> &str {
-            // 'static lifetime via leak — fine for tests
-            Box::leak(format!("stub-{}", self.0).into_boxed_str())
+            &self.name
         }
         fn stream_interval(&self) -> Duration {
             Duration::from_secs(1)
@@ -1240,9 +1256,9 @@ mod tests {
     #[test]
     fn remove_component_drops_registry_and_edges() {
         let w = World::new();
-        w.register(Stub(1));
-        w.register(Stub(2));
-        w.register(Stub(3));
+        w.register(Stub::new(1));
+        w.register(Stub::new(2));
+        w.register(Stub::new(3));
         w.connect(1, 2);
         w.connect(2, 3);
         w.connect(1, 3);
@@ -1260,8 +1276,8 @@ mod tests {
     #[test]
     fn disconnect_drops_one_edge_keeps_endpoints() {
         let w = World::new();
-        w.register(Stub(1));
-        w.register(Stub(2));
+        w.register(Stub::new(1));
+        w.register(Stub::new(2));
         w.connect(1, 2);
         w.connect(1, 2); // duplicate
         assert!(w.disconnect(1, 2));
@@ -1276,7 +1292,7 @@ mod tests {
     #[test]
     fn rename_overrides_display_name_only() {
         let w = World::new();
-        w.register(Stub(7));
+        w.register(Stub::new(7));
         assert_eq!(w.display_name(7).as_deref(), Some("stub-7"));
         w.rename(7, "frontside-meter".into());
         assert_eq!(w.display_name(7).as_deref(), Some("frontside-meter"));
@@ -1308,7 +1324,7 @@ mod tests {
     fn reset_clears_scenario_and_main_meter() {
         use crate::sim::setpoints::{SetpointEvent, SetpointKind, SetpointOutcome};
         let w = World::new();
-        w.register(Stub(1));
+        w.register(Stub::new(1));
         w.set_main_meter(1).unwrap();
         w.log_setpoint(
             1,

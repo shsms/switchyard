@@ -202,6 +202,14 @@ impl SimulatedComponent for Battery {
         }
     }
 
+    /// Battery's contribution to its parent meter — *active* DC
+    /// power only. `telemetry().dc_power_w` is the *signed apparent*
+    /// magnitude (√(P²+Q²) with the sign of P) so a SCADA-style
+    /// instrument reads the actual conductor loading, but parent
+    /// meters integrate energy and a reactive flow doesn't move
+    /// joules. The split is deliberate; a control app comparing
+    /// the two values via /api/telemetry vs /api/topology will see
+    /// the gap whenever Q ≠ 0.
     fn aggregate_power_w(&self, _world: &World) -> f32 {
         self.state.lock().power_w
     }

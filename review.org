@@ -136,7 +136,7 @@ visible channel.
 
 * Medium severity — design issues, surprising semantics
 
-** M1. ~World::disconnect~ doc says "drop a single edge" but drops all
+** M1. ~World::disconnect~ doc says "drop a single edge" but drops all :DONE:
 [[file:src/sim/world.rs::641][world.rs:641]]
 
 #+begin_src rust
@@ -185,7 +185,7 @@ user reading only the defaults file might miss it. Could either:
 - Or surface a warning when defaults are mentioned and only one
   reactive arg is given.
 
-** M4. Battery telemetry mixes "active P" and "signed apparent magnitude"
+** M4. Battery telemetry mixes "active P" and "signed apparent magnitude" :DONE:
 [[file:src/sim/battery.rs::182][battery.rs:182]]
 
 - ~aggregate_power_w~ returns ~power_w~ (clamped active P).
@@ -197,7 +197,7 @@ contribution missing from one but present in the other.
 Documented in the comment, but worth surfacing in the public
 trait docs (~Telemetry::dc_power_w~).
 
-** M5. Stub leaks String through Box::leak per-call
+** M5. Stub leaks String through Box::leak per-call :DONE:
 [[file:src/sim/world.rs::1217][world.rs:1217]]
 
 The test stub's ~name(&self)~ does ~Box::leak(format!(...))~ each
