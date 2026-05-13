@@ -357,11 +357,11 @@ where the health check actually lives.
 Rewritten alongside H1 to call out grid state as the one
 intentional carry-over.
 
-** D4. ~setpoint_logs~ field doc says "broadcast it on the world
-event bus" — accurate, no change needed.
+** D4. ~setpoint_logs~ field doc — accurate, no change needed :DONE:
+Re-read confirms the existing field doc spells out the broadcast
+fan-out clearly.
 
-** D5. ~Battery::telemetry~ dc_power doc explains the signed-apparent
-choice (good) but ~aggregate_power_w~ doesn't note the asymmetry. :DONE:
+** D5. ~Battery::aggregate_power_w~ doesn't note the apparent/active asymmetry :DONE:
 Added the asymmetry note on ~aggregate_power_w~ in the M4 sweep.
 
 * Test coverage gaps
