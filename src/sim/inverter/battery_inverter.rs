@@ -53,15 +53,6 @@ pub struct BatteryInverter {
     name: String,
     interval: Duration,
     cfg: BatteryInverterConfig,
-    /// Hidden children captured at make-time — those are the only
-    /// ones not reachable via `World::connections`, since the
-    /// `connect_successors` helper deliberately skips hidden edges
-    /// to keep them out of the gRPC ListConnections response. Visible
-    /// children come straight from `World::connections` so the live
-    /// topology graph is the single source of truth for them
-    /// (post-make `(world-connect …)` lands, `(world-disconnect …)`
-    /// removes).
-    hidden_successors: Vec<u64>,
     bounds: Mutex<ComponentBounds>,
     delay: CommandDelay,
     ramp: Ramp,
@@ -76,12 +67,7 @@ pub struct BatteryInverter {
 }
 
 impl BatteryInverter {
-    pub fn new(
-        id: u64,
-        interval: Duration,
-        cfg: BatteryInverterConfig,
-        hidden_successors: Vec<u64>,
-    ) -> Self {
+    pub fn new(id: u64, interval: Duration, cfg: BatteryInverterConfig) -> Self {
         let bounds = ComponentBounds::rated(cfg.rated_lower_w, cfg.rated_upper_w);
         let delay = CommandDelay::new(cfg.command_delay);
         let ramp = Ramp::new(cfg.ramp_rate_w_per_s, 0.0);
@@ -95,7 +81,6 @@ impl BatteryInverter {
             name: format!("inv-bat-{id}"),
             interval,
             cfg,
-            hidden_successors,
             bounds: Mutex::new(bounds),
             delay,
             ramp,
@@ -151,7 +136,7 @@ impl SimulatedComponent for BatteryInverter {
         // MxN topology (N inverters → 1 bus → M batteries) settles to
         // the clamped sum of all parent pushes, not last-writer-wins.
         let healthy: Vec<u64> = world
-            .children_of(self.id, &self.hidden_successors)
+            .children_of(self.id)
             .into_iter()
             .filter(|id| world.runtime_of(*id).health == Health::Ok)
             .collect();
@@ -257,10 +242,6 @@ impl SimulatedComponent for BatteryInverter {
         self.reactive.published()
     }
 
-    fn hidden_successors(&self) -> Vec<u64> {
-        self.hidden_successors.clone()
-    }
-
     fn rated_active_bounds(&self) -> Option<(f32, f32)> {
         Some((self.cfg.rated_lower_w, self.cfg.rated_upper_w))
     }
@@ -331,7 +312,6 @@ mod tests {
                 ramp_rate_w_per_s: f32::INFINITY,
                 ..Default::default()
             },
-            vec![],
         );
         w.register(inv);
         w.connect(200, 100);
@@ -357,7 +337,6 @@ mod tests {
                 ramp_rate_w_per_s: f32::INFINITY,
                 ..Default::default()
             },
-            vec![],
         );
         w.register(inv);
         let inv = w.get(inv_id).unwrap();

@@ -180,18 +180,10 @@ async fn topology(State(config): State<Config>) -> Json<TopologySnapshot> {
             }
         })
         .collect();
-    let hidden_connections: Vec<(u64, u64)> = world
-        .components()
-        .iter()
-        .flat_map(|c| {
-            let pid = c.id();
-            c.hidden_successors().into_iter().map(move |cid| (pid, cid))
-        })
-        .collect();
     Json(TopologySnapshot {
         components,
         connections: world.connections(),
-        hidden_connections,
+        hidden_connections: world.hidden_connections(),
     })
 }
 

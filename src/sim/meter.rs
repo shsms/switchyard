@@ -17,14 +17,6 @@ pub struct Meter {
     id: u64,
     name: String,
     interval: Duration,
-    /// Make-time children that aren't reachable via
-    /// `World::connections`: the hidden ones (excluded from the gRPC
-    /// graph by `connect_successors`) and — for a hidden meter —
-    /// every child, since `connect_successors` is skipped wholesale
-    /// for hidden parents. Visible children come from
-    /// `World::children_of` so post-make `(world-connect …)` adds
-    /// and `(world-disconnect …)` removals just work.
-    hidden_successors: Vec<u64>,
     /// Override the aggregate-from-successors path with an explicit
     /// active-power source — either a constant or a Lisp expression
     /// re-resolved each tick. RwLock so `(set-meter-power)` can
@@ -43,7 +35,6 @@ impl Meter {
     pub fn new(
         id: u64,
         interval: Duration,
-        hidden_successors: Vec<u64>,
         power_source: Option<DynamicScalar>,
         stream_jitter_pct: f32,
         hidden: bool,
@@ -52,7 +43,6 @@ impl Meter {
             id,
             name: format!("meter-{id}"),
             interval,
-            hidden_successors,
             power_source: RwLock::new(power_source),
             stream_jitter_pct,
             hidden,
@@ -64,7 +54,7 @@ impl Meter {
             return scalar.get();
         }
         world
-            .children_of(self.id, &self.hidden_successors)
+            .children_of(self.id)
             .into_iter()
             .filter_map(|id| world.get(id).map(|c| (id, c)))
             .map(|(child_id, child)| {
@@ -73,8 +63,7 @@ impl Meter {
                 // 1 inverter shared by 2 parallel meters appears as
                 // half of its flow under each — the top meter sums
                 // them and lands on the inverter's actual power.
-                // hidden children have 0 edges in the graph; clamp
-                // to 1 (this meter is the sole consumer).
+                // Single-parent children clamp via `.max(1)`.
                 let share = world.parent_count(child_id).max(1) as f32;
                 child.aggregate_power_w(world) / share
             })
@@ -89,7 +78,7 @@ impl Meter {
             return 0.0;
         }
         world
-            .children_of(self.id, &self.hidden_successors)
+            .children_of(self.id)
             .into_iter()
             .filter_map(|id| world.get(id).map(|c| (id, c)))
             .map(|(child_id, child)| {
@@ -167,10 +156,6 @@ impl SimulatedComponent for Meter {
 
     fn aggregate_reactive_var(&self, world: &World) -> f32 {
         self.aggregate_reactive(world)
-    }
-
-    fn hidden_successors(&self) -> Vec<u64> {
-        self.hidden_successors.clone()
     }
 
     fn set_active_power_override(&self, p: f32) {
@@ -285,15 +270,15 @@ mod tests {
 
         // Two parallel meters that each list the inverter as their
         // only successor — connect both edges so parent_count(100) = 2.
-        let meter_a = Meter::new(10, Duration::from_secs(1), vec![100], None, 0.0, false);
-        let meter_b = Meter::new(11, Duration::from_secs(1), vec![100], None, 0.0, false);
+        let meter_a = Meter::new(10, Duration::from_secs(1), None, 0.0, false);
+        let meter_b = Meter::new(11, Duration::from_secs(1), None, 0.0, false);
         w.register(meter_a);
         w.register(meter_b);
         w.connect(10, 100);
         w.connect(11, 100);
 
         // Top meter aggregates both parallel meters.
-        let top = Meter::new(2, Duration::from_secs(1), vec![10, 11], None, 0.0, false);
+        let top = Meter::new(2, Duration::from_secs(1), None, 0.0, false);
         w.register(top);
         w.connect(2, 10);
         w.connect(2, 11);
@@ -320,10 +305,9 @@ mod tests {
         });
         w.register_arc(inverter);
         // Visible meter with the inverter as a make-time child —
-        // the cache stays empty (visible children come from
-        // World::connections), so the connect/disconnect dance
-        // works against connections only.
-        let m = Meter::new(2, Duration::from_secs(1), vec![], None, 0.0, false);
+        // connections is the single source of truth so the
+        // connect/disconnect dance flows through it directly.
+        let m = Meter::new(2, Duration::from_secs(1), None, 0.0, false);
         w.register(m);
         w.connect(2, 100);
         let m = w.get(2).unwrap();
@@ -346,7 +330,7 @@ mod tests {
             q: 0.0,
         });
         w.register_arc(inverter);
-        let m = Meter::new(2, Duration::from_secs(1), vec![], None, 0.0, false);
+        let m = Meter::new(2, Duration::from_secs(1), None, 0.0, false);
         w.register(m);
 
         // Pre-connect: nothing under the meter.
@@ -367,7 +351,6 @@ mod tests {
         let m = Meter::new(
             2,
             Duration::from_secs(1),
-            vec![],
             Some(DynamicScalar::constant(2750.0)),
             0.0,
             false,
@@ -392,7 +375,7 @@ mod tests {
         assert!(scalar.is_dynamic());
 
         let w = World::new();
-        let m = Meter::new(2, Duration::from_secs(1), vec![], Some(scalar), 0.0, false);
+        let m = Meter::new(2, Duration::from_secs(1), Some(scalar), 0.0, false);
         w.register(m);
         let m = w.get(2).unwrap();
 
@@ -404,26 +387,33 @@ mod tests {
         assert!((m.aggregate_power_w(&w) - 1234.5).abs() < 1e-3);
     }
 
-    /// Hidden children (no edges in the connections graph) get
-    /// parent_count = 0; meter aggregation clamps that to 1 so a
-    /// hidden consumer-load meter contributes its full power to its
-    /// owning meter.
+    /// A hidden child aggregates into its visible parent just like a
+    /// non-hidden one. With the unified graph, hidden edges land in
+    /// `connections` like any other edge — the visibility filter only
+    /// kicks in at the `connections()` / `hidden_connections()`
+    /// boundary that drives gRPC and the UI.
     #[test]
-    fn hidden_child_with_no_edges_contributes_full() {
+    fn hidden_child_aggregates_into_visible_parent() {
         let w = World::new();
-        // Hidden consumer that publishes 1500 W active.
-        let consumer = std::sync::Arc::new(FixedFlow {
-            id: 9000,
-            p: 1500.0,
-            q: 0.0,
-        });
-        w.register_arc(consumer);
-        // No w.connect — the hidden meter convention.
-        assert_eq!(w.parent_count(9000), 0);
+        // Hidden meter consumer with a constant 1500 W draw.
+        let hidden_meter = Meter::new(
+            9000,
+            Duration::from_secs(1),
+            Some(DynamicScalar::constant(1500.0)),
+            0.0,
+            true,
+        );
+        w.register(hidden_meter);
 
-        let m = Meter::new(2, Duration::from_secs(1), vec![9000], None, 0.0, false);
-        w.register(m);
-        let m = w.get(2).unwrap();
-        assert!((m.aggregate_power_w(&w) - 1500.0).abs() < 1e-3);
+        let parent = Meter::new(2, Duration::from_secs(1), None, 0.0, false);
+        w.register(parent);
+        w.connect(2, 9000);
+
+        let parent = w.get(2).unwrap();
+        assert!((parent.aggregate_power_w(&w) - 1500.0).abs() < 1e-3);
+        // The edge is in the graph but not surfaced through the
+        // gRPC-facing `connections()` view.
+        assert!(w.connections().is_empty());
+        assert_eq!(w.hidden_connections(), vec![(2, 9000)]);
     }
 }

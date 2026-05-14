@@ -369,21 +369,6 @@ pub fn register(ctx: &mut TulispContext, world: World) {
             let id = id_or_next(&w, a.id);
             let interval = ms_to_duration(a.interval.or(d.interval), 1000);
             let hidden = a.hidden.unwrap_or(false);
-            // Cache only the children that won't end up in
-            // World::connections — the visible ones flow through
-            // connect_successors below. For a hidden parent
-            // connect_successors gets skipped entirely, so every
-            // child is "hidden" from the graph's perspective.
-            let cached_succ_ids: Vec<u64> = a
-                .successors
-                .as_ref()
-                .map(|v| {
-                    v.iter()
-                        .filter(|h| hidden || h.is_hidden())
-                        .map(|h| h.id())
-                        .collect()
-                })
-                .unwrap_or_default();
             // :power may be a number, a lambda, or a symbol. The
             // numeric default from the per-category alist is the
             // fallback; a per-component lambda / symbol takes
@@ -396,7 +381,6 @@ pub fn register(ctx: &mut TulispContext, world: World) {
             let meter = Meter::new(
                 id,
                 interval,
-                cached_succ_ids,
                 power_source,
                 a.stream_jitter_pct.or(d.stream_jitter_pct).unwrap_or(0.0) as f32,
                 hidden,
@@ -412,14 +396,7 @@ pub fn register(ctx: &mut TulispContext, world: World) {
             if a.main.unwrap_or(false) {
                 w.set_main_meter(id).map_err(Error::invalid_argument)?;
             }
-            // Hidden meters: their *outgoing* edges (to children) are
-            // suppressed too, mirroring microsim. The handle-side filter
-            // in connect_successors elsewhere skips edges *into* hidden
-            // children — so a hidden meter is invisible in both directions
-            // while still aggregating into its parent.
-            if !hidden {
-                connect_successors(&w, id, &a.successors);
-            }
+            connect_successors(&w, id, &a.successors);
             Ok::<_, Error>(h)
         },
     );
@@ -526,19 +503,9 @@ pub fn register(ctx: &mut TulispContext, world: World) {
             if let Some(v) = a.reactive_ramp_rate.or(d.reactive_ramp_rate) {
                 cfg.reactive_ramp_rate_var_per_s = v as f32;
             }
-            // Inverters are never hidden, so cache only the hidden
-            // children (rare in practice — a battery would have to be
-            // marked hidden). Visible batteries come from
-            // World::connections, kept in sync by connect_successors
-            // and post-make `(world-connect …)` / `(world-disconnect …)`.
-            let cached_succ_ids: Vec<u64> = a
-                .successors
-                .as_ref()
-                .map(|v| v.iter().filter(|h| h.is_hidden()).map(|h| h.id()).collect())
-                .unwrap_or_default();
             let h = register_with_modes(
                 &w,
-                BatteryInverter::new(id, interval, cfg, cached_succ_ids),
+                BatteryInverter::new(id, interval, cfg),
                 a.health.or(d.health),
                 a.telemetry_mode.or(d.telemetry_mode),
                 a.command_mode.or(d.command_mode),
@@ -709,12 +676,10 @@ pub fn register(ctx: &mut TulispContext, world: World) {
 fn connect_successors(world: &World, parent: u64, successors: &Option<Vec<ComponentHandle>>) {
     if let Some(list) = successors {
         for child in list {
-            // Hidden children: aggregated into the parent (succ_ids
-            // captures every successor) but excluded from the
-            // connections graph that gRPC clients see.
-            if child.is_hidden() {
-                continue;
-            }
+            // Every edge — hidden or not — lands in `World::connections`.
+            // Visibility filtering happens at the `connections()` /
+            // `hidden_connections()` boundary that drives gRPC and the
+            // UI; the aggregation paths walk the unfiltered graph.
             world.connect(parent, child.id());
         }
     }
