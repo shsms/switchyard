@@ -279,6 +279,15 @@ impl World {
         }
     }
 
+    // ─── Scenario journal + CSV sinks ─────────────────────────────────
+    //
+    // Lifecycle: `scenario_start` opens a window, `scenario_record`
+    // drops markers, `scenario_stop` closes it. Per-component CSV
+    // sinks live alongside; opened via `scenario_open_csv` and read
+    // by the physics tick. Main-meter id is the only piece of
+    // scenario state outside the journal — `scenario_report` keys
+    // its peak-tracking on it.
+
     /// Open one CSV sink per registered component under `dir`.
     /// Returns the count opened. Existing sinks are dropped first
     /// so a re-call replaces (rather than appends to) the prior
@@ -449,6 +458,12 @@ impl World {
         }
     }
 
+    // ─── Setpoint timeouts ────────────────────────────────────────────
+    //
+    // Each accepted setpoint schedules a deadline; on expiry the gRPC
+    // / Config loop pulls the id out via `drain_expired_timeouts`
+    // and calls `reset_setpoint` on the component.
+
     /// Schedule a setpoint expiry for `id` at `now + lifetime`.
     /// Replaces any previously-scheduled deadline for that id —
     /// "latest set wins" semantics, matching microsim's behavior.
@@ -462,6 +477,12 @@ impl World {
     pub fn drain_expired_timeouts(&self) -> Vec<u64> {
         self.inner.timeout_tracker.remove_expired()
     }
+
+    // ─── Version counter + event broadcast bus ────────────────────────
+    //
+    // Every accepted /api/eval bumps `version`, which fires a
+    // `TopologyChanged` on the broadcast bus. Live UI tabs listen
+    // and refetch /api/topology on each bump.
 
     pub fn version(&self) -> u64 {
         self.inner.version.load(Ordering::Relaxed)
@@ -496,6 +517,13 @@ impl World {
         });
     }
 
+    // ─── Scheduler knobs + grid state ────────────────────────────────
+    //
+    // `physics_tick` is the cadence at which `spawn_physics` runs
+    // every component's `tick`. `grid_state` is the environmental
+    // state (per-phase voltage + frequency) that components read
+    // during tick.
+
     pub fn next_id(&self) -> u64 {
         self.inner.next_id.fetch_add(1, Ordering::Relaxed)
     }
@@ -515,6 +543,15 @@ impl World {
     pub fn set_grid_state(&self, state: GridState) {
         *self.inner.grid_state.write() = state;
     }
+
+    // ─── Component registry + topology graph ─────────────────────────
+    //
+    // Components register via `register` / `register_arc` and land in
+    // both `components` (registration order = tick order) and `by_id`
+    // (for O(1) lookup). `connections` carries every parent→child
+    // edge — `connections()` filters to visible, `hidden_connections`
+    // returns the rest; `children_of` is the unfiltered walk that
+    // aggregation paths use.
 
     pub fn register<C: SimulatedComponent + 'static>(&self, c: C) -> ComponentHandle {
         self.register_arc(Arc::new(c))
@@ -728,6 +765,13 @@ impl World {
             .map(|c| c.name().to_string())
     }
 
+    // ─── Per-component runtime modes ─────────────────────────────────
+    //
+    // Health / telemetry mode / command mode flags carried in
+    // `runtime`. Defaulted on register; mutated via the
+    // `set-component-*` Lisp defuns or gRPC. `runtime_of` returns
+    // the current snapshot; the per-setter methods mutate in place.
+
     pub fn runtime_of(&self, id: u64) -> ComponentRuntime {
         self.inner
             .runtime
@@ -748,6 +792,14 @@ impl World {
     pub fn set_command_mode(&self, id: u64, mode: CommandMode) {
         self.inner.runtime.write().entry(id).or_default().command = mode;
     }
+
+    // ─── Physics tick ────────────────────────────────────────────────
+    //
+    // `tick_once` runs one synchronous pass over every component;
+    // `spawn_physics` is the long-running task that does it on a
+    // `tokio::time::interval`. Pre-tick hook fires first so Lisp-
+    // driven inputs resolve once per tick before any `tick()` reads
+    // an atomic.
 
     /// Tick every registered component once. Children are stored before
     /// parents, so a single forward pass updates leaves before the
@@ -795,6 +847,13 @@ impl World {
             }
         });
     }
+
+    // ─── Telemetry history (charts) ──────────────────────────────────
+    //
+    // `spawn_history_sampler` ticks at 1 Hz and pushes per-metric
+    // snapshots into ring buffers. UI's /api/history reads windows
+    // via `history_window`; `history_metrics` lists what's in each
+    // component's ring.
 
     /// Spawn the history sampler — a single task that walks every
     /// component once per second and pushes a snapshot into each
@@ -924,6 +983,13 @@ impl World {
             .map(|c| c.metrics().collect())
             .unwrap_or_default()
     }
+
+    // ─── Setpoint event log ──────────────────────────────────────────
+    //
+    // Per-component rolling log of accepted / rejected setpoint
+    // requests. Populated by the gRPC handlers; read by the UI's
+    // /api/setpoints inspector. Each `log_setpoint` also broadcasts
+    // on the event bus for live UI updates.
 
     /// Append a setpoint event to the per-component log + broadcast
     /// it on the world event bus so live UI inspectors update without
