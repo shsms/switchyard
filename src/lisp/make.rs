@@ -4,12 +4,14 @@
 //! and returns a `ComponentHandle` (an opaque `Shared<dyn TulispAny>`
 //! on the lisp side). The user-facing names (`(make-grid)`,
 //! `(make-meter)`, …) are `defun` wrappers in `sim/defaults.lisp`
-//! that prepend `:config <cat>-defaults` before calling these
-//! primitives.
+//! that prepend a category-default plist to the caller's args
+//! before invoking these primitives; AsPlist's last-occurrence-wins
+//! key resolution lets per-component values override defaults
+//! without any extra plumbing on the Rust side.
 
 use std::time::Duration;
 
-use tulisp::{Alistable, AsAlist, AsPlist, Error, Plist, TulispContext};
+use tulisp::{AsPlist, Error, Plist, TulispContext};
 
 use crate::lisp::value::LispValue;
 use crate::sim::{
@@ -36,20 +38,6 @@ AsPlist! {
         health<":health">: Option<Health> {= None},
         telemetry_mode<":telemetry-mode">: Option<TelemetryMode> {= None},
         command_mode<":command-mode">: Option<CommandMode> {= None},
-        config<":config">: Option<LispValue> {= None},
-    }
-}
-
-AsAlist! {
-    /// Per-category defaults for `(make-grid)`. Mirrors `GridArgs`
-    /// minus per-component identity / topology (`id`, `successors`).
-    #[derive(Default)]
-    pub struct GridDefaults {
-        rated_fuse_current<"rated-fuse-current">: Option<i64> {= None},
-        stream_jitter_pct<"stream-jitter-pct">: Option<f64> {= None},
-        health: Option<Health> {= None},
-        telemetry_mode<"telemetry-mode">: Option<TelemetryMode> {= None},
-        command_mode<"command-mode">: Option<CommandMode> {= None},
     }
 }
 
@@ -77,22 +65,6 @@ AsPlist! {
         health<":health">: Option<Health> {= None},
         telemetry_mode<":telemetry-mode">: Option<TelemetryMode> {= None},
         command_mode<":command-mode">: Option<CommandMode> {= None},
-        config<":config">: Option<LispValue> {= None},
-    }
-}
-
-AsAlist! {
-    /// Per-category defaults for `(make-meter)`. Mirrors `MeterArgs`
-    /// minus per-component identity / topology (`id`, `successors`,
-    /// `hidden`).
-    #[derive(Default)]
-    pub struct MeterDefaults {
-        interval: Option<i64> {= None},
-        power: Option<f64> {= None},
-        stream_jitter_pct<"stream-jitter-pct">: Option<f64> {= None},
-        health: Option<Health> {= None},
-        telemetry_mode<"telemetry-mode">: Option<TelemetryMode> {= None},
-        command_mode<"command-mode">: Option<CommandMode> {= None},
     }
 }
 
@@ -117,30 +89,6 @@ AsPlist! {
         health<":health">: Option<Health> {= None},
         telemetry_mode<":telemetry-mode">: Option<TelemetryMode> {= None},
         command_mode<":command-mode">: Option<CommandMode> {= None},
-        config<":config">: Option<LispValue> {= None},
-    }
-}
-
-AsAlist! {
-    /// Per-category defaults for `(make-battery)`. Mirrors `BatteryArgs`
-    /// minus the per-component identity / topology args (`id`,
-    /// `successors`). Three-layer precedence in the make-battery defun:
-    /// per-component plist > this alist > Rust struct default.
-    #[derive(Default)]
-    pub struct BatteryDefaults {
-        interval: Option<i64> {= None},
-        capacity_wh<"capacity">: Option<f64> {= None},
-        initial_soc<"initial-soc">: Option<f64> {= None},
-        soc_lower<"soc-lower">: Option<f64> {= None},
-        soc_upper<"soc-upper">: Option<f64> {= None},
-        voltage: Option<f64> {= None},
-        rated_lower<"rated-lower">: Option<f64> {= None},
-        rated_upper<"rated-upper">: Option<f64> {= None},
-        soc_protect_margin<"soc-protect-margin">: Option<f64> {= None},
-        stream_jitter_pct<"stream-jitter-pct">: Option<f64> {= None},
-        health: Option<Health> {= None},
-        telemetry_mode<"telemetry-mode">: Option<TelemetryMode> {= None},
-        command_mode<"command-mode">: Option<CommandMode> {= None},
     }
 }
 
@@ -172,29 +120,6 @@ AsPlist! {
         /// Reactive slew rate (VAR/s). Default 2000 ≈ IEEE 1547-2018
         /// Cat B 5 s OLRT for a 10 kVAR window.
         reactive_ramp_rate<":reactive-ramp-rate">: Option<f64> {= None},
-        config<":config">: Option<LispValue> {= None},
-    }
-}
-
-AsAlist! {
-    /// Per-category defaults for `(make-battery-inverter)`. Mirrors
-    /// `BatteryInverterArgs` minus per-component identity / topology
-    /// (`id`, `successors`).
-    #[derive(Default)]
-    pub struct BatteryInverterDefaults {
-        interval: Option<i64> {= None},
-        rated_lower<"rated-lower">: Option<f64> {= None},
-        rated_upper<"rated-upper">: Option<f64> {= None},
-        command_delay_ms<"command-delay-ms">: Option<i64> {= None},
-        ramp_rate<"ramp-rate">: Option<f64> {= None},
-        stream_jitter_pct<"stream-jitter-pct">: Option<f64> {= None},
-        health: Option<Health> {= None},
-        telemetry_mode<"telemetry-mode">: Option<TelemetryMode> {= None},
-        command_mode<"command-mode">: Option<CommandMode> {= None},
-        reactive_pf_limit<"reactive-pf-limit">: Option<f64> {= None},
-        reactive_apparent_va<"reactive-apparent-va">: Option<f64> {= None},
-        reactive_command_delay_ms<"reactive-command-delay-ms">: Option<i64> {= None},
-        reactive_ramp_rate<"reactive-ramp-rate">: Option<f64> {= None},
     }
 }
 
@@ -228,29 +153,6 @@ AsPlist! {
         reactive_command_delay_ms<":reactive-command-delay-ms">: Option<i64> {= None},
         /// Reactive slew rate (VAR/s). Default 2000.
         reactive_ramp_rate<":reactive-ramp-rate">: Option<f64> {= None},
-        config<":config">: Option<LispValue> {= None},
-    }
-}
-
-AsAlist! {
-    /// Per-category defaults for `(make-solar-inverter)`. Mirrors
-    /// `SolarInverterArgs` minus per-component `id`.
-    #[derive(Default)]
-    pub struct SolarInverterDefaults {
-        interval: Option<i64> {= None},
-        sunlight_pct<"sunlight%">: Option<f64> {= None},
-        rated_lower<"rated-lower">: Option<f64> {= None},
-        rated_upper<"rated-upper">: Option<f64> {= None},
-        command_delay_ms<"command-delay-ms">: Option<i64> {= None},
-        ramp_rate<"ramp-rate">: Option<f64> {= None},
-        stream_jitter_pct<"stream-jitter-pct">: Option<f64> {= None},
-        health: Option<Health> {= None},
-        telemetry_mode<"telemetry-mode">: Option<TelemetryMode> {= None},
-        command_mode<"command-mode">: Option<CommandMode> {= None},
-        reactive_pf_limit<"reactive-pf-limit">: Option<f64> {= None},
-        reactive_apparent_va<"reactive-apparent-va">: Option<f64> {= None},
-        reactive_command_delay_ms<"reactive-command-delay-ms">: Option<i64> {= None},
-        reactive_ramp_rate<"reactive-ramp-rate">: Option<f64> {= None},
     }
 }
 
@@ -276,29 +178,6 @@ AsPlist! {
         health<":health">: Option<Health> {= None},
         telemetry_mode<":telemetry-mode">: Option<TelemetryMode> {= None},
         command_mode<":command-mode">: Option<CommandMode> {= None},
-        config<":config">: Option<LispValue> {= None},
-    }
-}
-
-AsAlist! {
-    /// Per-category defaults for `(make-ev-charger)`. Mirrors
-    /// `EvChargerArgs` minus per-component `id`.
-    #[derive(Default)]
-    pub struct EvChargerDefaults {
-        interval: Option<i64> {= None},
-        rated_lower<"rated-lower">: Option<f64> {= None},
-        rated_upper<"rated-upper">: Option<f64> {= None},
-        initial_soc<"initial-soc">: Option<f64> {= None},
-        soc_lower<"soc-lower">: Option<f64> {= None},
-        soc_upper<"soc-upper">: Option<f64> {= None},
-        soc_protect_margin<"soc-protect-margin">: Option<f64> {= None},
-        capacity_wh<"capacity">: Option<f64> {= None},
-        command_delay_ms<"command-delay-ms">: Option<i64> {= None},
-        ramp_rate<"ramp-rate">: Option<f64> {= None},
-        stream_jitter_pct<"stream-jitter-pct">: Option<f64> {= None},
-        health: Option<Health> {= None},
-        telemetry_mode<"telemetry-mode">: Option<TelemetryMode> {= None},
-        command_mode<"command-mode">: Option<CommandMode> {= None},
     }
 }
 
@@ -314,19 +193,6 @@ AsPlist! {
         health<":health">: Option<Health> {= None},
         telemetry_mode<":telemetry-mode">: Option<TelemetryMode> {= None},
         command_mode<":command-mode">: Option<CommandMode> {= None},
-        config<":config">: Option<LispValue> {= None},
-    }
-}
-
-AsAlist! {
-    /// Per-category defaults for `(make-chp)`. Mirrors `ChpArgs` minus
-    /// per-component `id`.
-    #[derive(Default)]
-    pub struct ChpDefaults {
-        stream_jitter_pct<"stream-jitter-pct">: Option<f64> {= None},
-        health: Option<Health> {= None},
-        telemetry_mode<"telemetry-mode">: Option<TelemetryMode> {= None},
-        command_mode<"command-mode">: Option<CommandMode> {= None},
     }
 }
 
@@ -338,22 +204,15 @@ pub fn register(ctx: &mut TulispContext, world: World) {
     let w = world.clone();
     ctx.defun(
         "%make-grid",
-        move |ctx: &mut TulispContext, args: Plist<GridArgs>| {
+        move |_ctx: &mut TulispContext, args: Plist<GridArgs>| {
             let a = args.into_inner();
-            let d = parse_defaults::<GridDefaults>(ctx, a.config.as_ref())?;
             let id = id_or_next(&w, a.id);
             let grid = Grid::new(
                 id,
-                a.rated_fuse_current.or(d.rated_fuse_current).unwrap_or(0) as u32,
-                a.stream_jitter_pct.or(d.stream_jitter_pct).unwrap_or(0.0) as f32,
+                a.rated_fuse_current.unwrap_or(0) as u32,
+                a.stream_jitter_pct.unwrap_or(0.0) as f32,
             );
-            let h = register_with_modes(
-                &w,
-                grid,
-                a.health.or(d.health),
-                a.telemetry_mode.or(d.telemetry_mode),
-                a.command_mode.or(d.command_mode),
-            )?;
+            let h = register_with_modes(&w, grid, a.health, a.telemetry_mode, a.command_mode)?;
             apply_initial_name(&w, id, a.name);
             connect_successors(&w, id, &a.successors);
             Ok::<_, Error>(h)
@@ -363,35 +222,29 @@ pub fn register(ctx: &mut TulispContext, world: World) {
     let w = world.clone();
     ctx.defun(
         "%make-meter",
-        move |ctx: &mut TulispContext, args: Plist<MeterArgs>| {
+        move |_ctx: &mut TulispContext, args: Plist<MeterArgs>| {
             let a = args.into_inner();
-            let d = parse_defaults::<MeterDefaults>(ctx, a.config.as_ref())?;
             let id = id_or_next(&w, a.id);
-            let interval = ms_to_duration(a.interval.or(d.interval), 1000);
+            let interval = ms_to_duration(a.interval, 1000);
             let hidden = a.hidden.unwrap_or(false);
             // :power may be a number, a lambda, or a symbol. The
-            // numeric default from the per-category alist is the
-            // fallback; a per-component lambda / symbol takes
-            // precedence.
-            let default_power = d.power.map(|p| p as f32).unwrap_or(0.0);
-            let power_source = match a.power {
-                Some(v) => DynamicScalar::from_lisp(v.as_inner(), default_power),
-                None => d.power.map(|p| DynamicScalar::constant(p as f32)),
-            };
+            // wrapper-expanded category default lands in `a.power`
+            // when no per-component value was passed; otherwise the
+            // per-component value overrides via AsPlist's last-wins.
+            // `DynamicScalar::from_lisp` dispatches on shape — constant
+            // for numbers, eval/funcall for the rest.
+            let power_source = a
+                .power
+                .as_ref()
+                .and_then(|v| DynamicScalar::from_lisp(v.as_inner(), 0.0));
             let meter = Meter::new(
                 id,
                 interval,
                 power_source,
-                a.stream_jitter_pct.or(d.stream_jitter_pct).unwrap_or(0.0) as f32,
+                a.stream_jitter_pct.unwrap_or(0.0) as f32,
                 hidden,
             );
-            let h = register_with_modes(
-                &w,
-                meter,
-                a.health.or(d.health),
-                a.telemetry_mode.or(d.telemetry_mode),
-                a.command_mode.or(d.command_mode),
-            )?;
+            let h = register_with_modes(&w, meter, a.health, a.telemetry_mode, a.command_mode)?;
             apply_initial_name(&w, id, a.name);
             if a.main.unwrap_or(false) {
                 w.set_main_meter(id).map_err(Error::invalid_argument)?;
@@ -404,45 +257,44 @@ pub fn register(ctx: &mut TulispContext, world: World) {
     let w = world.clone();
     ctx.defun(
         "%make-battery",
-        move |ctx: &mut TulispContext, args: Plist<BatteryArgs>| {
+        move |_ctx: &mut TulispContext, args: Plist<BatteryArgs>| {
             let a = args.into_inner();
-            let d = parse_defaults::<BatteryDefaults>(ctx, a.config.as_ref())?;
             let id = id_or_next(&w, a.id);
-            let interval = ms_to_duration(a.interval.or(d.interval), 1000);
+            let interval = ms_to_duration(a.interval, 1000);
             let mut cfg = BatteryConfig::default();
-            if let Some(v) = a.capacity_wh.or(d.capacity_wh) {
+            if let Some(v) = a.capacity_wh {
                 cfg.capacity_wh = v as f32;
             }
-            if let Some(v) = a.initial_soc.or(d.initial_soc) {
+            if let Some(v) = a.initial_soc {
                 cfg.initial_soc_pct = v as f32;
             }
-            if let Some(v) = a.soc_lower.or(d.soc_lower) {
+            if let Some(v) = a.soc_lower {
                 cfg.soc_lower_pct = v as f32;
             }
-            if let Some(v) = a.soc_upper.or(d.soc_upper) {
+            if let Some(v) = a.soc_upper {
                 cfg.soc_upper_pct = v as f32;
             }
-            if let Some(v) = a.voltage.or(d.voltage) {
+            if let Some(v) = a.voltage {
                 cfg.voltage_v = v as f32;
             }
-            if let Some(v) = a.rated_lower.or(d.rated_lower) {
+            if let Some(v) = a.rated_lower {
                 cfg.rated_lower_w = v as f32;
             }
-            if let Some(v) = a.rated_upper.or(d.rated_upper) {
+            if let Some(v) = a.rated_upper {
                 cfg.rated_upper_w = v as f32;
             }
-            if let Some(v) = a.soc_protect_margin.or(d.soc_protect_margin) {
+            if let Some(v) = a.soc_protect_margin {
                 cfg.soc_protect_margin_pct = v as f32;
             }
-            if let Some(v) = a.stream_jitter_pct.or(d.stream_jitter_pct) {
+            if let Some(v) = a.stream_jitter_pct {
                 cfg.stream_jitter_pct = v as f32;
             }
             let h = register_with_modes(
                 &w,
                 Battery::new(id, interval, cfg),
-                a.health.or(d.health),
-                a.telemetry_mode.or(d.telemetry_mode),
-                a.command_mode.or(d.command_mode),
+                a.health,
+                a.telemetry_mode,
+                a.command_mode,
             )?;
             apply_initial_name(&w, id, a.name);
             Ok::<_, Error>(h)
@@ -452,25 +304,24 @@ pub fn register(ctx: &mut TulispContext, world: World) {
     let w = world.clone();
     ctx.defun(
         "%make-battery-inverter",
-        move |ctx: &mut TulispContext, args: Plist<BatteryInverterArgs>| {
+        move |_ctx: &mut TulispContext, args: Plist<BatteryInverterArgs>| {
             let a = args.into_inner();
-            let d = parse_defaults::<BatteryInverterDefaults>(ctx, a.config.as_ref())?;
             let id = id_or_next(&w, a.id);
-            let interval = ms_to_duration(a.interval.or(d.interval), 1000);
+            let interval = ms_to_duration(a.interval, 1000);
             let mut cfg = BatteryInverterConfig::default();
-            if let Some(v) = a.rated_lower.or(d.rated_lower) {
+            if let Some(v) = a.rated_lower {
                 cfg.rated_lower_w = v as f32;
             }
-            if let Some(v) = a.rated_upper.or(d.rated_upper) {
+            if let Some(v) = a.rated_upper {
                 cfg.rated_upper_w = v as f32;
             }
-            if let Some(v) = a.command_delay_ms.or(d.command_delay_ms) {
+            if let Some(v) = a.command_delay_ms {
                 cfg.command_delay = Duration::from_millis(v.max(0) as u64);
             }
-            if let Some(v) = a.ramp_rate.or(d.ramp_rate) {
+            if let Some(v) = a.ramp_rate {
                 cfg.ramp_rate_w_per_s = v as f32;
             }
-            if let Some(v) = a.stream_jitter_pct.or(d.stream_jitter_pct) {
+            if let Some(v) = a.stream_jitter_pct {
                 cfg.stream_jitter_pct = v as f32;
             }
             // Reactive capability semantics:
@@ -478,8 +329,6 @@ pub fn register(ctx: &mut TulispContext, world: World) {
             //   absent       → inherit the existing field on cfg.reactive
             //                  (i.e. the BatteryInverterConfig::default
             //                  microsim_default, which sets PF=0.35)
-            // Each reactive arg pulls from the per-component plist
-            // first, then the category alist. Per-field merge means
             // `:reactive-apparent-va 50000` adds a kVA cap *without*
             // silently dropping the inherited PF limit; previously
             // that subtle interaction was the easy way to ship a
@@ -491,24 +340,22 @@ pub fn register(ctx: &mut TulispContext, world: World) {
                     None => fallback,
                 }
             };
-            let reactive_pf = a.reactive_pf_limit.or(d.reactive_pf_limit);
-            let reactive_va = a.reactive_apparent_va.or(d.reactive_apparent_va);
             cfg.reactive = crate::sim::reactive::ReactiveCapability {
-                pf_limit: merge_reactive(reactive_pf, cfg.reactive.pf_limit),
-                apparent_va: merge_reactive(reactive_va, cfg.reactive.apparent_va),
+                pf_limit: merge_reactive(a.reactive_pf_limit, cfg.reactive.pf_limit),
+                apparent_va: merge_reactive(a.reactive_apparent_va, cfg.reactive.apparent_va),
             };
-            if let Some(v) = a.reactive_command_delay_ms.or(d.reactive_command_delay_ms) {
+            if let Some(v) = a.reactive_command_delay_ms {
                 cfg.reactive_command_delay = Duration::from_millis(v.max(0) as u64);
             }
-            if let Some(v) = a.reactive_ramp_rate.or(d.reactive_ramp_rate) {
+            if let Some(v) = a.reactive_ramp_rate {
                 cfg.reactive_ramp_rate_var_per_s = v as f32;
             }
             let h = register_with_modes(
                 &w,
                 BatteryInverter::new(id, interval, cfg),
-                a.health.or(d.health),
-                a.telemetry_mode.or(d.telemetry_mode),
-                a.command_mode.or(d.command_mode),
+                a.health,
+                a.telemetry_mode,
+                a.command_mode,
             )?;
             apply_initial_name(&w, id, a.name);
             connect_successors(&w, id, &a.successors);
@@ -519,18 +366,17 @@ pub fn register(ctx: &mut TulispContext, world: World) {
     let w = world.clone();
     ctx.defun(
         "%make-solar-inverter",
-        move |ctx: &mut TulispContext, args: Plist<SolarInverterArgs>| {
+        move |_ctx: &mut TulispContext, args: Plist<SolarInverterArgs>| {
             let a = args.into_inner();
-            let d = parse_defaults::<SolarInverterDefaults>(ctx, a.config.as_ref())?;
             let id = id_or_next(&w, a.id);
-            let interval = ms_to_duration(a.interval.or(d.interval), 1000);
+            let interval = ms_to_duration(a.interval, 1000);
             let mut cfg = SolarInverterConfig::default();
-            // :sunlight% accepts a number, lambda, or symbol. Pull
-            // out the dynamic source (if any) before construction
-            // and seed cfg.sunlight_pct from a numeric value or
-            // category default. The ramp's initial target is
-            // computed from the seed; a dynamic source takes effect
-            // on the first refresh_inputs.
+            // :sunlight% accepts a number, lambda, or symbol. Number
+            // seeds the initial ramp target on `cfg.sunlight_pct`;
+            // lambda / symbol installs a dynamic source that takes
+            // effect on the first `refresh_inputs`. The wrapper-
+            // expanded category default lands in `a.sunlight_pct`
+            // already; per-component plist overrides via last-wins.
             let mut dynamic_sunlight: Option<DynamicScalar> = None;
             if let Some(v) = a.sunlight_pct.as_ref() {
                 let raw = v.as_inner();
@@ -540,32 +386,23 @@ pub fn register(ctx: &mut TulispContext, world: World) {
                     }
                 } else {
                     dynamic_sunlight = DynamicScalar::from_lisp(raw, cfg.sunlight_pct);
-                    if let Some(pct) = d.sunlight_pct {
-                        cfg.sunlight_pct = pct as f32;
-                    }
                 }
-            } else if let Some(pct) = d.sunlight_pct {
-                cfg.sunlight_pct = pct as f32;
             }
-            if let Some(v) = a.rated_lower.or(d.rated_lower) {
+            if let Some(v) = a.rated_lower {
                 cfg.rated_lower_w = v as f32;
             }
-            if let Some(v) = a.rated_upper.or(d.rated_upper) {
+            if let Some(v) = a.rated_upper {
                 cfg.rated_upper_w = v as f32;
             }
-            if let Some(v) = a.command_delay_ms.or(d.command_delay_ms) {
+            if let Some(v) = a.command_delay_ms {
                 cfg.command_delay = Duration::from_millis(v.max(0) as u64);
             }
-            if let Some(v) = a.ramp_rate.or(d.ramp_rate) {
+            if let Some(v) = a.ramp_rate {
                 cfg.ramp_rate_w_per_s = v as f32;
             }
-            if let Some(v) = a.stream_jitter_pct.or(d.stream_jitter_pct) {
+            if let Some(v) = a.stream_jitter_pct {
                 cfg.stream_jitter_pct = v as f32;
             }
-            // Same per-field merge as make-battery-inverter: 0 / negative
-            // disables the named constraint; absent inherits whatever
-            // SolarInverterConfig::default (== microsim_default PF=0.35)
-            // had on that field.
             let merge_reactive = |input: Option<f64>, fallback: Option<f32>| -> Option<f32> {
                 match input {
                     Some(v) if v > 0.0 => Some(v as f32),
@@ -573,29 +410,21 @@ pub fn register(ctx: &mut TulispContext, world: World) {
                     None => fallback,
                 }
             };
-            let reactive_pf = a.reactive_pf_limit.or(d.reactive_pf_limit);
-            let reactive_va = a.reactive_apparent_va.or(d.reactive_apparent_va);
             cfg.reactive = crate::sim::reactive::ReactiveCapability {
-                pf_limit: merge_reactive(reactive_pf, cfg.reactive.pf_limit),
-                apparent_va: merge_reactive(reactive_va, cfg.reactive.apparent_va),
+                pf_limit: merge_reactive(a.reactive_pf_limit, cfg.reactive.pf_limit),
+                apparent_va: merge_reactive(a.reactive_apparent_va, cfg.reactive.apparent_va),
             };
-            if let Some(v) = a.reactive_command_delay_ms.or(d.reactive_command_delay_ms) {
+            if let Some(v) = a.reactive_command_delay_ms {
                 cfg.reactive_command_delay = Duration::from_millis(v.max(0) as u64);
             }
-            if let Some(v) = a.reactive_ramp_rate.or(d.reactive_ramp_rate) {
+            if let Some(v) = a.reactive_ramp_rate {
                 cfg.reactive_ramp_rate_var_per_s = v as f32;
             }
             let inverter = SolarInverter::new(id, interval, cfg);
             if let Some(scalar) = dynamic_sunlight {
                 inverter.set_sunlight_source(scalar);
             }
-            let h = register_with_modes(
-                &w,
-                inverter,
-                a.health.or(d.health),
-                a.telemetry_mode.or(d.telemetry_mode),
-                a.command_mode.or(d.command_mode),
-            )?;
+            let h = register_with_modes(&w, inverter, a.health, a.telemetry_mode, a.command_mode)?;
             apply_initial_name(&w, id, a.name);
             Ok::<_, Error>(h)
         },
@@ -604,48 +433,47 @@ pub fn register(ctx: &mut TulispContext, world: World) {
     let w = world.clone();
     ctx.defun(
         "%make-ev-charger",
-        move |ctx: &mut TulispContext, args: Plist<EvChargerArgs>| {
+        move |_ctx: &mut TulispContext, args: Plist<EvChargerArgs>| {
             let a = args.into_inner();
-            let d = parse_defaults::<EvChargerDefaults>(ctx, a.config.as_ref())?;
             let id = id_or_next(&w, a.id);
-            let interval = ms_to_duration(a.interval.or(d.interval), 1000);
+            let interval = ms_to_duration(a.interval, 1000);
             let mut cfg = EvChargerConfig::default();
-            if let Some(v) = a.rated_lower.or(d.rated_lower) {
+            if let Some(v) = a.rated_lower {
                 cfg.rated_lower_w = v as f32;
             }
-            if let Some(v) = a.rated_upper.or(d.rated_upper) {
+            if let Some(v) = a.rated_upper {
                 cfg.rated_upper_w = v as f32;
             }
-            if let Some(v) = a.initial_soc.or(d.initial_soc) {
+            if let Some(v) = a.initial_soc {
                 cfg.initial_soc_pct = v as f32;
             }
-            if let Some(v) = a.soc_lower.or(d.soc_lower) {
+            if let Some(v) = a.soc_lower {
                 cfg.soc_lower_pct = v as f32;
             }
-            if let Some(v) = a.soc_upper.or(d.soc_upper) {
+            if let Some(v) = a.soc_upper {
                 cfg.soc_upper_pct = v as f32;
             }
-            if let Some(v) = a.soc_protect_margin.or(d.soc_protect_margin) {
+            if let Some(v) = a.soc_protect_margin {
                 cfg.soc_protect_margin_pct = v as f32;
             }
-            if let Some(v) = a.capacity_wh.or(d.capacity_wh) {
+            if let Some(v) = a.capacity_wh {
                 cfg.capacity_wh = v as f32;
             }
-            if let Some(v) = a.command_delay_ms.or(d.command_delay_ms) {
+            if let Some(v) = a.command_delay_ms {
                 cfg.command_delay = Duration::from_millis(v.max(0) as u64);
             }
-            if let Some(v) = a.ramp_rate.or(d.ramp_rate) {
+            if let Some(v) = a.ramp_rate {
                 cfg.ramp_rate_w_per_s = v as f32;
             }
-            if let Some(v) = a.stream_jitter_pct.or(d.stream_jitter_pct) {
+            if let Some(v) = a.stream_jitter_pct {
                 cfg.stream_jitter_pct = v as f32;
             }
             let h = register_with_modes(
                 &w,
                 EvCharger::new(id, interval, cfg),
-                a.health.or(d.health),
-                a.telemetry_mode.or(d.telemetry_mode),
-                a.command_mode.or(d.command_mode),
+                a.health,
+                a.telemetry_mode,
+                a.command_mode,
             )?;
             apply_initial_name(&w, id, a.name);
             Ok::<_, Error>(h)
@@ -655,17 +483,16 @@ pub fn register(ctx: &mut TulispContext, world: World) {
     let w = world;
     ctx.defun(
         "%make-chp",
-        move |ctx: &mut TulispContext, args: Plist<ChpArgs>| {
+        move |_ctx: &mut TulispContext, args: Plist<ChpArgs>| {
             let a = args.into_inner();
-            let d = parse_defaults::<ChpDefaults>(ctx, a.config.as_ref())?;
             let id = id_or_next(&w, a.id);
-            let jitter = a.stream_jitter_pct.or(d.stream_jitter_pct).unwrap_or(0.0) as f32;
+            let jitter = a.stream_jitter_pct.unwrap_or(0.0) as f32;
             let h = register_with_modes(
                 &w,
                 Chp::new(id, jitter),
-                a.health.or(d.health),
-                a.telemetry_mode.or(d.telemetry_mode),
-                a.command_mode.or(d.command_mode),
+                a.health,
+                a.telemetry_mode,
+                a.command_mode,
             )?;
             apply_initial_name(&w, id, a.name);
             Ok::<_, Error>(h)
@@ -687,23 +514,6 @@ fn connect_successors(world: &World, parent: u64, successors: &Option<Vec<Compon
 
 fn ms_to_duration(ms: Option<i64>, default_ms: u64) -> Duration {
     Duration::from_millis(ms.map(|x| x.max(0) as u64).unwrap_or(default_ms))
-}
-
-/// Decode the optional `:config` plist arg into a per-category
-/// defaults struct. Returns the struct's `Default` when no `:config`
-/// was given, so callers can always do `a.field.or(d.field)`.
-///
-/// `D` must be a struct deriving `Alistable` + `Default`. Microsim's
-/// `battery-defaults` / `inverter-defaults` etc. each get one such
-/// struct in the `AsAlist!` blocks above.
-fn parse_defaults<D: Alistable + Default>(
-    ctx: &mut TulispContext,
-    config: Option<&LispValue>,
-) -> Result<D, Error> {
-    match config {
-        Some(v) => D::from_alist(ctx, v.as_inner()),
-        None => Ok(D::default()),
-    }
 }
 
 /// Resolve the component id from an `:id` plist value, falling back to
@@ -788,6 +598,10 @@ mod tests {
         let mut ctx = TulispContext::new();
         crate::lisp::handle::register(&mut ctx);
         register(&mut ctx, world.clone());
+        // Load the `make-*` wrappers + `*-defaults` plists so tests
+        // exercise the same wrapper → primitive path config.lisp uses.
+        ctx.eval_string(include_str!("../../sim/defaults.lisp"))
+            .expect("defaults.lisp");
         ctx.eval_string(src).expect("eval lisp source");
         (world, ctx)
     }
@@ -806,49 +620,55 @@ mod tests {
     }
 
     #[test]
-    fn battery_defaults_alone_apply() {
-        let world = run(r#"(setq d '((capacity . 50000.0)
-                         (initial-soc . 20.0)
-                         (rated-lower . -8000.0)
-                         (rated-upper . 8000.0)))
-               (%make-battery :id 100 :config d)"#);
+    fn primitive_plist_args_set_fields() {
+        // %make-battery is the primitive — every field arrives as a
+        // plist key. Defaults are applied by wrappers, not here.
+        let world = run(
+            r#"(%make-battery :id 100 :capacity 50000.0 :initial-soc 20.0
+                              :rated-lower -8000.0 :rated-upper 8000.0)"#,
+        );
         let t = world.get(100).unwrap().telemetry(&world);
         assert_eq!(t.capacity_wh, Some(50_000.0));
         assert!((t.soc_pct.unwrap() - 20.0).abs() < 1e-3);
     }
 
     #[test]
-    fn battery_per_component_overrides_defaults() {
-        // :capacity in the plist wins over (capacity . X) in the alist;
-        // initial-soc only in defaults still applies.
-        let world = run(r#"(setq d '((capacity . 50000.0) (initial-soc . 20.0)))
-               (%make-battery :id 101 :config d :capacity 25000.0)"#);
-        let t = world.get(101).unwrap().telemetry(&world);
-        assert_eq!(t.capacity_wh, Some(25_000.0));
-        assert!((t.soc_pct.unwrap() - 20.0).abs() < 1e-3);
-    }
-
-    #[test]
-    fn battery_defaults_accept_symbol_for_health() {
-        // :health in the alist as a bare symbol, no plist override.
-        // Component starts in `error` health; gRPC layer would reject
-        // setpoints, but we just verify the runtime knob landed.
-        let world = run(r#"(setq d '((health . error)))
-               (%make-battery :id 102 :config d)"#);
+    fn wrapper_merges_category_defaults() {
+        // `make-battery` (wrapper) prepends `battery-defaults` (plist
+        // literal in sim/defaults.lisp) to the caller's args. AsPlist's
+        // last-occurrence-wins resolution lets the per-component plist
+        // override individual default fields while inheriting the rest.
+        let world = run(r#"(make-battery :id 200 :capacity 50000.0)"#);
+        let t = world.get(200).unwrap().telemetry(&world);
+        // From per-component plist:
+        assert_eq!(t.capacity_wh, Some(50_000.0));
+        // From battery-defaults — :health ok carried through.
         assert_eq!(
-            world.runtime_of(102).health,
-            crate::sim::runtime::Health::Error
+            world.runtime_of(200).health,
+            crate::sim::runtime::Health::Ok
         );
     }
 
     #[test]
-    fn battery_no_config_is_unchanged() {
-        // Sanity: with no :config the defaults struct is empty, so
-        // the BatteryConfig::default values stand.
+    fn primitive_skips_wrapper_defaults() {
+        // Calling %make-battery directly bypasses the wrapper's
+        // default-prepending, so the BatteryConfig::default values
+        // stand for every unset field.
         let world = run("(%make-battery :id 103)");
         let t = world.get(103).unwrap().telemetry(&world);
-        // Default capacity from BatteryConfig::default in battery.rs.
         assert_eq!(t.capacity_wh, Some(92_000.0));
+    }
+
+    #[test]
+    fn defaults_accept_bare_symbol_for_health() {
+        // Health is an enum carried as a bare symbol through the plist;
+        // verify the wrapper-applied default (battery-defaults sets
+        // :health ok) lands.
+        let world = run("(make-battery :id 102)");
+        assert_eq!(
+            world.runtime_of(102).health,
+            crate::sim::runtime::Health::Ok
+        );
     }
 
     /// `:power N` lands as a constant DynamicScalar — aggregate_power_w

@@ -86,28 +86,26 @@ in config.lisp). swctl points there by default; override with `--addr`.
 3. Add a `%make-foo` defun in `src/lisp/make.rs` with `AsPlist!`-derived
    args, calling `world.register(...)`. Note the leading `%` —
    user-facing topology code calls `make-foo`, which dispatches here.
-4. Mirror the args struct as a sibling `AsAlist!`-derived `FooDefaults`
-   (without `id` / `successors` / other per-component fields). Take the
-   alist via `:config<Option<LispValue>>` on the args struct and merge
-   in the defun with `a.field.or(d.field)` (helper: `parse_defaults`).
-5. Add a `foo-defaults` alist + `(defun make-foo …)` wrapper to
-   `sim/defaults.lisp`. The wrapper prepends `:config foo-defaults` and
-   dispatches to `%make-foo`.
-6. (Optional) Override `subtype()` if proto needs `InverterType::Foo` / etc.
+4. Add a `foo-defaults` plist + `(defun make-foo …)` wrapper to
+   `sim/defaults.lisp`. The wrapper `apply`s `%make-foo` to the
+   defaults plist `append`-ed in front of the caller's args; AsPlist's
+   last-occurrence-wins resolution lets per-component plist values
+   override the defaults.
+5. (Optional) Override `subtype()` if proto needs `InverterType::Foo` / etc.
 
 ## Sample-config DSL convention
 
 Two-layer split:
-- `%make-*` — Rust primitives in `src/lisp/make.rs`. Take a `:config`
-  alist optionally; otherwise pure plist parsing with no defaults.
-- `make-*` — Lisp wrappers in `sim/defaults.lisp` that prepend
-  `:config <cat>-defaults` and dispatch to `%make-*`.
+- `%make-*` — Rust primitives in `src/lisp/make.rs`. Pure plist
+  parsing; every field arrives as a plist key, no defaults.
+- `make-*` — Lisp wrappers in `sim/defaults.lisp` that prepend a
+  `<cat>-defaults` plist and dispatch to `%make-*`.
 
-Topology code uses `make-*` (defaults applied). To opt out for a
-single call: pass `:config nil` (last-wins on the merged plist) or
-call `%make-*` directly. Per-component plist args still win — AsPlist!
-takes the last occurrence of each key, and the wrapper's `:config` is
-the first key in the merged plist.
+Topology code uses `make-*` (defaults applied). To opt out of
+defaults entirely for one call, invoke `%make-*` directly.
+Per-component plist args win without any special handling — AsPlist!
+takes the last occurrence of each key and the wrapper's defaults
+appear first in the merged plist.
 
 `config.lisp` loads `sim/defaults.lisp` outside its boundp guard so
 edits re-apply on reload, and registers it via `(watch-file …)` so
@@ -122,8 +120,9 @@ config.lisp does.
   works, `:health "error"` errors with a type mismatch.
 - `LispValue` (`src/lisp/value.rs`) — passthrough wrapper that lets a
   raw `TulispObject` ride through `AsPlist!` (works around the
-  blanket-`From<T> for T` `Infallible` mismatch). Used for the
-  `:config <alist>` per-category defaults plumbing.
+  blanket-`From<T> for T` `Infallible` mismatch). Used for `:power`
+  and `:sunlight%`, where the make-* dispatcher inspects the raw
+  shape to pick between a constant and a `DynamicScalar`.
 
 ## Lisp gotchas (current tulisp-vm)
 

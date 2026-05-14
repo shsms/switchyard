@@ -93,11 +93,11 @@
 ;; Topology — nested for visual clarity. The whole graph is one
 ;; expression; reading top-to-bottom traces the grid → main meter →
 ;; per-branch meters → underlying device chain. Each `make-*` is a
-;; defun in sim/defaults.lisp that pulls in the matching `*-defaults`
-;; alist before calling the underlying `%make-*` Rust primitive;
-;; per-component plist args still override. To opt out of defaults for
-;; a single component, call the `%make-*` primitive directly or pass
-;; `:config nil`.
+;; defun in sim/defaults.lisp that prepends the matching `*-defaults`
+;; plist before calling the underlying `%make-*` Rust primitive;
+;; per-component plist args still override via AsPlist's
+;; last-occurrence-wins. To opt out of defaults for a single
+;; component, call the `%make-*` primitive directly.
 ;; -----------------------------------------------------------------------------
 
 (make-grid
