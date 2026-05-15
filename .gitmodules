@@ -1,3 +1,6 @@
 [submodule "submodules/frequenz-api-assets"]
 	path = submodules/frequenz-api-assets
 	url = https://github.com/frequenz-floss/frequenz-api-assets.git
+[submodule "submodules/frequenz-api-microgrid"]
+	path = submodules/frequenz-api-microgrid
+	url = https://github.com/frequenz-floss/frequenz-api-microgrid.git
