@@ -685,6 +685,11 @@ Acceptance: tooltip appears within 200 ms; click navigates to
 the formula tree; clicking a =#N= in the tree selects the
 component on the canvas.
 
+*Stage 1 landed*: tooltip via the .dash-tile title attribute,
+fed by /api/microgrid/formulas (mode-enter + topology refetch).
+Stage 2 (click → side-panel formula tree with linked #N → canvas
+selection) is the remaining part.
+
 * Snapshots / save-state
 
 ** TODO G1. Snapshot save/load
