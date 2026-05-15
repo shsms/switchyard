@@ -133,10 +133,31 @@ the actor maintains.
 ## Workaround for downstream callers
 
 Keep at least one `MicrogridClientHandle` clone alive for the lifetime
-of the process — e.g. stash the result of `Microgrid::client()` in
-shared state and reuse it across rebuilds via
-`Microgrid::new_from_handles`. The actor's `recv()` then parks on a
+of the process. The cleanest shape is to construct the client once
+directly via `MicrogridClientHandle::try_new(url)`, stash it in
+shared state, and assemble each fresh `Microgrid` via
+`Microgrid::new_from_handles(client.clone(), lm)` — where `lm` is a
+new `LogicalMeterHandle::try_new(client.clone(), config)` built
+whenever the topology changes. The actor's `recv()` then parks on a
 genuinely open channel and the busy-spin doesn't trigger.
+
+```rust
+use frequenz_microgrid::{
+    LogicalMeterConfig, LogicalMeterHandle, Microgrid, MicrogridClientHandle,
+};
+
+// Once, at boot:
+let client = MicrogridClientHandle::try_new("http://[::1]:8800").await?;
+
+// On every topology change:
+let lm = LogicalMeterHandle::try_new(
+    client.clone(),
+    LogicalMeterConfig::new(chrono::TimeDelta::seconds(1)),
+).await?;
+let mg = Microgrid::new_from_handles(client.clone(), lm);
+// …subscribe, drop the previous mg, etc. The `client` outlives
+// every mg, so its actor's channel never closes.
+```
 
 ## Environment
 
