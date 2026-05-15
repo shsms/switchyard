@@ -7,8 +7,13 @@ use simplelog::{
     ColorChoice, CombinedLogger, Config as LogConfig, LevelFilter, TermLogger, TerminalMode,
 };
 use switchyard::{
-    lisp::Config, proto::microgrid::microgrid_server::MicrogridServer as MicrogridGrpcServer,
-    server::MicrogridServer, sim::World, ui, ui_log,
+    assets_server::AssetsServer,
+    lisp::Config,
+    proto::assets::platform_assets_server::PlatformAssetsServer as AssetsGrpcServer,
+    proto::microgrid::microgrid_server::MicrogridServer as MicrogridGrpcServer,
+    server::MicrogridServer,
+    sim::World,
+    ui, ui_log,
 };
 use tonic::transport::Server;
 
@@ -73,9 +78,11 @@ async fn main() {
         }
     });
 
-    let server = MicrogridServer::new(config);
+    let microgrid_server = MicrogridServer::new(config.clone());
+    let assets_server = AssetsServer::new(config);
     Server::builder()
-        .add_service(MicrogridGrpcServer::new(server))
+        .add_service(MicrogridGrpcServer::new(microgrid_server))
+        .add_service(AssetsGrpcServer::new(assets_server))
         .serve(socket_addr)
         .await
         .unwrap();
