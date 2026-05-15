@@ -670,7 +670,11 @@ Likewise — separate item for the details:
   app's setpoint command is clipped" — exactly the bug a soak
   test wants to surface.
 
-** TODO F3. Setpoint envelope visual
+** DONE F3. Setpoint envelope visual
+   - Pure CSS track + marker via the envelopeBar helper. Live on
+     tier-3 inverter rows; the helper takes a fmtValue callback so
+     it slots into any (lower, current, upper) site (battery SoC,
+     current envelopes) when those rows pick it up.
 
 Generalised renderer for =(lower, current, upper)= triples.
 Used in F1 (SoC bar 0..100) and F2 (active-P envelope from

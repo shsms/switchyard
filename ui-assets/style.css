@@ -646,6 +646,42 @@ body.compact .tier3-health { font-size: 10px; padding: 1px 6px; }
 body.compact .envelope-track { height: 6px; }
 body.compact .envelope-marker { width: 10px; height: 10px; margin-left: -5px; margin-top: -5px; }
 
+.dash-tile-interactive {
+  cursor: pointer;
+  transition: border-color 120ms;
+}
+.dash-tile-interactive:hover { border-color: var(--accent); }
+.formula-panel { padding: 8px 4px; }
+.formula-panel h2 { font-size: 14px; margin-bottom: 8px; }
+.formula-panel h2 code {
+  font-size: 13px;
+  color: var(--accent);
+  background: var(--bg-deep, #1b1f27);
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+.formula-tree {
+  font-family: var(--mono, ui-monospace, "Cascadia Mono", monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  background: var(--bg-deep, #1b1f27);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 10px 12px;
+  color: var(--fg);
+}
+.formula-arg { padding-left: 14px; }
+.formula-ref {
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline dotted;
+}
+.formula-ref:hover { color: var(--good, #6bd97b); }
+.formula-num { color: var(--muted); }
+.formula-op  { color: var(--warn, #d9c46b); }
+.formula-call { color: var(--good, #6bd97b); }
+
 .tier5-row {
   display: grid;
   grid-template-columns: minmax(140px, 1.5fr) 90px 80px minmax(160px, 3fr) minmax(100px, 1fr);
