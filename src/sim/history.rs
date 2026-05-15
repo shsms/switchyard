@@ -45,6 +45,41 @@ impl Metric {
             Self::ReactivePowerUpperBoundVar => "reactive_power_upper_bound_var",
         }
     }
+
+    /// Typed quantity this metric carries, mirroring the
+    /// frequenz-microgrid `Sample<Q>` `Q` parameter — `Power`,
+    /// `ReactivePower`, `Frequency`, `Percentage`. The UI uses this
+    /// to pick a scale family (power → W/kW/MW autoscale; linear →
+    /// fixed unit) without having to special-case metric names in
+    /// the SPA.
+    pub fn quantity(self) -> &'static str {
+        match self {
+            Self::ActivePowerW
+            | Self::ActivePowerLowerBoundW
+            | Self::ActivePowerUpperBoundW => "Power",
+            Self::ReactivePowerVar
+            | Self::ReactivePowerLowerBoundVar
+            | Self::ReactivePowerUpperBoundVar => "ReactivePower",
+            Self::FrequencyHz => "Frequency",
+            Self::SocPct => "Percentage",
+        }
+    }
+
+    /// Base SI-ish unit string the raw samples are stored in. Power
+    /// readings auto-scale to k/M on the UI side using this as the
+    /// suffix; linear-kind quantities (Hz, %) display as-is.
+    pub fn unit(self) -> &'static str {
+        match self {
+            Self::ActivePowerW
+            | Self::ActivePowerLowerBoundW
+            | Self::ActivePowerUpperBoundW => "W",
+            Self::ReactivePowerVar
+            | Self::ReactivePowerLowerBoundVar
+            | Self::ReactivePowerUpperBoundVar => "var",
+            Self::FrequencyHz => "Hz",
+            Self::SocPct => "%",
+        }
+    }
 }
 
 impl std::str::FromStr for Metric {

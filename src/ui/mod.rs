@@ -759,6 +759,14 @@ struct HistoryQuery {
 struct HistoryResponse {
     id: u64,
     metric: String,
+    /// Typed quantity (`"Power"`, `"ReactivePower"`, `"Frequency"`,
+    /// `"Percentage"`) — mirrors the frequenz-microgrid `Sample<Q>`
+    /// `Q` parameter so the SPA picks a scale family from this
+    /// instead of pattern-matching on the metric name.
+    quantity: &'static str,
+    /// Base unit the samples are recorded in (`"W"`, `"var"`,
+    /// `"Hz"`, `"%"`).
+    unit: &'static str,
     /// Pairs of (timestamp_ms_since_epoch, value). The time format is
     /// JS-ready (Date.now() shape) so chart libs can plot directly.
     samples: Vec<(i64, f32)>,
@@ -788,6 +796,8 @@ async fn history(
     Ok(Json(HistoryResponse {
         id: q.id,
         metric: q.metric,
+        quantity: metric.quantity(),
+        unit: metric.unit(),
         samples,
     }))
 }
