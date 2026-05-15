@@ -247,7 +247,10 @@ Acceptance:
   and grid P) auto-scale together within a tier so the rows
   share a visual baseline.
 
-** TODO Z4. BatteryPool / PvPool as first-class Dashboard rows
+** DONE Z4. BatteryPool / PvPool as first-class Dashboard rows
+   - Battery pool envelope (lower + upper) wired through
+     ~BatteryPool::power_bounds~. Pool SoC and PvPool aren't on
+     frequenz-microgrid 0.4.1's surface yet — revisit on upgrade.
 
 =Microgrid::battery_pool()= returns a =BatteryPool= with
 aggregated active-power, =Bounds<Power>=, and =SoC= subscriptions

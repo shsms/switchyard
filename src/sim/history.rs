@@ -26,6 +26,12 @@ pub enum Metric {
     ReactivePowerVar,
     FrequencyHz,
     SocPct,
+    /// DC-side active power, set by batteries / EV chargers /
+    /// solar inverters that report a DC bus reading distinct from
+    /// their AC `ActivePowerW`. Same units as ActivePowerW (`W`,
+    /// quantity `Power`); kept as its own metric so the inspector
+    /// can chart the AC + DC pair side-by-side.
+    DcPowerW,
     ActivePowerLowerBoundW,
     ActivePowerUpperBoundW,
     ReactivePowerLowerBoundVar,
@@ -39,6 +45,7 @@ impl Metric {
             Self::ReactivePowerVar => "reactive_power_var",
             Self::FrequencyHz => "frequency_hz",
             Self::SocPct => "soc_pct",
+            Self::DcPowerW => "dc_power_w",
             Self::ActivePowerLowerBoundW => "active_power_lower_bound_w",
             Self::ActivePowerUpperBoundW => "active_power_upper_bound_w",
             Self::ReactivePowerLowerBoundVar => "reactive_power_lower_bound_var",
@@ -55,6 +62,7 @@ impl Metric {
     pub fn quantity(self) -> &'static str {
         match self {
             Self::ActivePowerW
+            | Self::DcPowerW
             | Self::ActivePowerLowerBoundW
             | Self::ActivePowerUpperBoundW => "Power",
             Self::ReactivePowerVar
@@ -71,6 +79,7 @@ impl Metric {
     pub fn unit(self) -> &'static str {
         match self {
             Self::ActivePowerW
+            | Self::DcPowerW
             | Self::ActivePowerLowerBoundW
             | Self::ActivePowerUpperBoundW => "W",
             Self::ReactivePowerVar
@@ -97,6 +106,7 @@ impl std::str::FromStr for Metric {
             Metric::ReactivePowerVar,
             Metric::FrequencyHz,
             Metric::SocPct,
+            Metric::DcPowerW,
             Metric::ActivePowerLowerBoundW,
             Metric::ActivePowerUpperBoundW,
             Metric::ReactivePowerLowerBoundVar,
@@ -201,6 +211,9 @@ impl ComponentHistory {
         }
         if let Some(v) = snapshot.soc_pct {
             record(self, Metric::SocPct, v);
+        }
+        if let Some(v) = snapshot.dc_power_w {
+            record(self, Metric::DcPowerW, v);
         }
         if let Some(b) = &snapshot.active_power_bounds {
             // Charts plot a single envelope band, so take the first
