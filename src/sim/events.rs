@@ -68,4 +68,25 @@ pub enum WorldEvent {
     /// banner "config invalid since `ts_ms` — fix and save to
     /// recover" rather than "everything got deleted".
     ConfigError { ts_ms: i64, message: String },
+    /// One sample from an aggregated metric stream that the loopback
+    /// Microgrid client exposes — grid_power, battery_pool_power,
+    /// pv_power, consumer_power, producer_power, etc. (see
+    /// `ui::spawn_microgrid_loopback` for the set of streams).
+    /// `value` is the f32 magnitude in the base `unit`; `None` means
+    /// the formula has no current value (e.g. the source category
+    /// has no live samples in the configured `LogicalMeterConfig`
+    /// resampling window). The SPA's Dashboard tiles pick by
+    /// `stream` and apply auto-scale on `unit`.
+    MicrogridSample {
+        stream: &'static str,
+        /// Quantity type name — `"Power"` / `"Voltage"` / `"Frequency"` /
+        /// `"Percentage"` / etc. Matches `frequenz_microgrid::quantity`'s
+        /// type names. Lets the SPA group same-quantity tiles onto a
+        /// shared visual baseline without parsing the unit string.
+        quantity: &'static str,
+        /// Base unit string — `"W"` / `"VAR"` / `"V"` / `"Hz"` / `"%"`.
+        unit: &'static str,
+        ts_ms: i64,
+        value: Option<f32>,
+    },
 }

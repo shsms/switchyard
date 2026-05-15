@@ -517,6 +517,29 @@ impl World {
         });
     }
 
+    /// Broadcast one aggregated-stream sample from the loopback
+    /// Microgrid client. The forwarder tasks in
+    /// `ui::spawn_microgrid_loopback` call this for each
+    /// `Sample<Q>` they receive; the SPA's WS reads them off
+    /// `/ws/events`. Fire-and-forget for the same reason
+    /// [`Self::broadcast_config_error`] is.
+    pub fn broadcast_microgrid_sample(
+        &self,
+        stream: &'static str,
+        quantity: &'static str,
+        unit: &'static str,
+        ts_ms: i64,
+        value: Option<f32>,
+    ) {
+        let _ = self.inner.events.send(WorldEvent::MicrogridSample {
+            stream,
+            quantity,
+            unit,
+            ts_ms,
+            value,
+        });
+    }
+
     // ─── Scheduler knobs + grid state ────────────────────────────────
     //
     // `physics_tick` is the cadence at which `spawn_physics` runs

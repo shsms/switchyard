@@ -79,7 +79,7 @@ async fn main() {
     // component graph is built. See UI-design.org §Z2.
     let microgrid = ui::new_microgrid_slot();
     let grpc_url = format!("http://{socket_addr_str}");
-    ui::spawn_microgrid_loopback(grpc_url, microgrid.clone());
+    ui::spawn_microgrid_loopback(grpc_url, microgrid.clone(), world.clone());
     tokio::spawn(async move {
         if let Err(e) = ui::serve(ui_addr, ui_config, microgrid).await {
             log::error!("UI server exited: {e}");

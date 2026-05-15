@@ -19,10 +19,12 @@ use axum::{
     routing::{get, post},
 };
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
-use frequenz_microgrid::{LogicalMeterConfig, Microgrid};
+use frequenz_microgrid::{LogicalMeterConfig, Microgrid, Sample, metric, quantity::Power};
 use rust_embed::Embed;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{OnceCell, broadcast::error::RecvError};
+
+use crate::sim::World;
 
 use crate::{
     lisp::Config,
@@ -55,29 +57,128 @@ pub fn new_microgrid_slot() -> SharedMicrogrid {
 }
 
 /// Spawn a tokio task that constructs a [`Microgrid`] pointed at
-/// `grpc_url` and stores it in `slot` once the connection succeeds.
-/// `Microgrid::try_new` already retries lazily until the gRPC server
-/// is reachable; this wrapper exists so the UI's `serve` doesn't
-/// block on the gRPC server coming up — UI startup proceeds, and
-/// dashboard endpoints return 503 until the slot fills.
-pub fn spawn_microgrid_loopback(grpc_url: String, slot: SharedMicrogrid) {
+/// `grpc_url`, kicks off forwarders for the aggregated streams the
+/// Dashboard cares about, and stores the handle in `slot` once the
+/// connection succeeds. `Microgrid::try_new` already retries lazily
+/// until the gRPC server is reachable; this wrapper exists so the
+/// UI's `serve` doesn't block on the gRPC server coming up — UI
+/// startup proceeds, and dashboard endpoints return 503 until the
+/// slot fills.
+///
+/// `world` is the sink the forwarders publish to via
+/// [`World::broadcast_microgrid_sample`]; the existing `/ws/events`
+/// stream then carries the samples to the SPA without any extra
+/// wiring — they ride the same `WorldEvent` discriminator the
+/// per-component samples already use.
+pub fn spawn_microgrid_loopback(grpc_url: String, slot: SharedMicrogrid, world: World) {
     tokio::spawn(async move {
         // 1 Hz sample cadence matches the existing history sampler;
         // dashboard tiles refresh at this rate.
         let config = LogicalMeterConfig::new(chrono::TimeDelta::seconds(1));
-        match Microgrid::try_new(grpc_url, config).await {
-            Ok(mg) => {
-                if slot.set(mg).is_err() {
-                    log::warn!("microgrid loopback: slot already set, dropping new handle");
-                } else {
-                    log::info!("microgrid loopback: connected + graph built");
-                }
-            }
+        let mut mg = match Microgrid::try_new(grpc_url, config).await {
+            Ok(mg) => mg,
             Err(e) => {
                 log::error!("microgrid loopback: try_new failed: {e}");
+                return;
+            }
+        };
+        // Subscribe + forward each aggregated stream. Streams whose
+        // category is absent from the topology (no PV, no
+        // batteries, etc.) error out at formula construction; we
+        // log + skip those so a minimal topology still gets the
+        // streams it does have.
+        spawn_power_forwarders(&mut mg, &world);
+        if slot.set(mg).is_err() {
+            log::warn!("microgrid loopback: slot already set, dropping new handle");
+        } else {
+            log::info!("microgrid loopback: connected + graph built + forwarders running");
+        }
+    });
+}
+
+/// Build subscriptions for the active-power streams the Dashboard
+/// tier-1 (grid), tier-2 (battery pool), tier-3 (PV), and tier-4
+/// (consumer + producer aggregates) read from, and spawn one tokio
+/// task per surviving subscription to forward samples onto the
+/// World event bus.
+///
+/// Streams whose underlying category is absent (no PV in the
+/// topology, etc.) emit a single `log::info!` and are silently
+/// dropped — the Dashboard's matching tile renders as "data
+/// unavailable" until that category appears.
+fn spawn_power_forwarders(microgrid: &mut Microgrid, world: &World) {
+    let lm = microgrid.logical_meter();
+    spawn_power_forwarder("grid_power", lm.grid::<metric::AcPowerActive>(), world);
+    spawn_power_forwarder(
+        "consumer_power",
+        lm.consumer::<metric::AcPowerActive>(),
+        world,
+    );
+    spawn_power_forwarder(
+        "producer_power",
+        lm.producer::<metric::AcPowerActive>(),
+        world,
+    );
+    spawn_power_forwarder("pv_power", lm.pv::<metric::AcPowerActive>(None), world);
+    // BatteryPool takes &mut self for power() (it caches subscriber
+    // refs); build it once and let it go out of scope after the
+    // subscription resolves.
+    match microgrid.battery_pool(None) {
+        Ok(mut pool) => spawn_power_forwarder("battery_pool_power", pool.power(), world),
+        Err(e) => log::info!("microgrid loopback: battery pool absent — skipping: {e}"),
+    }
+}
+
+/// Subscribe to one Power-valued formula and spawn a forwarder that
+/// pushes each `Sample<Power>` onto the World event bus as a
+/// `MicrogridSample { stream, quantity: "Power", unit: "W", ... }`
+/// event. Bails with `log::info!` if the formula errored at
+/// construction (typical for absent categories).
+fn spawn_power_forwarder(
+    stream: &'static str,
+    formula: Result<frequenz_microgrid::Formula<Power>, frequenz_microgrid::Error>,
+    world: &World,
+) {
+    let formula = match formula {
+        Ok(f) => f,
+        Err(e) => {
+            log::info!("microgrid loopback: skip {stream} ({e})");
+            return;
+        }
+    };
+    let world = world.clone();
+    tokio::spawn(async move {
+        let mut rx = match formula.subscribe().await {
+            Ok(rx) => rx,
+            Err(e) => {
+                log::warn!("microgrid loopback: subscribe {stream} failed: {e}");
+                return;
+            }
+        };
+        loop {
+            match rx.recv().await {
+                Ok(sample) => publish_power(stream, sample, &world),
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    log::warn!("microgrid loopback: {stream} lagged {n} samples");
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    log::info!("microgrid loopback: {stream} closed; forwarder exiting");
+                    return;
+                }
             }
         }
     });
+}
+
+fn publish_power(stream: &'static str, sample: Sample<Power>, world: &World) {
+    let value = sample.value().map(|p| p.as_watts());
+    world.broadcast_microgrid_sample(
+        stream,
+        "Power",
+        "W",
+        sample.timestamp().timestamp_millis(),
+        value,
+    );
 }
 
 /// Spawn the UI HTTP server on `addr`. Returns once the listener is
