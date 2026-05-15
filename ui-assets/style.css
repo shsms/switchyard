@@ -308,6 +308,48 @@ dialog#help-dialog header button:hover { color: var(--fg); }
 .toast-error { border-color: var(--cat-grid); }
 .toast-success { border-color: var(--accent); }
 
+/* Pulse bar: persistent, ~28 px tall. Lives between the header and
+   the main grid so it stays visible across mode switches. Carries
+   compact-mono content — setpoint sparkbar, health counters,
+   loopback pill, clock. Mirrors tradingsim's `.pulse` section
+   shape; future items (scenario chip, density toggle, TZ toggle)
+   slot in alongside without changing the layout. */
+#pulse {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--muted);
+  height: 28px;
+  box-sizing: border-box;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.pulse-group { display: inline-flex; align-items: center; gap: 6px; }
+.pulse-sep   { width: 1px; align-self: stretch; background: var(--border); margin: 0 2px; }
+.pulse-spacer { flex: 1; }
+.pulse-label { color: var(--muted); }
+.pulse-clock { color: var(--muted); font-variant-numeric: tabular-nums; }
+.pulse-pill  {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0 7px;
+  color: var(--fg);
+}
+.pulse-pill.ok   { color: var(--good); border-color: var(--good); }
+.pulse-pill.warn { color: #d2a106; border-color: #d2a106; }
+.pulse-pill.bad  { color: var(--bad); border-color: var(--bad); }
+#pulse-spark { width: 80px; height: 16px; color: var(--accent); display: block; }
+#pulse-spark rect.bar { fill: currentColor; }
+.health-chip { font-variant-numeric: tabular-nums; }
+.health-chip.ok      { color: var(--good); }
+.health-chip.standby { color: #d2a106; }
+.health-chip.error   { color: var(--bad); }
+
 main {
   display: grid;
   /* topology | splitter | side  (top row, 1fr)
@@ -320,7 +362,7 @@ main {
     "drawer-splitter drawer-splitter drawer-splitter"
     "repl     repl     repl";
   gap: 0;
-  height: calc(100vh - 41px); /* viewport minus header */
+  height: calc(100vh - 41px - 28px); /* viewport minus header minus pulse bar */
   /* Same reason as on body: keeps the canvas from pushing the
      grid past its definite size. */
   overflow: hidden;

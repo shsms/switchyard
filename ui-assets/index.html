@@ -26,6 +26,22 @@
         <span id="pending-count">0</span> overrides
       </span>
     </header>
+    <section id="pulse" aria-label="system pulse">
+      <span class="pulse-group">
+        <span class="pulse-label">setpoints/5s</span>
+        <svg id="pulse-spark" viewBox="0 0 60 16" preserveAspectRatio="none"
+             aria-label="setpoint rate over last 60 seconds"></svg>
+      </span>
+      <span class="pulse-sep"></span>
+      <span class="pulse-group" id="pulse-health" title="component health"></span>
+      <span class="pulse-sep"></span>
+      <span class="pulse-group">
+        <span class="pulse-label">loopback</span>
+        <span class="pulse-pill" id="pulse-loopback">…</span>
+      </span>
+      <span class="pulse-spacer"></span>
+      <span class="pulse-clock" id="pulse-clock">--:--:--</span>
+    </section>
     <main id="app">
       <div id="topology"></div>
       <div id="dashboard" hidden>
