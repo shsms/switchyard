@@ -17,6 +17,7 @@ mod pb {
     tonic::include_proto!("proto_v1_alpha18");
 }
 
+pub use pb::frequenz::api::assets::v1 as assets;
 pub use pb::frequenz::api::common::v1alpha8 as common;
 pub use pb::frequenz::api::microgrid::v1alpha18 as microgrid;
 
