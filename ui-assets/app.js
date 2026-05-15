@@ -103,8 +103,8 @@ const CHARTS_BY_CATEGORY = {
   grid: ["frequency_hz"],
   meter: ["active_power_w", "reactive_power_var"],
   inverter: ["active_power_w", "reactive_power_var"],
-  battery: ["soc_pct"],
-  "ev-charger": ["soc_pct"],
+  battery: ["soc_pct", "dc_power_w"],
+  "ev-charger": ["soc_pct", "dc_power_w"],
   chp: ["active_power_w"],
 };
 
@@ -118,6 +118,7 @@ const METRIC_TITLES = {
   reactive_power_var: "Reactive Power",
   frequency_hz:       "Frequency",
   soc_pct:            "SoC",
+  dc_power_w:         "DC Power",
 };
 
 // Pick a display scale from a typed quantity + base unit. Power-
@@ -2236,6 +2237,7 @@ function openWebSocket(onTopologyChanged) {
       }
       if (ev.kind === "sample") {
         liveCharts.pushSample(ev.id, ev.metric, ev.ts_ms, ev.value);
+        batteryRows.applySample(ev);
       } else if (ev.kind === "microgrid_sample") {
         dashboardTiles.applySample(ev);
       } else if (ev.kind === "topology_changed") {
@@ -2392,6 +2394,131 @@ const dashboardTiles = (() => {
       // enough — topology mutations re-trigger this via the
       // refreshTopology path in init().
       await loadFormulas();
+    },
+  };
+})();
+
+// ─── Tier 2: per-battery rows ──────────────────────────────────────────────
+//
+// One row per visible battery under the Battery pool tile. Refreshed
+// on every /api/topology fetch (initial boot + every topology_changed
+// WS event), live-updated by routing the per-component `sample` WS
+// frames through applySample. Click a row -> jump to Topology mode
+// with that node selected, so an operator who spots a battery
+// drifting can drill in without leaving the keyboard.
+const batteryRows = (() => {
+  const data = new Map(); // id -> { name, health, soc, power_w }
+  let order = []; // ids sorted ascending by SoC (nulls last)
+  const TRACKED = new Set(["soc_pct", "dc_power_w"]);
+
+  function fmtPower(v) {
+    if (v == null || !Number.isFinite(v)) return "—";
+    const a = Math.abs(v);
+    if (a >= 1e6) return `${(v / 1e6).toFixed(2)} MW`;
+    if (a >= 1e3) return `${(v / 1e3).toFixed(2)} kW`;
+    return `${v.toFixed(1)} W`;
+  }
+  function fmtSoc(v) {
+    return v == null || !Number.isFinite(v) ? "—" : `${v.toFixed(1)}%`;
+  }
+  function socClass(v) {
+    if (v == null || !Number.isFinite(v)) return "muted";
+    if (v < 10 || v > 95) return "soc-warn";
+    return "soc-ok";
+  }
+  function sortKey(id) {
+    const s = data.get(id)?.soc;
+    return s == null ? Infinity : s;
+  }
+  function resort() {
+    order = [...data.keys()].sort((a, b) => sortKey(a) - sortKey(b) || a - b);
+  }
+  function render() {
+    const grid = document.getElementById("tier-2-rows");
+    const section = grid?.closest(".dash-tier-2");
+    if (!grid || !section) return;
+    section.hidden = data.size === 0;
+    grid.innerHTML = "";
+    for (const id of order) {
+      const d = data.get(id);
+      const row = document.createElement("div");
+      row.className = "tier2-row";
+      row.dataset.id = id;
+      const soc = d.soc;
+      const socPct = soc == null ? 0 : Math.max(0, Math.min(100, soc));
+      const healthCls = d.health === "ok" ? "health-ok" : "health-bad";
+      row.innerHTML = `
+        <span class="tier2-name">${d.name}</span>
+        <span class="tier2-health ${healthCls}">${d.health}</span>
+        <span class="tier2-soc-wrap">
+          <span class="tier2-soc-bar ${socClass(soc)}" style="width:${socPct.toFixed(1)}%"></span>
+          <span class="tier2-soc-text">${fmtSoc(soc)}</span>
+        </span>
+        <span class="tier2-power">${fmtPower(d.power_w)}</span>
+      `;
+      row.addEventListener("click", () => {
+        localStorage.setItem(MODE_KEY, "topology");
+        applyMode("topology");
+        topology.select([id]);
+        const c = topology.get(id);
+        if (c) showComponent(c);
+      });
+      grid.appendChild(row);
+    }
+  }
+  async function seedFromHistory(id) {
+    // Best-effort initial paint. window_s=10 keeps the response tiny;
+    // the last sample is all we need.
+    try {
+      const [soc, dc] = await Promise.all([
+        fetch(`/api/history?id=${id}&metric=soc_pct&window_s=10`).then((r) => r.json()),
+        fetch(`/api/history?id=${id}&metric=dc_power_w&window_s=10`).then((r) => r.json()),
+      ]);
+      const d = data.get(id);
+      if (!d) return;
+      const lastSoc = soc.samples?.length ? soc.samples.at(-1)[1] : null;
+      const lastDc = dc.samples?.length ? dc.samples.at(-1)[1] : null;
+      d.soc = lastSoc;
+      d.power_w = lastDc;
+    } catch (_) {
+      // Live WS samples will fill the gap.
+    }
+  }
+  return {
+    async refresh(components) {
+      const batteries = (components || []).filter(
+        (c) => c.category === "battery" && !c.hidden,
+      );
+      const newData = new Map();
+      for (const c of batteries) {
+        const prev = data.get(c.id);
+        newData.set(c.id, {
+          name: c.name,
+          health: c.health,
+          soc: prev?.soc ?? null,
+          power_w: prev?.power_w ?? null,
+        });
+      }
+      data.clear();
+      for (const [k, v] of newData) data.set(k, v);
+      // Initial paint with whatever cached values we already had, then
+      // backfill from /api/history and re-render once values arrive.
+      resort();
+      render();
+      await Promise.all(batteries.map((c) => seedFromHistory(c.id)));
+      resort();
+      render();
+    },
+    applySample(ev) {
+      if (!TRACKED.has(ev.metric)) return;
+      const d = data.get(ev.id);
+      if (!d) return;
+      if (ev.metric === "soc_pct") d.soc = ev.value;
+      else if (ev.metric === "dc_power_w") d.power_w = ev.value;
+      // SoC changes shift sort order; power changes don't. Resort only
+      // when worth it.
+      if (ev.metric === "soc_pct") resort();
+      render();
     },
   };
 })();
@@ -2742,6 +2869,7 @@ async function refreshTopology() {
     // signals + a hot-reload's WS topology_changed nudge
     // already drives a refresh.
     pulseBar.applyTopology(data.components || [], data.graph_status);
+    batteryRows.refresh(data.components || []);
   } catch (err) {
     setStatus(`error: ${err.message}`, "error");
   }
