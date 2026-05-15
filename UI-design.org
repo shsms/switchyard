@@ -407,7 +407,7 @@ all panel paddings, font-sizes, and sparkline heights respond.
 
 * Pulse bar
 
-** TODO C1. Always-on system pulse strip
+** DONE C1. Always-on system pulse strip
 
 Persistent strip below the header, visible in every mode (not
 just Dashboard). Mirrors tradingsim's =.pulse= section, scaled
