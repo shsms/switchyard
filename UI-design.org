@@ -135,7 +135,7 @@ Acceptance:
 - The graph's =predecessors= / =successors= iterators are used by
   the inspector pane (replacing the current hand-rolled lookup).
 
-** TODO Z2. Drive Dashboard aggregates through frequenz-microgrid's
+** DONE Z2. Drive Dashboard aggregates through frequenz-microgrid's
    own LogicalMeterHandle
 
 Switchyard's UI server becomes a =frequenz-microgrid= client of
