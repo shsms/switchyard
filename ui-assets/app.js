@@ -2239,6 +2239,7 @@ function openWebSocket(onTopologyChanged) {
         liveCharts.pushSample(ev.id, ev.metric, ev.ts_ms, ev.value);
         batteryRows.applySample(ev);
         inverterRows.applySample(ev);
+        tier5Rows.applySample(ev);
       } else if (ev.kind === "microgrid_sample") {
         dashboardTiles.applySample(ev);
       } else if (ev.kind === "topology_changed") {
@@ -2666,6 +2667,121 @@ const inverterRows = (() => {
   };
 })();
 
+// ─── Tier 5: EV charger + CHP rows ─────────────────────────────────────────
+//
+// Smaller categories with one row each by default. EV rows mirror
+// the battery shape (SoC bar + DC W); CHP shows the AC active-power
+// reading. Both routes click -> Topology + select like F1/F2.
+const tier5Rows = (() => {
+  const data = new Map(); // id -> { name, category, health, soc?, power_w }
+  const TRACKED = new Set(["soc_pct", "dc_power_w", "active_power_w"]);
+
+  function fmtPower(v) {
+    if (v == null || !Number.isFinite(v)) return "—";
+    const a = Math.abs(v);
+    if (a >= 1e6) return `${(v / 1e6).toFixed(2)} MW`;
+    if (a >= 1e3) return `${(v / 1e3).toFixed(2)} kW`;
+    return `${v.toFixed(1)} W`;
+  }
+  function render() {
+    const grid = document.getElementById("tier-5-rows");
+    const section = grid?.closest(".dash-tier-5");
+    if (!grid || !section) return;
+    section.hidden = data.size === 0;
+    grid.innerHTML = "";
+    // EV first (it has a richer row), then CHP.
+    const ids = [...data.keys()].sort((a, b) => {
+      const A = data.get(a).category;
+      const B = data.get(b).category;
+      if (A !== B) return A.localeCompare(B);
+      return a - b;
+    });
+    for (const id of ids) {
+      const d = data.get(id);
+      const row = document.createElement("div");
+      row.className = `tier5-row cat-${d.category}`;
+      row.dataset.id = id;
+      const healthCls = d.health === "ok" ? "health-ok" : "health-bad";
+      const socPct = d.soc == null ? 0 : Math.max(0, Math.min(100, d.soc));
+      const socBlock =
+        d.category === "ev-charger"
+          ? `<span class="tier5-soc-wrap">
+               <span class="tier5-soc-bar" style="width:${socPct.toFixed(1)}%"></span>
+               <span class="tier5-soc-text">${d.soc == null ? "—" : d.soc.toFixed(1) + "%"}</span>
+             </span>`
+          : `<span class="tier5-soc-wrap muted">—</span>`;
+      row.innerHTML = `
+        <span class="tier5-name">${d.name}</span>
+        <span class="tier5-cat muted">${d.category}</span>
+        <span class="tier5-health ${healthCls}">${d.health}</span>
+        ${socBlock}
+        <span class="tier5-power">${fmtPower(d.power_w)}</span>
+      `;
+      row.addEventListener("click", () => {
+        localStorage.setItem(MODE_KEY, "topology");
+        applyMode("topology");
+        topology.select([id]);
+        const c = topology.get(id);
+        if (c) showComponent(c);
+      });
+      grid.appendChild(row);
+    }
+  }
+  async function seedFromHistory(id, category) {
+    const powerMetric = category === "chp" ? "active_power_w" : "dc_power_w";
+    const calls = [
+      fetch(`/api/history?id=${id}&metric=${powerMetric}&window_s=10`).then((r) => r.json()),
+    ];
+    if (category === "ev-charger") {
+      calls.push(
+        fetch(`/api/history?id=${id}&metric=soc_pct&window_s=10`).then((r) => r.json()),
+      );
+    }
+    try {
+      const [p, soc] = await Promise.all(calls);
+      const d = data.get(id);
+      if (!d) return;
+      d.power_w = p.samples?.at(-1)?.[1] ?? null;
+      if (soc) d.soc = soc.samples?.at(-1)?.[1] ?? null;
+    } catch (_) {
+      // Live samples will fill in.
+    }
+  }
+  return {
+    async refresh(components) {
+      const rows = (components || []).filter(
+        (c) => (c.category === "ev-charger" || c.category === "chp") && !c.hidden,
+      );
+      const next = new Map();
+      for (const c of rows) {
+        const prev = data.get(c.id);
+        next.set(c.id, {
+          name: c.name,
+          category: c.category,
+          health: c.health,
+          soc: prev?.soc ?? null,
+          power_w: prev?.power_w ?? null,
+        });
+      }
+      data.clear();
+      for (const [k, v] of next) data.set(k, v);
+      render();
+      await Promise.all(rows.map((c) => seedFromHistory(c.id, c.category)));
+      render();
+    },
+    applySample(ev) {
+      if (!TRACKED.has(ev.metric)) return;
+      const d = data.get(ev.id);
+      if (!d) return;
+      if (ev.metric === "soc_pct" && d.category === "ev-charger") d.soc = ev.value;
+      else if (ev.metric === "dc_power_w" && d.category === "ev-charger") d.power_w = ev.value;
+      else if (ev.metric === "active_power_w" && d.category === "chp") d.power_w = ev.value;
+      else return;
+      render();
+    },
+  };
+})();
+
 async function loadFormulas() {
   try {
     const res = await fetch("/api/microgrid/formulas");
@@ -3014,6 +3130,7 @@ async function refreshTopology() {
     pulseBar.applyTopology(data.components || [], data.graph_status);
     batteryRows.refresh(data.components || []);
     inverterRows.refresh(data.components || []);
+    tier5Rows.refresh(data.components || []);
   } catch (err) {
     setStatus(`error: ${err.message}`, "error");
   }
