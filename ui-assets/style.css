@@ -375,17 +375,20 @@ body[data-mode="dashboard"] #topology { display: none; }
   color: var(--accent);
 }
 
-/* Dashboard layout. First tile + a single column for now — A2's
-   tier-2/3/4 grids land in follow-up commits. Padding + scroll on
-   the pane so longer stacks don't push the page. The 32" 4K
-   target means we have plenty of horizontal room: future tiles
-   will fan into a multi-column grid here. */
+/* Dashboard layout. Auto-fit grid sized to fan out on the 32" 4K
+   target — at ~1800 px available width that's 5-6 tiles per row,
+   on a 1200 px laptop it folds to 3-4, on iPad-narrow it folds to
+   2, and on phone-width it's 1. Per-tile minimum (280 px) is just
+   wide enough to keep "−999.99 MW" + the meta line from wrapping.
+   Padding + scroll on the pane so per-component drill-down rows
+   (future tier-2 / tier-3 breakouts) don't push the page. */
 #dashboard {
   padding: 16px;
   overflow-y: auto;
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   gap: 12px;
+  align-content: start;
 }
 .dash-tile {
   background: var(--bg-elev);
