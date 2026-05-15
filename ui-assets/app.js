@@ -2483,6 +2483,7 @@ const pulseBar = (() => {
       renderHealth([]);
       refreshLoopback();
       renderClock();
+      setupDensityToggle();
       // Loopback poll: every 5 s while not connected, every 15 s
       // once connected (cheap heartbeat, picks up a server restart
       // within one cycle). Constants kept generous so a slow page
@@ -2503,6 +2504,37 @@ const pulseBar = (() => {
     },
   };
 })();
+
+// ─── Density toggle ────────────────────────────────────────────────────────
+//
+// CSS-only mode that shrinks tile + pulse-bar paddings and fonts.
+// For power users on long soak runs who want more tiles + more
+// rows on screen at once. Default = normal (the 32" 4K target
+// keeps the comfortable layout the landing one). Preference
+// persists in localStorage so a refresh keeps you put.
+const DENSITY_KEY = "switchyard-density";
+
+function applyDensity(mode) {
+  const compact = mode === "compact";
+  document.body.classList.toggle("compact", compact);
+  const chip = document.getElementById("density-toggle");
+  if (chip) {
+    chip.classList.toggle("active", compact);
+    chip.textContent = compact ? "compact" : "normal";
+  }
+}
+
+function setupDensityToggle() {
+  const chip = document.getElementById("density-toggle");
+  if (chip) {
+    chip.addEventListener("click", () => {
+      const next = document.body.classList.contains("compact") ? "normal" : "compact";
+      localStorage.setItem(DENSITY_KEY, next);
+      applyDensity(next);
+    });
+  }
+  applyDensity(localStorage.getItem(DENSITY_KEY) || "normal");
+}
 
 // ─── Mode toggle ────────────────────────────────────────────────────────────
 //

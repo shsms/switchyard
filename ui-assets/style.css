@@ -343,6 +343,19 @@ dialog#help-dialog header button:hover { color: var(--fg); }
 .pulse-pill.ok   { color: var(--good); border-color: var(--good); }
 .pulse-pill.warn { color: #d2a106; border-color: #d2a106; }
 .pulse-pill.bad  { color: var(--bad); border-color: var(--bad); }
+.pulse-chip {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0 7px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+.pulse-chip:hover { color: var(--fg); border-color: var(--fg); }
+.pulse-chip.active {
+  color: var(--accent);
+  border-color: var(--accent);
+}
 #pulse-spark { width: 80px; height: 16px; color: var(--accent); display: block; }
 #pulse-spark rect.bar { fill: currentColor; }
 .health-chip { font-variant-numeric: tabular-nums; }
@@ -935,3 +948,25 @@ pre {
   padding: 0.75rem;
   overflow: auto;
 }
+
+/* ─── Compact density ─────────────────────────────────────────────────────
+   `body.compact` class — toggled via the pulse-bar density chip and
+   localStorage-persisted. The 32" 4K target keeps the default layout
+   roomy; compact mode is for power users on long soak runs who want
+   more tiles + more rows on screen at once. CSS-only — every panel
+   responds via class-scoped overrides below. */
+
+body.compact #pulse {
+  height: 22px;
+  padding: 2px 8px;
+  font-size: 11px;
+}
+body.compact #pulse-spark { width: 64px; height: 12px; }
+body.compact .dash-tile { padding: 8px 10px; }
+body.compact .dash-tile h2 { font-size: 10px; margin-bottom: 2px; }
+body.compact .dash-value { font-size: 22px; min-height: 26px; }
+body.compact .dash-spark { height: 28px; margin-top: 3px; }
+body.compact .dash-meta { font-size: 10px; margin-top: 3px; }
+body.compact #dashboard { padding: 8px; gap: 6px; }
+/* Re-tighten the main grid since the pulse bar shrank 6 px. */
+body.compact main { height: calc(100vh - 41px - 22px); }
