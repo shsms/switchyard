@@ -485,6 +485,24 @@ body[data-mode="dashboard"] #topology { display: none; }
   color: var(--muted);
   margin-top: 6px;
 }
+.dash-envelope {
+  margin-top: 4px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+}
+.dash-envelope .env-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.dash-envelope .env-lo { color: var(--bad, #d96b6b); }
+.dash-envelope .env-hi { color: var(--good, #6bd97b); }
+.dash-envelope .env-lo.muted,
+.dash-envelope .env-hi.muted { color: var(--muted); }
+body.compact .dash-envelope { font-size: 11px; margin-top: 2px; }
 
 #splitter {
   grid-area: splitter;
