@@ -4,6 +4,7 @@
 //! port (default 8801). The SPA shell + vendored assets are bundled
 //! via rust-embed.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -20,6 +21,7 @@ use axum::{
 };
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use frequenz_microgrid::{LogicalMeterConfig, Microgrid, Sample, metric, quantity::Power};
+use parking_lot::RwLock;
 use rust_embed::Embed;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{OnceCell, broadcast::error::RecvError};
@@ -44,16 +46,39 @@ use crate::{
 #[folder = "ui-assets/"]
 struct Assets;
 
-/// Shared handle to the loopback Microgrid client. Populated by a
-/// background task `spawn_microgrid_loopback` kicks off; UI endpoints
-/// that depend on aggregated formulas return 503 until the OnceCell
-/// is set. Wrapping in `Arc` lets the background task, the router
-/// extension layer, and (eventually) the WS fan-out share it
-/// without contending.
-pub type SharedMicrogrid = Arc<OnceCell<Microgrid>>;
+/// One forwarded sample, cached so the SPA can paint immediately
+/// on page load instead of waiting up to a full second for the
+/// next WS tick. Mirrors the [`WorldEvent::MicrogridSample`]
+/// payload minus the `kind` discriminator.
+#[derive(Clone, Debug, Serialize)]
+pub struct MicrogridSampleSnapshot {
+    pub quantity: &'static str,
+    pub unit: &'static str,
+    pub ts_ms: i64,
+    pub value: Option<f32>,
+}
+
+/// Shared state for the loopback Microgrid client: the handle slot
+/// plus the per-stream latest-sample cache the forwarders write
+/// to. `Arc`'d so the constructor task, the per-stream forwarders,
+/// and the HTTP handlers all hold cheap clones.
+pub struct MicrogridState {
+    pub microgrid: OnceCell<Microgrid>,
+    /// Latest sample seen per stream name. Forwarders overwrite on
+    /// each recv; the `/api/microgrid/latest` endpoint snapshots the
+    /// whole map on each call. `parking_lot::RwLock` because writes
+    /// are non-async (no await between lock + drop) and contention
+    /// is tiny (one writer per stream at 1 Hz).
+    pub latest: RwLock<HashMap<&'static str, MicrogridSampleSnapshot>>,
+}
+
+pub type SharedMicrogrid = Arc<MicrogridState>;
 
 pub fn new_microgrid_slot() -> SharedMicrogrid {
-    Arc::new(OnceCell::new())
+    Arc::new(MicrogridState {
+        microgrid: OnceCell::new(),
+        latest: RwLock::new(HashMap::new()),
+    })
 }
 
 /// Spawn a tokio task that constructs a [`Microgrid`] pointed at
@@ -87,8 +112,8 @@ pub fn spawn_microgrid_loopback(grpc_url: String, slot: SharedMicrogrid, world: 
         // batteries, etc.) error out at formula construction; we
         // log + skip those so a minimal topology still gets the
         // streams it does have.
-        spawn_power_forwarders(&mut mg, &world);
-        if slot.set(mg).is_err() {
+        spawn_power_forwarders(&mut mg, &world, slot.clone());
+        if slot.microgrid.set(mg).is_err() {
             log::warn!("microgrid loopback: slot already set, dropping new handle");
         } else {
             log::info!("microgrid loopback: connected + graph built + forwarders running");
@@ -106,25 +131,37 @@ pub fn spawn_microgrid_loopback(grpc_url: String, slot: SharedMicrogrid, world: 
 /// topology, etc.) emit a single `log::info!` and are silently
 /// dropped — the Dashboard's matching tile renders as "data
 /// unavailable" until that category appears.
-fn spawn_power_forwarders(microgrid: &mut Microgrid, world: &World) {
+fn spawn_power_forwarders(microgrid: &mut Microgrid, world: &World, state: SharedMicrogrid) {
     let lm = microgrid.logical_meter();
-    spawn_power_forwarder("grid_power", lm.grid::<metric::AcPowerActive>(), world);
+    spawn_power_forwarder(
+        "grid_power",
+        lm.grid::<metric::AcPowerActive>(),
+        world,
+        state.clone(),
+    );
     spawn_power_forwarder(
         "consumer_power",
         lm.consumer::<metric::AcPowerActive>(),
         world,
+        state.clone(),
     );
     spawn_power_forwarder(
         "producer_power",
         lm.producer::<metric::AcPowerActive>(),
         world,
+        state.clone(),
     );
-    spawn_power_forwarder("pv_power", lm.pv::<metric::AcPowerActive>(None), world);
+    spawn_power_forwarder(
+        "pv_power",
+        lm.pv::<metric::AcPowerActive>(None),
+        world,
+        state.clone(),
+    );
     // BatteryPool takes &mut self for power() (it caches subscriber
     // refs); build it once and let it go out of scope after the
     // subscription resolves.
     match microgrid.battery_pool(None) {
-        Ok(mut pool) => spawn_power_forwarder("battery_pool_power", pool.power(), world),
+        Ok(mut pool) => spawn_power_forwarder("battery_pool_power", pool.power(), world, state),
         Err(e) => log::info!("microgrid loopback: battery pool absent — skipping: {e}"),
     }
 }
@@ -138,6 +175,7 @@ fn spawn_power_forwarder(
     stream: &'static str,
     formula: Result<frequenz_microgrid::Formula<Power>, frequenz_microgrid::Error>,
     world: &World,
+    state: SharedMicrogrid,
 ) {
     let formula = match formula {
         Ok(f) => f,
@@ -157,7 +195,7 @@ fn spawn_power_forwarder(
         };
         loop {
             match rx.recv().await {
-                Ok(sample) => publish_power(stream, sample, &world),
+                Ok(sample) => publish_power(stream, sample, &world, &state),
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                     log::warn!("microgrid loopback: {stream} lagged {n} samples");
                 }
@@ -170,15 +208,17 @@ fn spawn_power_forwarder(
     });
 }
 
-fn publish_power(stream: &'static str, sample: Sample<Power>, world: &World) {
+fn publish_power(stream: &'static str, sample: Sample<Power>, world: &World, state: &SharedMicrogrid) {
     let value = sample.value().map(|p| p.as_watts());
-    world.broadcast_microgrid_sample(
-        stream,
-        "Power",
-        "W",
-        sample.timestamp().timestamp_millis(),
+    let ts_ms = sample.timestamp().timestamp_millis();
+    let snapshot = MicrogridSampleSnapshot {
+        quantity: "Power",
+        unit: "W",
+        ts_ms,
         value,
-    );
+    };
+    state.latest.write().insert(stream, snapshot);
+    world.broadcast_microgrid_sample(stream, "Power", "W", ts_ms, value);
 }
 
 /// Spawn the UI HTTP server on `addr`. Returns once the listener is
@@ -235,6 +275,7 @@ fn router(config: Config, microgrid: SharedMicrogrid) -> Router {
         .route("/api/scenario/events", get(scenario_events))
         .route("/api/scenario/report", get(scenario_report))
         .route("/api/microgrid/status", get(microgrid_status))
+        .route("/api/microgrid/latest", get(microgrid_latest))
         .route("/ws/events", get(events_ws))
         .layer(Extension(microgrid))
         .with_state(config)
@@ -253,9 +294,9 @@ struct MicrogridStatusResp {
 }
 
 async fn microgrid_status(
-    Extension(microgrid): Extension<SharedMicrogrid>,
+    Extension(state): Extension<SharedMicrogrid>,
 ) -> (StatusCode, Json<MicrogridStatusResp>) {
-    if let Some(mg) = microgrid.get() {
+    if let Some(mg) = state.microgrid.get() {
         // `logical_meter().graph()` is the cached snapshot the
         // crate built at try_new. Component count there is the
         // post-pass-through view, matching what the formula
@@ -278,6 +319,17 @@ async fn microgrid_status(
             }),
         )
     }
+}
+
+/// Latest cached sample for every active aggregated stream.
+/// Returns a `{ stream: snapshot }` map; absent streams (no PV in
+/// the topology, no batteries, etc.) simply don't appear in the
+/// map. Lets the SPA's Dashboard paint a populated tile on page
+/// load instead of holding "loading…" until the next WS tick.
+async fn microgrid_latest(
+    Extension(state): Extension<SharedMicrogrid>,
+) -> Json<HashMap<&'static str, MicrogridSampleSnapshot>> {
+    Json(state.latest.read().clone())
 }
 
 async fn index() -> Response {
