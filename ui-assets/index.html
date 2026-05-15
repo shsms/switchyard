@@ -29,10 +29,30 @@
     <main id="app">
       <div id="topology"></div>
       <div id="dashboard" hidden>
-        <section class="dash-tile" id="tile-grid-power">
+        <section class="dash-tile">
           <h2>Grid power</h2>
           <div class="dash-value muted" data-stream="grid_power">—</div>
-          <div class="dash-meta muted">via <code>grid_formula</code> · loopback Microgrid client</div>
+          <div class="dash-meta muted">net flow at the connection point · <code>grid_formula</code></div>
+        </section>
+        <section class="dash-tile">
+          <h2>Battery pool</h2>
+          <div class="dash-value muted" data-stream="battery_pool_power">—</div>
+          <div class="dash-meta muted">aggregated DC across batteries · <code>BatteryPool::power</code></div>
+        </section>
+        <section class="dash-tile">
+          <h2>PV</h2>
+          <div class="dash-value muted" data-stream="pv_power">—</div>
+          <div class="dash-meta muted">solar generation · <code>pv_formula</code></div>
+        </section>
+        <section class="dash-tile">
+          <h2>Consumer</h2>
+          <div class="dash-value muted" data-stream="consumer_power">—</div>
+          <div class="dash-meta muted">aggregated load · <code>consumer_formula</code></div>
+        </section>
+        <section class="dash-tile">
+          <h2>Producer</h2>
+          <div class="dash-value muted" data-stream="producer_power">—</div>
+          <div class="dash-meta muted">all generation (PV + CHP + …) · <code>producer_formula</code></div>
         </section>
       </div>
       <div id="splitter" title="Drag to resize"></div>
