@@ -85,8 +85,15 @@ impl TestServer {
         let mut handles = Vec::new();
 
         let ui_config = config.clone();
+        // Loopback Microgrid client: same shape the binary uses
+        // (see UI-design.org §Z2). The grpc_addr we just bound is
+        // the URL — try_new retries lazily until the gRPC server
+        // task below comes up. Integration tests for the
+        // /api/microgrid/* endpoints exercise this whole loop.
+        let microgrid = ui::new_microgrid_slot();
+        ui::spawn_microgrid_loopback(format!("http://{grpc_addr}"), microgrid.clone());
         handles.push(tokio::spawn(async move {
-            let _ = ui::serve_with_listener(ui_listener, ui_config).await;
+            let _ = ui::serve_with_listener(ui_listener, ui_config, microgrid).await;
         }));
 
         let microgrid_server = MicrogridServer::new(config.clone());

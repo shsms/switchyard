@@ -21,6 +21,12 @@ futures = "0.3.30"
 # connection types in src/sim/graph_adapter.rs and runs the validator
 # at the end of each config-load / reload.
 frequenz-microgrid-component-graph = "0.5"
+# High-level Microgrid client + typed metric streams. The UI server
+# runs this as a client of switchyard's own gRPC server on localhost
+# (see UI-design.org §Z2): aggregated Dashboard tiles read from the
+# same LogicalMeterHandle::xxx<M>().subscribe() streams a production
+# downstream control app would consume.
+frequenz-microgrid = "0.4"
 log = "0.4.22"
 simplelog = "0.12.2"
 rand = { version = "0.8.5", features = ["small_rng"] }

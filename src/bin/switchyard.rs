@@ -72,8 +72,16 @@ async fn main() {
     // in a follow-up commit.
     let ui_addr = "127.0.0.1:8801".parse().unwrap();
     let ui_config = config.clone();
+    // Loopback Microgrid client: a frequenz-microgrid `Microgrid`
+    // pointed at this binary's own gRPC server. Constructed in the
+    // background so the UI server starts immediately and dashboard
+    // endpoints return 503 until the gRPC server is reachable + the
+    // component graph is built. See UI-design.org §Z2.
+    let microgrid = ui::new_microgrid_slot();
+    let grpc_url = format!("http://{socket_addr_str}");
+    ui::spawn_microgrid_loopback(grpc_url, microgrid.clone());
     tokio::spawn(async move {
-        if let Err(e) = ui::serve(ui_addr, ui_config).await {
+        if let Err(e) = ui::serve(ui_addr, ui_config, microgrid).await {
             log::error!("UI server exited: {e}");
         }
     });
