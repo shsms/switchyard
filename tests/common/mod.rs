@@ -19,8 +19,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use switchyard::{
-    lisp::Config, proto::microgrid::microgrid_server::MicrogridServer as MicrogridGrpcServer,
-    server::MicrogridServer, sim::World, ui,
+    assets_server::AssetsServer,
+    lisp::Config,
+    proto::assets::platform_assets_server::PlatformAssetsServer as AssetsGrpcServer,
+    proto::microgrid::microgrid_server::MicrogridServer as MicrogridGrpcServer,
+    server::MicrogridServer,
+    sim::World,
+    ui,
 };
 use tempfile::TempDir;
 use tokio::net::TcpListener;
@@ -84,10 +89,12 @@ impl TestServer {
             let _ = ui::serve_with_listener(ui_listener, ui_config).await;
         }));
 
-        let server = MicrogridServer::new(config.clone());
+        let microgrid_server = MicrogridServer::new(config.clone());
+        let assets_server = AssetsServer::new(config.clone());
         handles.push(tokio::spawn(async move {
             let _ = Server::builder()
-                .add_service(MicrogridGrpcServer::new(server))
+                .add_service(MicrogridGrpcServer::new(microgrid_server))
+                .add_service(AssetsGrpcServer::new(assets_server))
                 .serve_with_incoming(TcpListenerStream::new(grpc_listener))
                 .await;
         }));
