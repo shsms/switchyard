@@ -76,8 +76,10 @@ in config.lisp). swctl points there by default; override with `--addr`.
   `register` returns a `Handle`; the pre-tick hook owns one clone
   and ticks it each physics step — without that, no timer body
   ever runs (the same-ctx model has no background firing thread).
-- Proto root reused from `../microsim/submodules/frequenz-api-microgrid`
-  (override with `SWITCHYARD_PROTO_ROOT`).
+- Proto roots are vendored under `submodules/`:
+  - `submodules/frequenz-api-microgrid` (pinned at v0.18.0) — override
+    with `SWITCHYARD_PROTO_ROOT` for a private mirror.
+  - `submodules/frequenz-api-assets` (pinned at v0.1.0).
 
 ## Adding a component type
 

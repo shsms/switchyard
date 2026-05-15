@@ -1,13 +1,12 @@
-// Until switchyard has its own microgrid-proto submodule, reuse the one
-// already vendored under ../microsim. The override env var lets a
-// downstream packager point at a private mirror without editing build.rs.
-// The assets proto lives in switchyard's own `submodules/` already.
+// Both proto APIs are vendored under switchyard's own `submodules/`.
+// The override env var lets a downstream packager point at a private
+// mirror of the microgrid proto without editing build.rs.
 use std::path::PathBuf;
 
 fn main() -> Result<(), std::io::Error> {
     let microgrid_root = std::env::var("SWITCHYARD_PROTO_ROOT")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("../microsim/submodules/frequenz-api-microgrid"));
+        .unwrap_or_else(|_| PathBuf::from("submodules/frequenz-api-microgrid"));
     let assets_root = PathBuf::from("submodules/frequenz-api-assets");
 
     let microgrid_proto =
