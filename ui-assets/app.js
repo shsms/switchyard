@@ -2453,6 +2453,23 @@ const pulseBar = (() => {
       <span class="health-chip standby" title="standby components">STDBY ${counts.standby}</span>
       <span class="health-chip error"   title="error components">ERR ${counts.error}</span>`;
   }
+  function renderGraph(status) {
+    const el = document.getElementById("pulse-graph");
+    if (!el) return;
+    if (status == null) {
+      el.textContent = "✓";
+      el.className = "pulse-pill ok";
+      el.title = "frequenz-microgrid-component-graph accepted the topology";
+      el.onclick = null;
+    } else {
+      // Compact for the pill, full message in the title + alert on
+      // click so the dev can read past the truncation.
+      el.textContent = "⚠ rejected";
+      el.className = "pulse-pill bad";
+      el.title = status;
+      el.onclick = () => alert(`Graph validator rejected the topology:\n\n${status}`);
+    }
+  }
   async function refreshLoopback() {
     const el = document.getElementById("pulse-loopback");
     if (!el) return;
@@ -2481,6 +2498,7 @@ const pulseBar = (() => {
     setup() {
       renderSpark();
       renderHealth([]);
+      renderGraph(null);
       refreshLoopback();
       renderClock();
       setupDensityToggle();
@@ -2499,8 +2517,12 @@ const pulseBar = (() => {
       }, 1000);
     },
     recordSetpoint,
-    applyTopology(components) {
+    applyTopology(components, graphStatus) {
       renderHealth(components);
+      // `graphStatus === undefined` keeps the existing display
+      // (e.g. an older server build without the field); the field
+      // is reported as `null` for healthy graphs.
+      if (graphStatus !== undefined) renderGraph(graphStatus);
     },
   };
 })();
@@ -2576,11 +2598,11 @@ async function refreshTopology() {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     topology.apply(data);
-    // Pulse bar's health counters read from the same component
-    // list — refresh on every topology fetch so a hot-reload that
-    // flips a component's health to 'error shows up on the next
-    // WS topology_changed without a separate fetch.
-    pulseBar.applyTopology(data.components || []);
+    // Pulse bar's health counters + graph pill read from the
+    // same /api/topology fetch — one round-trip carries both
+    // signals + a hot-reload's WS topology_changed nudge
+    // already drives a refresh.
+    pulseBar.applyTopology(data.components || [], data.graph_status);
   } catch (err) {
     setStatus(`error: ${err.message}`, "error");
   }

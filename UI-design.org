@@ -299,7 +299,7 @@ Acceptance:
 - A subsequent =swctl tree= shows the same shape =frequenz-
   microgrid='s =ComponentGraph= would.
 
-** TODO Z6. Surface graph-crate warnings on the canvas
+** DONE Z6. Surface graph-crate warnings on the canvas
 
 The graph crate emits =tracing::warn!= per pass-through node and
 per =allow_*=-downgraded validation failure. Capture these
@@ -395,7 +395,7 @@ Acceptance:
 - Rows highlight when a value pins to a bound or when health
   ≠ =ok=.
 
-** TODO A3. Density toggle
+** DONE A3. Density toggle
 
 CSS-only switch in the chrome that shrinks panel padding +
 fonts. Useful when the dashboard's tier grid is dense.
