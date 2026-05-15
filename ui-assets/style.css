@@ -330,13 +330,92 @@ main {
   min-height: 0;
 }
 
-#topology {
+#topology,
+#dashboard {
   grid-area: topology;
   background: var(--bg);
   position: relative;
   overflow: hidden;
   min-width: 0;
   min-height: 0;
+}
+
+/* `body[data-mode=...]` is the toggle the JS flips on mode-button
+   click + localStorage restore. Only one of the two main panes is
+   visible at a time; the chrome (side panel + REPL) stays put so
+   selection / eval keep working across modes. */
+body[data-mode="topology"] #dashboard,
+body[data-mode="dashboard"] #topology { display: none; }
+
+/* Mode toggle in the header. Sits just right of the status pill,
+   left of everything else, so it reads as the "what am I looking
+   at" affordance. */
+#mode-toggle {
+  display: inline-flex;
+  gap: 2px;
+  margin-left: 0.5rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px;
+}
+.mode-btn {
+  background: transparent;
+  color: var(--muted);
+  border: 0;
+  padding: 4px 10px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  cursor: pointer;
+  border-radius: 3px;
+}
+.mode-btn:hover { color: var(--fg); }
+.mode-btn.active {
+  background: var(--bg-elev);
+  color: var(--accent);
+}
+
+/* Dashboard layout. First tile + a single column for now — A2's
+   tier-2/3/4 grids land in follow-up commits. Padding + scroll on
+   the pane so longer stacks don't push the page. The 32" 4K
+   target means we have plenty of horizontal room: future tiles
+   will fan into a multi-column grid here. */
+#dashboard {
+  padding: 16px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.dash-tile {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 14px 16px;
+}
+.dash-tile h2 {
+  margin: 0 0 4px 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  font-weight: 500;
+}
+.dash-value {
+  font-family: var(--font-mono);
+  font-size: 32px;
+  font-weight: 600;
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+  /* Reserve a minimum width so the tile doesn't flicker between
+     "—" placeholder and a populated number. */
+  min-height: 38px;
+}
+.dash-meta {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 6px;
 }
 
 #splitter {
