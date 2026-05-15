@@ -25,10 +25,14 @@
 //!   `"ac"` / `"dc"` / `"hybrid"`.
 //!
 //! Hidden components (e.g. the consumer meter at id 100 in the
-//! sample config) participate in the validation graph — they're
-//! still electrically connected even though the gRPC surface elides
-//! them. Excluding them here would make the validator see a
-//! disconnected branch and reject the whole topology.
+//! sample config) are *excluded* from the validation graph because
+//! switchyard models them as aggregating off-graph — a parent
+//! meter sums their power even though no explicit connection edge
+//! ties them in. To the graph crate that looks like an orphan
+//! node. `World::connections()` already filters hidden endpoints
+//! out of the edge list; the node-list filter here matches.
+//! Net effect: the validator sees the gRPC-visible topology, which
+//! is what a downstream control app sees too.
 
 use frequenz_microgrid_component_graph::{
     BatteryType, ComponentCategory, ComponentGraph, ComponentGraphConfig, Edge, EvChargerType,
@@ -105,11 +109,14 @@ fn lift_category(category: Category, subtype: Option<&str>) -> ComponentCategory
 }
 
 /// Build the lists of nodes + edges the graph crate's
-/// `ComponentGraph::try_new` consumes.
+/// `ComponentGraph::try_new` consumes. Hidden components are
+/// excluded so the validation graph mirrors what
+/// `World::connections()` (the gRPC + UI surface) shows.
 pub fn snapshot(world: &World) -> (Vec<GraphNode>, Vec<GraphEdge>) {
     let nodes = world
         .components()
         .iter()
+        .filter(|c| !c.is_hidden())
         .map(|c| GraphNode {
             id: c.id(),
             category: lift_category(c.category(), c.subtype()),
