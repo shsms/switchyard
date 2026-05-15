@@ -1,3 +1,4 @@
+pub mod assets_server;
 pub mod lisp;
 pub mod proto;
 pub mod proto_conv;
