@@ -21,12 +21,14 @@ use axum::{
 };
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use frequenz_microgrid::{LogicalMeterConfig, Microgrid, Sample, metric, quantity::Power};
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use rust_embed::Embed;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{OnceCell, broadcast::error::RecvError};
+use std::time::Duration;
+use tokio::sync::broadcast::error::RecvError;
+use tokio::task::JoinHandle;
 
-use crate::sim::World;
+use crate::sim::{World, events::WorldEvent};
 
 use crate::{
     lisp::Config,
@@ -59,25 +61,46 @@ pub struct MicrogridSampleSnapshot {
 }
 
 /// Shared state for the loopback Microgrid client: the handle slot
-/// plus the per-stream latest-sample cache the forwarders write
-/// to. `Arc`'d so the constructor task, the per-stream forwarders,
-/// and the HTTP handlers all hold cheap clones.
+/// plus the per-stream latest-sample cache the forwarders write to,
+/// plus the live forwarder JoinHandles. `Arc`'d so the constructor
+/// task, the per-stream forwarders, and the HTTP handlers all hold
+/// cheap clones.
+///
+/// `microgrid` is `RwLock<Option<…>>` rather than a `OnceCell`
+/// because the supervisor task (see `spawn_microgrid_loopback`)
+/// drops + rebuilds the handle whenever the topology changes —
+/// the graph crate's `ComponentGraph` is snapshotted at try_new
+/// time and doesn't refresh on its own, so formulas + subscriptions
+/// drift if we kept the boot-time handle. HTTP handlers take a
+/// brief read lock + clone the cheap `LogicalMeterHandle` out
+/// before doing any async work.
 pub struct MicrogridState {
-    pub microgrid: OnceCell<Microgrid>,
+    pub microgrid: RwLock<Option<Microgrid>>,
     /// Latest sample seen per stream name. Forwarders overwrite on
     /// each recv; the `/api/microgrid/latest` endpoint snapshots the
     /// whole map on each call. `parking_lot::RwLock` because writes
     /// are non-async (no await between lock + drop) and contention
-    /// is tiny (one writer per stream at 1 Hz).
+    /// is tiny (one writer per stream at 1 Hz). Cleared on each
+    /// rebuild so absent streams in the new graph don't surface
+    /// stale values.
     pub latest: RwLock<HashMap<&'static str, MicrogridSampleSnapshot>>,
+    /// Currently-running forwarder tasks. Rebuilds abort these +
+    /// spawn fresh ones bound to the new Microgrid handle's
+    /// subscriptions. Dropping the old `Microgrid` alone isn't
+    /// enough — the formulas captured inside the spawned tasks
+    /// hold sender clones of the underlying actor mpsc, so the
+    /// actor stays alive and the forwarders keep recv'ing
+    /// indefinitely without explicit abort.
+    pub forwarders: Mutex<Vec<JoinHandle<()>>>,
 }
 
 pub type SharedMicrogrid = Arc<MicrogridState>;
 
 pub fn new_microgrid_slot() -> SharedMicrogrid {
     Arc::new(MicrogridState {
-        microgrid: OnceCell::new(),
+        microgrid: RwLock::new(None),
         latest: RwLock::new(HashMap::new()),
+        forwarders: Mutex::new(Vec::new()),
     })
 }
 
@@ -97,28 +120,103 @@ pub fn new_microgrid_slot() -> SharedMicrogrid {
 /// per-component samples already use.
 pub fn spawn_microgrid_loopback(grpc_url: String, slot: SharedMicrogrid, world: World) {
     tokio::spawn(async move {
-        // 1 Hz sample cadence matches the existing history sampler;
-        // dashboard tiles refresh at this rate.
-        let config = LogicalMeterConfig::new(chrono::TimeDelta::seconds(1));
-        let mut mg = match Microgrid::try_new(grpc_url, config).await {
-            Ok(mg) => mg,
-            Err(e) => {
-                log::error!("microgrid loopback: try_new failed: {e}");
+        if !build_microgrid(&grpc_url, &slot, &world).await {
+            return;
+        }
+        log::info!("microgrid loopback: connected + graph built + forwarders running");
+        // Watch for topology mutations and rebuild on each. The
+        // graph crate's ComponentGraph is snapshotted at try_new
+        // time so formulas + subscriptions go stale once the world
+        // mutates; rebuilding picks up the new shape.
+        run_supervisor(grpc_url, slot, world).await;
+    });
+}
+
+/// Construct a `Microgrid` against `grpc_url`, spawn forwarders
+/// for every aggregated stream the graph exposes, and install
+/// both in `slot`. Returns false if `Microgrid::try_new` fails
+/// (which it normally doesn't — the crate retries internally
+/// until the server is reachable + the graph builds — so a hard
+/// failure means an unrecoverable error like a malformed URL).
+async fn build_microgrid(grpc_url: &str, slot: &SharedMicrogrid, world: &World) -> bool {
+    // 1 Hz sample cadence matches the existing history sampler;
+    // dashboard tiles refresh at this rate.
+    let config = LogicalMeterConfig::new(chrono::TimeDelta::seconds(1));
+    let mut mg = match Microgrid::try_new(grpc_url.to_owned(), config).await {
+        Ok(mg) => mg,
+        Err(e) => {
+            log::error!("microgrid loopback: try_new failed: {e}");
+            return false;
+        }
+    };
+    let handles = spawn_power_forwarders(&mut mg, world, slot.clone());
+    // Install everything atomically from the slot's perspective.
+    // Handlers reading `microgrid` under the read lock will see
+    // either the old None / Some or the new Some — never a half-
+    // populated state.
+    *slot.forwarders.lock() = handles;
+    *slot.microgrid.write() = Some(mg);
+    true
+}
+
+/// Subscribe to World events and rebuild the Microgrid handle on
+/// every TopologyChanged. Lagged-receiver and dropped-sender
+/// events also trigger a rebuild (defensive — a missed event
+/// might have been a topology change).
+async fn run_supervisor(grpc_url: String, slot: SharedMicrogrid, world: World) {
+    let mut events = world.subscribe_events();
+    loop {
+        match events.recv().await {
+            Ok(WorldEvent::TopologyChanged { .. }) => {
+                debounce_topology_burst(&mut events).await;
+                rebuild(&grpc_url, &slot, &world).await;
+            }
+            Ok(_) => continue,
+            Err(RecvError::Lagged(n)) => {
+                log::warn!(
+                    "microgrid loopback supervisor: lagged {n} events, rebuilding defensively"
+                );
+                debounce_topology_burst(&mut events).await;
+                rebuild(&grpc_url, &slot, &world).await;
+            }
+            Err(RecvError::Closed) => {
+                log::info!("microgrid loopback supervisor: world events closed, exiting");
                 return;
             }
-        };
-        // Subscribe + forward each aggregated stream. Streams whose
-        // category is absent from the topology (no PV, no
-        // batteries, etc.) error out at formula construction; we
-        // log + skip those so a minimal topology still gets the
-        // streams it does have.
-        spawn_power_forwarders(&mut mg, &world, slot.clone());
-        if slot.microgrid.set(mg).is_err() {
-            log::warn!("microgrid loopback: slot already set, dropping new handle");
-        } else {
-            log::info!("microgrid loopback: connected + graph built + forwarders running");
         }
-    });
+    }
+}
+
+/// After seeing the first TopologyChanged, swallow any further
+/// events that arrive within `DEBOUNCE` so a hot-reload that
+/// registers 12 components in rapid succession only triggers one
+/// rebuild instead of 12.
+async fn debounce_topology_burst(events: &mut tokio::sync::broadcast::Receiver<WorldEvent>) {
+    const DEBOUNCE: Duration = Duration::from_millis(300);
+    let deadline = tokio::time::Instant::now() + DEBOUNCE;
+    loop {
+        match tokio::time::timeout_at(deadline, events.recv()).await {
+            Ok(Ok(_)) => continue, // keep collecting
+            Ok(Err(_)) => return,  // broadcast error; supervisor's main loop deals with it
+            Err(_) => return,       // deadline; we're done
+        }
+    }
+}
+
+/// Tear down the live forwarders + drop the old Microgrid, clear
+/// the latest-sample cache, then build a fresh handle so its
+/// graph reflects the new topology. The cache is cleared because
+/// streams whose category disappeared (e.g. someone removed the
+/// PV from config.lisp) would otherwise show stale values until
+/// page reload; honest "—" is better.
+async fn rebuild(grpc_url: &str, slot: &SharedMicrogrid, world: &World) {
+    log::info!("microgrid loopback: topology changed — rebuilding handle");
+    for h in slot.forwarders.lock().drain(..) {
+        h.abort();
+    }
+    *slot.microgrid.write() = None;
+    slot.latest.write().clear();
+    build_microgrid(grpc_url, slot, world).await;
 }
 
 /// Build subscriptions for the active-power streams the Dashboard
@@ -131,61 +229,70 @@ pub fn spawn_microgrid_loopback(grpc_url: String, slot: SharedMicrogrid, world: 
 /// topology, etc.) emit a single `log::info!` and are silently
 /// dropped — the Dashboard's matching tile renders as "data
 /// unavailable" until that category appears.
-fn spawn_power_forwarders(microgrid: &mut Microgrid, world: &World, state: SharedMicrogrid) {
+fn spawn_power_forwarders(
+    microgrid: &mut Microgrid,
+    world: &World,
+    state: SharedMicrogrid,
+) -> Vec<JoinHandle<()>> {
+    let mut handles = Vec::new();
     let lm = microgrid.logical_meter();
-    spawn_power_forwarder(
+    let mut push = |stream, formula, state: SharedMicrogrid| {
+        if let Some(h) = spawn_power_forwarder(stream, formula, world, state) {
+            handles.push(h);
+        }
+    };
+    push(
         "grid_power",
         lm.grid::<metric::AcPowerActive>(),
-        world,
         state.clone(),
     );
-    spawn_power_forwarder(
+    push(
         "consumer_power",
         lm.consumer::<metric::AcPowerActive>(),
-        world,
         state.clone(),
     );
-    spawn_power_forwarder(
+    push(
         "producer_power",
         lm.producer::<metric::AcPowerActive>(),
-        world,
         state.clone(),
     );
-    spawn_power_forwarder(
+    push(
         "pv_power",
         lm.pv::<metric::AcPowerActive>(None),
-        world,
         state.clone(),
     );
     // BatteryPool takes &mut self for power() (it caches subscriber
     // refs); build it once and let it go out of scope after the
     // subscription resolves.
     match microgrid.battery_pool(None) {
-        Ok(mut pool) => spawn_power_forwarder("battery_pool_power", pool.power(), world, state),
+        Ok(mut pool) => push("battery_pool_power", pool.power(), state),
         Err(e) => log::info!("microgrid loopback: battery pool absent — skipping: {e}"),
     }
+    handles
 }
 
 /// Subscribe to one Power-valued formula and spawn a forwarder that
 /// pushes each `Sample<Power>` onto the World event bus as a
 /// `MicrogridSample { stream, quantity: "Power", unit: "W", ... }`
-/// event. Bails with `log::info!` if the formula errored at
-/// construction (typical for absent categories).
+/// event. Returns `None` (no spawn) if the formula errored at
+/// construction (typical for absent categories); returns the
+/// spawned `JoinHandle` otherwise so the supervisor can `.abort()`
+/// it on rebuild.
 fn spawn_power_forwarder(
     stream: &'static str,
     formula: Result<frequenz_microgrid::Formula<Power>, frequenz_microgrid::Error>,
     world: &World,
     state: SharedMicrogrid,
-) {
+) -> Option<JoinHandle<()>> {
     let formula = match formula {
         Ok(f) => f,
         Err(e) => {
             log::info!("microgrid loopback: skip {stream} ({e})");
-            return;
+            return None;
         }
     };
     let world = world.clone();
-    tokio::spawn(async move {
+    Some(tokio::spawn(async move {
         let mut rx = match formula.subscribe().await {
             Ok(rx) => rx,
             Err(e) => {
@@ -205,7 +312,7 @@ fn spawn_power_forwarder(
                 }
             }
         }
-    });
+    }))
 }
 
 fn publish_power(stream: &'static str, sample: Sample<Power>, world: &World, state: &SharedMicrogrid) {
@@ -298,12 +405,20 @@ struct MicrogridStatusResp {
 async fn microgrid_status(
     Extension(state): Extension<SharedMicrogrid>,
 ) -> (StatusCode, Json<MicrogridStatusResp>) {
-    if let Some(mg) = state.microgrid.get() {
+    // Clone the logical-meter handle under a brief read lock so
+    // the supervisor task can grab the write lock for a rebuild
+    // mid-request without contending. LogicalMeterHandle is Arc-
+    // backed so this is cheap.
+    let lm = state
+        .microgrid
+        .read()
+        .as_ref()
+        .map(|mg| mg.logical_meter());
+    if let Some(lm) = lm {
         // `logical_meter().graph()` is the cached snapshot the
         // crate built at try_new. Component count there is the
         // post-pass-through view, matching what the formula
         // generators see.
-        let lm = mg.logical_meter();
         let count = lm.graph().components().count();
         (
             StatusCode::OK,
@@ -361,10 +476,10 @@ async fn microgrid_latest(
 async fn microgrid_formulas(
     Extension(state): Extension<SharedMicrogrid>,
 ) -> (StatusCode, Json<HashMap<&'static str, String>>) {
-    let Some(mg) = state.microgrid.get() else {
-        return (StatusCode::SERVICE_UNAVAILABLE, Json(HashMap::new()));
+    let lm = match state.microgrid.read().as_ref() {
+        Some(mg) => mg.logical_meter(),
+        None => return (StatusCode::SERVICE_UNAVAILABLE, Json(HashMap::new())),
     };
-    let lm = mg.logical_meter();
     let graph = lm.graph();
     let mut out: HashMap<&'static str, String> = HashMap::new();
     if let Ok(f) = graph.grid_formula() {

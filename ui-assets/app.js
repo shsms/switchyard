@@ -2793,6 +2793,13 @@ async function init() {
   openWebSocket((_v) => {
     refreshTopology();
     overrideState.refresh();
+    // The loopback supervisor debounces ~300ms and rebuilds the
+    // Microgrid handle; /api/microgrid/latest + /formulas return
+    // 503 mid-rebuild. Delay the dashboard re-fetch so it lands
+    // after the supervisor settles. backfill() is 503-tolerant —
+    // an undershoot leaves the existing tooltip + values, and
+    // the next sample-flow tick overwrites the displayed numbers.
+    setTimeout(() => dashboardTiles.backfill(), 800);
   });
   setupRepl();
 }
