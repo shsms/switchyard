@@ -20,7 +20,10 @@ use axum::{
     routing::{get, post},
 };
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
-use frequenz_microgrid::{LogicalMeterConfig, Microgrid, Sample, metric, quantity::Power};
+use frequenz_microgrid::{
+    LogicalMeterConfig, LogicalMeterHandle, Microgrid, MicrogridClientHandle, Sample, metric,
+    quantity::Power,
+};
 use parking_lot::{Mutex, RwLock};
 use rust_embed::Embed;
 use serde::{Deserialize, Serialize};
@@ -76,6 +79,20 @@ pub struct MicrogridSampleSnapshot {
 /// before doing any async work.
 pub struct MicrogridState {
     pub microgrid: RwLock<Option<Microgrid>>,
+    /// The microgrid client, built once at boot via
+    /// `Microgrid::try_new` and reused for every rebuild — only
+    /// the `LogicalMeterHandle` (which embeds the graph snapshot)
+    /// gets replaced when the topology changes. A new client per
+    /// rebuild would close the previous one's instructions channel,
+    /// and `MicrogridClientActor` in frequenz-microgrid 0.4.1
+    /// busy-spins at 100 % CPU on a closed channel (see
+    /// `microgrid-rs-busy-spin-issue.md` for the writeup). Keeping
+    /// one handle clone alive forever sidesteps the bug entirely.
+    ///
+    /// `tokio::sync::OnceCell` rather than `RwLock<Option<_>>`
+    /// because the value is set exactly once on the first
+    /// successful boot.
+    client: tokio::sync::OnceCell<MicrogridClientHandle>,
     /// Latest sample seen per stream name. Forwarders overwrite on
     /// each recv; the `/api/microgrid/latest` endpoint snapshots the
     /// whole map on each call. `parking_lot::RwLock` because writes
@@ -99,6 +116,7 @@ pub type SharedMicrogrid = Arc<MicrogridState>;
 pub fn new_microgrid_slot() -> SharedMicrogrid {
     Arc::new(MicrogridState {
         microgrid: RwLock::new(None),
+        client: tokio::sync::OnceCell::new(),
         latest: RwLock::new(HashMap::new()),
         forwarders: Mutex::new(Vec::new()),
     })
@@ -132,22 +150,49 @@ pub fn spawn_microgrid_loopback(grpc_url: String, slot: SharedMicrogrid, world: 
     });
 }
 
-/// Construct a `Microgrid` against `grpc_url`, spawn forwarders
-/// for every aggregated stream the graph exposes, and install
-/// both in `slot`. Returns false if `Microgrid::try_new` fails
-/// (which it normally doesn't — the crate retries internally
-/// until the server is reachable + the graph builds — so a hard
-/// failure means an unrecoverable error like a malformed URL).
+/// Build a fresh `Microgrid` and wire up its forwarders.
+///
+/// First call: goes through `Microgrid::try_new` (which connects to
+/// the gRPC server, builds the component graph, and spawns the
+/// actor) and seeds `slot.client` with a clone of the resulting
+/// `MicrogridClientHandle`. Subsequent calls: reuse the cached
+/// client and only build a fresh `LogicalMeterHandle` — the new
+/// LM picks up the current topology + spawns its own actor, and
+/// `Microgrid::new_from_handles` stitches it together with the
+/// long-lived client. The old `Microgrid` (replaced in `slot`)
+/// drops normally; its `LogicalMeterActor` exits cleanly because
+/// it handles a closed instructions channel by breaking out.
+///
+/// Returns false if the gRPC connect or graph build fails outright
+/// (which the crate normally retries through; a hard failure means
+/// something like a malformed URL).
 async fn build_microgrid(grpc_url: &str, slot: &SharedMicrogrid, world: &World) -> bool {
     // 1 Hz sample cadence matches the existing history sampler;
     // dashboard tiles refresh at this rate.
     let config = LogicalMeterConfig::new(chrono::TimeDelta::seconds(1));
-    let mut mg = match Microgrid::try_new(grpc_url.to_owned(), config).await {
-        Ok(mg) => mg,
-        Err(e) => {
-            log::error!("microgrid loopback: try_new failed: {e}");
-            return false;
-        }
+    let mut mg = if let Some(client) = slot.client.get() {
+        // Rebuild path: reuse the long-lived client; only the
+        // LogicalMeterHandle is topology-bound and needs replacing.
+        let lm = match LogicalMeterHandle::try_new(client.clone(), config).await {
+            Ok(lm) => lm,
+            Err(e) => {
+                log::error!("microgrid loopback: logical-meter rebuild failed: {e}");
+                return false;
+            }
+        };
+        Microgrid::new_from_handles(client.clone(), lm)
+    } else {
+        // Initial path: build everything via try_new and stash the
+        // client clone for all future rebuilds.
+        let mg = match Microgrid::try_new(grpc_url.to_owned(), config).await {
+            Ok(mg) => mg,
+            Err(e) => {
+                log::error!("microgrid loopback: try_new failed: {e}");
+                return false;
+            }
+        };
+        let _ = slot.client.set(mg.client());
+        mg
     };
     let handles = spawn_power_forwarders(&mut mg, world, slot.clone());
     // Install everything atomically from the slot's perspective.
@@ -209,6 +254,10 @@ async fn debounce_topology_burst(events: &mut tokio::sync::broadcast::Receiver<W
 /// streams whose category disappeared (e.g. someone removed the
 /// PV from config.lisp) would otherwise show stale values until
 /// page reload; honest "—" is better.
+///
+/// Only the `LogicalMeterHandle` inside the new Microgrid is
+/// rebuilt; the `MicrogridClientHandle` cached in `slot.client` is
+/// reused. See the field doc for why the client is long-lived.
 async fn rebuild(grpc_url: &str, slot: &SharedMicrogrid, world: &World) {
     log::info!("microgrid loopback: topology changed — rebuilding handle");
     for h in slot.forwarders.lock().drain(..) {
