@@ -108,26 +108,33 @@ const CHARTS_BY_CATEGORY = {
   chp: ["active_power_w"],
 };
 
-// Per-metric chart presentation. `kind: "power"` triggers W → kW →
-// MW auto-scaling based on the data range; `linear` skips scaling
-// and just appends the fixed unit. Title doesn't carry a unit
-// itself — the unit string from `chooseScale` gets appended at
-// chart creation so it reflects the actual displayed magnitudes.
-const METRIC_PRESENTATION = {
-  active_power_w:     { title: "Active Power",   kind: "power", baseUnit: "W" },
-  reactive_power_var: { title: "Reactive Power", kind: "power", baseUnit: "VAR" },
-  frequency_hz:       { title: "Frequency",      kind: "linear", unit: "Hz" },
-  soc_pct:            { title: "SoC",            kind: "linear", unit: "%" },
+// Display-only labels per metric. Scaling, units, and the
+// "is this a power-family quantity?" decision now come off the
+// /api/history response's `quantity` + `unit` fields — see
+// chooseScale below. Anything not in this table falls back to the
+// raw metric name as the chart title.
+const METRIC_TITLES = {
+  active_power_w:     "Active Power",
+  reactive_power_var: "Reactive Power",
+  frequency_hz:       "Frequency",
+  soc_pct:            "SoC",
 };
 
-function chooseScale(rule, values) {
-  if (rule.kind === "power" && values.length) {
+// Pick a display scale from a typed quantity + base unit. Power-
+// family quantities autoscale W → kW → MW based on the data range;
+// everything else uses the base unit verbatim. The `quantity` /
+// `unit` arguments mirror the `Sample<Q>` / `Q.base_unit()` shape
+// upstream in frequenz-microgrid, so the same code can serve any
+// `Power` / `ReactivePower` / `Frequency` / `Percentage` payload.
+function chooseScale(quantity, unit, values) {
+  const isPower = quantity === "Power" || quantity === "ReactivePower";
+  if (isPower && values.length) {
     const max = Math.max(...values.map((v) => Math.abs(v)));
-    if (max >= 1e6) return { div: 1e6, unit: `M${rule.baseUnit}` };
-    if (max >= 1e3) return { div: 1e3, unit: `k${rule.baseUnit}` };
-    return { div: 1, unit: rule.baseUnit };
+    if (max >= 1e6) return { div: 1e6, unit: `M${unit}` };
+    if (max >= 1e3) return { div: 1e3, unit: `k${unit}` };
+    return { div: 1, unit };
   }
-  return { div: 1, unit: rule.unit || "" };
+  return { div: 1, unit: unit || "" };
 }
 
 function getCss(name) {
@@ -889,10 +896,11 @@ async function showComponent(d) {
     slot.className = "chart";
     container.appendChild(slot);
     const url = `/api/history?id=${d.id}&metric=${metric}&window_s=300`;
-    const samples = (await (await fetch(url)).json()).samples || [];
+    const resp = await (await fetch(url)).json();
+    const samples = resp.samples || [];
     const xs = samples.map(([t]) => t / 1000);
     const ys = samples.map(([, v]) => v);
-    const { plot, scale } = makePlot(slot, metric, xs, ys);
+    const { plot, scale } = makePlot(slot, metric, resp.quantity, resp.unit, xs, ys);
     // Stored ys are pre-scaled (already divided by scale.div) so the
     // live push path can append by dividing each new sample once.
     charts.set(metric, { plot, xs, ys: ys.map((y) => y / scale.div), scale });
@@ -948,14 +956,14 @@ async function renderSetpoints(id, container) {
   }
 }
 
-function makePlot(container, metric, xs, ys) {
-  const rule = METRIC_PRESENTATION[metric] || { title: metric, kind: "linear", unit: "" };
-  const scale = chooseScale(rule, ys);
+function makePlot(container, metric, quantity, unit, xs, ys) {
+  const title = METRIC_TITLES[metric] || metric;
+  const scale = chooseScale(quantity, unit, ys);
   const scaledYs = ys.map((y) => y / scale.div);
   const opts = {
     width: container.clientWidth || 280,
     height: 140,
-    title: scale.unit ? `${rule.title} (${scale.unit})` : rule.title,
+    title: scale.unit ? `${title} (${scale.unit})` : title,
     cursor: { drag: { x: false, y: false } },
     legend: { show: false },
     scales: { x: { time: true } },
