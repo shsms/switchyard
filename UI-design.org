@@ -540,7 +540,7 @@ event and the Dashboard's pool envelope visibly contracts.
 
 * Wallclock + sim-time
 
-** TODO D1. Wallclock-anchored Clock primitive
+** DONE D1. Wallclock-anchored Clock primitive
 
 Today curves are =(window-elapsed 900.0)= — anchored to the
 binary's start, not the time of day. Add =Clock=:

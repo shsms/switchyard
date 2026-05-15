@@ -274,6 +274,7 @@ fn router(config: Config, microgrid: SharedMicrogrid) -> Router {
         .route("/api/scenario", get(scenario_summary))
         .route("/api/scenario/events", get(scenario_events))
         .route("/api/scenario/report", get(scenario_report))
+        .route("/api/clock", get(clock_info))
         .route("/api/microgrid/status", get(microgrid_status))
         .route("/api/microgrid/latest", get(microgrid_latest))
         .route("/ws/events", get(events_ws))
@@ -319,6 +320,21 @@ async fn microgrid_status(
             }),
         )
     }
+}
+
+#[derive(Serialize)]
+struct ClockInfo {
+    /// IANA timezone name set via `(set-timezone …)`, default
+    /// Europe/Berlin. UI passes this to `Intl.DateTimeFormat` to
+    /// format the pulse-bar clock + (future) per-component
+    /// timestamps in the configured civil zone.
+    tz: &'static str,
+}
+
+async fn clock_info(State(config): State<Config>) -> Json<ClockInfo> {
+    Json(ClockInfo {
+        tz: config.tz_name(),
+    })
 }
 
 /// Latest cached sample for every active aggregated stream.
