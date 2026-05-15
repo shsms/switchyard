@@ -103,7 +103,7 @@ library.
 
 * Integration
 
-** TODO Z1. Adopt frequenz-microgrid-component-graph for validation
+** DONE Z1. Adopt frequenz-microgrid-component-graph for validation
 
 Implement =Node= + =Edge= on switchyard's existing component +
 connection types in =src/sim/component.rs= /
