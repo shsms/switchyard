@@ -706,7 +706,7 @@ later." Fits naturally with the existing
 
 * Stream stability
 
-** TODO H1. Exponential WS reconnect backoff
+** DONE H1. Exponential WS reconnect backoff
 
 Today /ws/events one-shots and the chrome flips to
 "disconnected" forever. Port tradingsim's pattern:
