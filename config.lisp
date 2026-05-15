@@ -59,7 +59,8 @@
 (every
  :milliseconds 200
  :call (lambda ()
-         (set-meter-power 100 (consumer-curve (window-elapsed 900.0)))))
+         ;; (set-meter-power 100 (consumer-curve (window-elapsed 900.0)))
+         (set-meter-power 100 0)))
 
 ;; ── CSV-driven alternative (uncomment to swap with the function above) ──
 ;; (setq csv-data    (csv-load "sim/example_load.csv"))
@@ -102,6 +103,8 @@
 
 (make-grid
  :id 1
+ :rated-lower -90000.0
+ :rated-upper  100000.0
  :successors
  (list
   (make-meter

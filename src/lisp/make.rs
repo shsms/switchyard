@@ -33,6 +33,8 @@ AsPlist! {
         id: Option<i64> {= None},
         name: Option<String> {= None},
         rated_fuse_current<":rated-fuse-current">: Option<i64> {= None},
+        rated_lower<":rated-lower">: Option<f64> {= None},
+        rated_upper<":rated-upper">: Option<f64> {= None},
         successors: Option<Vec<ComponentHandle>> {= None},
         stream_jitter_pct<":stream-jitter-pct">: Option<f64> {= None},
         health<":health">: Option<Health> {= None},
@@ -207,9 +209,14 @@ pub fn register(ctx: &mut TulispContext, world: World) {
         move |_ctx: &mut TulispContext, args: Plist<GridArgs>| {
             let a = args.into_inner();
             let id = id_or_next(&w, a.id);
+            let rated_active_bounds = match (a.rated_lower, a.rated_upper) {
+                (Some(l), Some(u)) => Some((l as f32, u as f32)),
+                _ => None,
+            };
             let grid = Grid::new(
                 id,
                 a.rated_fuse_current.unwrap_or(0) as u32,
+                rated_active_bounds,
                 a.stream_jitter_pct.unwrap_or(0.0) as f32,
             );
             let h = register_with_modes(&w, grid, a.health, a.telemetry_mode, a.command_mode)?;

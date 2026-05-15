@@ -8,15 +8,22 @@ pub struct Grid {
     id: u64,
     name: String,
     pub rated_fuse_current: u32,
+    pub rated_active_bounds: Option<(f32, f32)>,
     pub stream_jitter_pct: f32,
 }
 
 impl Grid {
-    pub fn new(id: u64, rated_fuse_current: u32, stream_jitter_pct: f32) -> Self {
+    pub fn new(
+        id: u64,
+        rated_fuse_current: u32,
+        rated_active_bounds: Option<(f32, f32)>,
+        stream_jitter_pct: f32,
+    ) -> Self {
         Self {
             id,
             name: format!("grid-{id}"),
             rated_fuse_current,
+            rated_active_bounds,
             stream_jitter_pct,
         }
     }
@@ -57,6 +64,10 @@ impl SimulatedComponent for Grid {
 
     fn rated_fuse_current(&self) -> Option<u32> {
         Some(self.rated_fuse_current)
+    }
+
+    fn rated_active_bounds(&self) -> Option<(f32, f32)> {
+        self.rated_active_bounds
     }
 
     fn stream_jitter_pct(&self) -> f32 {
