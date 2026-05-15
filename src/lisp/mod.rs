@@ -72,6 +72,13 @@ pub struct Config {
     /// the entry-point config. Set semantics — duplicate registrations
     /// (from re-runs of the config during reload) are no-ops.
     extra_watches: Arc<Mutex<HashSet<PathBuf>>>,
+    /// Latest topology-validation outcome from the graph crate.
+    /// `None` = healthy; `Some(message)` = the validator rejected the
+    /// current world. `log_topology_validation` updates this on every
+    /// boot + reload; `/api/topology` exposes it so the pulse-bar
+    /// graph pill (see UI-design.org §Z6) can flip between ✓ and ⚠
+    /// without polling a separate endpoint.
+    graph_status: Arc<RwLock<Option<String>>>,
 }
 
 /// One top-level form found in the per-microgrid override file. The
@@ -98,6 +105,7 @@ impl Config {
         let world = World::new();
         let metadata = Arc::new(RwLock::new(Metadata::default()));
         let extra_watches = Arc::new(Mutex::new(HashSet::new()));
+        let graph_status: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));
 
         // `Path::parent()` returns `Some("")` for bare filenames like
         // "config.lisp" — tulisp rejects empty paths, so fall back to
@@ -140,7 +148,8 @@ impl Config {
             return Err(formatted);
         }
 
-        log_topology_validation(&world, "boot");
+        let initial_status = log_topology_validation(&world, "boot");
+        *graph_status.write() = initial_status;
 
         let ctx = SharedMut::new(ctx);
 
@@ -170,6 +179,7 @@ impl Config {
             world,
             metadata,
             extra_watches,
+            graph_status,
         })
     }
 
@@ -240,6 +250,16 @@ impl Config {
 
     pub fn world(&self) -> World {
         self.world.clone()
+    }
+
+    /// Latest graph-validator outcome. `None` = the graph crate
+    /// accepted the topology at the last config-load / reload (or
+    /// the world is empty); `Some(msg)` = it rejected, with the
+    /// human-readable error. `/api/topology` serialises this so
+    /// the pulse-bar graph pill flips to ⚠ + opens-on-click with
+    /// the message (see UI-design.org §Z6).
+    pub fn graph_status(&self) -> Option<String> {
+        self.graph_status.read().clone()
     }
 
     /// Evaluate a Lisp expression on the running interpreter and
@@ -437,7 +457,7 @@ impl Config {
         // "removed the only pending entry" case where remove_pending
         // reloads but has no surviving entries to bump-version
         // through eval_with_affects.
-        log_topology_validation(&self.world, "reload");
+        *self.graph_status.write() = log_topology_validation(&self.world, "reload");
         self.world.bump_version();
         log::info!(
             "Reloaded config in {:.1}ms",
@@ -532,12 +552,18 @@ impl Config {
 /// On success the log line includes a one-line summary so a dev
 /// reading the log can confirm switchyard parsed the topology the
 /// same way `frequenz-microgrid` would.
-fn log_topology_validation(world: &World, phase: &str) {
+/// Run the graph crate's validator on the post-eval world, log
+/// the outcome (info on success / warn on failure), and return a
+/// status string the caller stores in [`Config::graph_status`].
+/// `None` = the graph crate accepted the topology (or the world is
+/// empty / hidden-only); `Some(msg)` = the human-readable error
+/// the validator produced.
+fn log_topology_validation(world: &World, phase: &str) -> Option<String> {
     let (nodes, edges) = crate::sim::graph_adapter::snapshot(world);
     let visible_count = nodes.len();
     if visible_count == 0 {
         log::debug!("graph: {phase} skipped (no visible components)");
-        return;
+        return None;
     }
     match crate::sim::graph_adapter::build_from(nodes, edges) {
         Ok(graph) => {
@@ -550,11 +576,14 @@ fn log_topology_validation(world: &World, phase: &str) {
             log::info!(
                 "graph: {phase} validated ({visible_count} visible, {logical_count} after pass-through elision)"
             );
+            None
         }
         Err(e) => {
+            let msg = format!("{e}");
             log::warn!(
-                "graph: {phase} validation failed — {visible_count} visible components rejected by frequenz-microgrid-component-graph: {e}"
+                "graph: {phase} validation failed — {visible_count} visible components rejected by frequenz-microgrid-component-graph: {msg}"
             );
+            Some(msg)
         }
     }
 }

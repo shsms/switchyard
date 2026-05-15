@@ -380,6 +380,11 @@ struct TopologySnapshot {
     /// (Meter, BatteryInverter) cache their hidden children for
     /// aggregation; we read those here.
     hidden_connections: Vec<(u64, u64)>,
+    /// Latest graph-validator outcome. `None` = the graph crate
+    /// accepted the topology; `Some(msg)` = it rejected with the
+    /// human-readable error string. The pulse-bar graph pill
+    /// flips between ✓ and ⚠ on this field.
+    graph_status: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -429,6 +434,7 @@ async fn topology(State(config): State<Config>) -> Json<TopologySnapshot> {
         components,
         connections: world.connections(),
         hidden_connections: world.hidden_connections(),
+        graph_status: config.graph_status(),
     })
 }
 
