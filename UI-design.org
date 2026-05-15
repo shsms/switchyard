@@ -651,7 +651,11 @@ sortable / drill-down details:
 - Highlight: =health ≠ 'ok= shows in =--bad=; SoC < 10% or
   > 95% shows the SoC bar in yellow.
 
-** TODO F2. Inverter envelope grid (Dashboard Tier 3)
+** DONE F2. Inverter envelope grid (Dashboard Tier 3)
+   - First pass: per-inverter rows (name + subtype + health +
+     lower / measured / upper) with pinned-on-bound warn highlight.
+     Setpoint + lifetime columns deferred until F3 lands the
+     envelope visual.
 
 Likewise — separate item for the details:
 
