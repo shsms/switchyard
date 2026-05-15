@@ -636,7 +636,10 @@ without UI changes. Ship a library of the chips listed in E1.
 
 * Multi-component compare views
 
-** TODO F1. Battery compare grid (Dashboard Tier 2)
+** DONE F1. Battery compare grid (Dashboard Tier 2)
+   - First pass: per-battery rows (name + health pill + SoC bar +
+     DC W) under the Battery pool tile, sortable on SoC, click ->
+     Topology select. Sparkline column folds in alongside F2/F3.
 
 Already covered by A2 — kept as a separate item for the
 sortable / drill-down details:
