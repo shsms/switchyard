@@ -45,21 +45,19 @@
          (set-frequency
           (+ 49.99 (/ (random 4) 100.0)))))
 
-;; Consumer-load curve over a 15-minute window, driving meter id 100
-;; (the hidden consumer meter declared in the topology below).
-;; Shape: low first half (1 kW), 7-min ramp 1 → ~16 kW, sudden 16 kW
-;; spike near the end. Replace with (csv-lookup …) for a profile
-;; recorded from real data; the setter doesn't care where the value
-;; comes from.
+;; Consumer-load curve over a 15-minute window. Shape: low first
+;; half (1 kW), 7-min ramp 1 → ~16 kW, sudden 16 kW spike near the
+;; end. Installed on the hidden consumer meter below as
+;; :power (lambda …); the pre-tick hook re-evaluates the lambda each
+;; physics step, so the meter's published power tracks the curve
+;; without a separate (every …) timer. Replace with (csv-lookup …)
+;; for a profile recorded from real data — the lambda machinery
+;; doesn't care where the scalar comes from.
 (defun consumer-curve (t-window)
   (cond ((< t-window 450.0) 1000.0)
         ((> t-window 870.0) 16000.0)
         (t (+ 1000.0 (* 35.0 (- t-window 450.0))))))
 
-(every
- :milliseconds 200
- :call (lambda ()
-         (set-meter-power 100 (consumer-curve (window-elapsed 900.0)))))
 
 ;; ── CSV-driven alternative (uncomment to swap with the function above) ──
 ;; (setq csv-data    (csv-load "sim/example_load.csv"))
@@ -134,12 +132,18 @@
     ;; CHP modeled as a constant -2 kW generator on its meter.
     (make-meter :power -2000.0 :successors (list (make-chp)))
 
-    ;; Hidden consumer meter — invisible in ListComponents / tree but
-    ;; aggregated into the main meter. Driven dynamically by the
-    ;; consumer-curve timer above via id 100. `%make-meter` bypasses
-    ;; meter-defaults so the explicit :power isn't combined with a
-    ;; default :stream-jitter-pct on a hidden component.
-    (%make-meter :id 100 :name "consumer" :hidden t :power 1000.0)))))
+    ;; Hidden consumer meter — invisible in ListComponents / tree
+    ;; but aggregated into the main meter. :power is a lambda the
+    ;; pre-tick hook re-evaluates each physics step, so the
+    ;; consumer-curve defined above drives the published power
+    ;; dynamically (no (every …) timer needed for this branch).
+    ;; `%make-meter` bypasses meter-defaults so the explicit
+    ;; :power isn't combined with a default :stream-jitter-pct
+    ;; on a hidden component.
+    (%make-meter :id 100
+                 :name "consumer"
+                 :hidden t
+                 :power (lambda () (consumer-curve (window-elapsed 900.0))))))))
 
 ;; Apply UI-driven edits the user has clicked Persist on. The override
 ;; filename is parameterised by microgrid-id so multiple sims sharing
