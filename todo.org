@@ -140,6 +140,27 @@ Why deferred: requires either a tulisp-side reflection API or a
 =switchyard::lisp::make= self-describing module. Hardcoded JS works
 fine for the current category count.
 
+** F. Additional gRPC services
+
+*** INPROGRESS F1. Expose the assets API                          :switchyard:rust:
+DEADLINE: <2026-05-22 Fr>
+:LOGBOOK:
+- State "INPROGRESS" from              [2026-05-15 Fr]
+:END:
+
+Mount the [[https://github.com/frequenz-floss/frequenz-api-assets][frequenz-api-assets]] gRPC service alongside =MicrogridServer=,
+serving the same topology data that =Microgrid= already exposes (just
+under the assets API surface).
+
+*** TODO F2. Expose the reporting API                             :switchyard:rust:
+
+Mount the [[https://github.com/frequenz-floss/frequenz-api-reporting][frequenz-api-reporting]] gRPC service so downstream apps can hit a
+switchyard instance with the same reporting calls they'd use against
+a real deployment.  Larger project than F1 — reporting wants
+historical aggregations, multi-metric queries, time-range
+pagination, etc., which switchyard doesn't currently retain.  Defer
+until F1 lands and scope is clearer.
+
 ** G. REPL editing experience polish
 
 The shipped first cut covers the common case: =/api/format=
