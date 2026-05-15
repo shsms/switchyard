@@ -579,9 +579,7 @@ body.compact .tier2-soc-text { font-size: 10px; }
 
 .tier3-row {
   display: grid;
-  grid-template-columns:
-    minmax(140px, 1.5fr) 80px 80px
-    minmax(80px, 1fr) minmax(80px, 1fr) minmax(80px, 1fr);
+  grid-template-columns: minmax(140px, 1.5fr) 80px 80px minmax(180px, 3fr);
   align-items: center;
   gap: 12px;
   padding: 8px 12px;
@@ -608,11 +606,45 @@ body.compact .tier2-soc-text { font-size: 10px; }
 }
 .tier3-health.health-ok  { background: rgba(96, 200, 120, 0.15); color: var(--good, #6bd97b); }
 .tier3-health.health-bad { background: rgba(217, 107, 107, 0.18); color: var(--bad, #d96b6b); }
-.tier3-lower    { text-align: right; color: var(--bad, #d96b6b); }
-.tier3-upper    { text-align: right; color: var(--good, #6bd97b); }
-.tier3-measured { text-align: right; font-weight: 500; }
+
+.envelope {
+  display: grid;
+  grid-template-columns: 1fr 80px;
+  align-items: center;
+  gap: 10px;
+}
+.envelope.muted { color: var(--muted); }
+.envelope-track {
+  position: relative;
+  height: 8px;
+  background: linear-gradient(
+    to right,
+    rgba(217, 107, 107, 0.25),
+    rgba(125, 132, 142, 0.18) 30%,
+    rgba(125, 132, 142, 0.18) 70%,
+    rgba(96, 200, 120, 0.25)
+  );
+  border-radius: 4px;
+}
+.envelope-marker {
+  position: absolute;
+  top: 50%;
+  width: 12px;
+  height: 12px;
+  margin-left: -6px;
+  margin-top: -6px;
+  background: var(--accent);
+  border: 2px solid var(--panel);
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.envelope-marker.pinned-hi { background: var(--good, #6bd97b); box-shadow: 0 0 0 1px var(--good, #6bd97b); }
+.envelope-marker.pinned-lo { background: var(--bad,  #d96b6b); box-shadow: 0 0 0 1px var(--bad, #d96b6b); }
+.envelope-current { text-align: right; font-weight: 500; }
 body.compact .tier3-row { padding: 5px 10px; }
 body.compact .tier3-health { font-size: 10px; padding: 1px 6px; }
+body.compact .envelope-track { height: 6px; }
+body.compact .envelope-marker { width: 10px; height: 10px; margin-left: -5px; margin-top: -5px; }
 
 .tier5-row {
   display: grid;

@@ -2525,6 +2525,41 @@ const batteryRows = (() => {
   };
 })();
 
+// Shared envelope renderer for a (lower, current, upper) triple.
+// Returns an HTML fragment that draws a horizontal track with a
+// marker at `current`'s position between `lower` and `upper`,
+// pinned-hi / pinned-lo classes when the marker hits either edge
+// within 0.5 % of the span. Falls back to a muted "—" placeholder
+// when bounds are missing or degenerate so the row still aligns.
+//
+// `fmtValue` formats both the marker readout and the hover-tooltip
+// endpoints; callers pass it pre-bound to whatever unit family the
+// row deals in (W / kW for Power, % for Percentage, etc.) — keeps
+// the helper agnostic of Z3's quantity table.
+function envelopeBar(lower, current, upper, fmtValue) {
+  const finite = (v) => v != null && Number.isFinite(v);
+  if (!finite(lower) || !finite(upper) || upper <= lower) {
+    return `<div class="envelope muted"><span class="envelope-current">—</span></div>`;
+  }
+  const hasCurrent = finite(current);
+  const span = upper - lower;
+  const pos = hasCurrent ? Math.max(0, Math.min(1, (current - lower) / span)) : 0.5;
+  const tol = 0.005 * span;
+  let markerCls = "envelope-marker";
+  if (hasCurrent && current >= upper - tol) markerCls += " pinned-hi";
+  else if (hasCurrent && current <= lower + tol) markerCls += " pinned-lo";
+  const readout = hasCurrent ? fmtValue(current) : "—";
+  const title = `${fmtValue(lower)} → ${fmtValue(upper)}`;
+  return `
+    <div class="envelope" title="${title}">
+      <div class="envelope-track">
+        <span class="${markerCls}" style="left:${(pos * 100).toFixed(1)}%"></span>
+      </div>
+      <span class="envelope-current">${readout}</span>
+    </div>
+  `;
+}
+
 // ─── Tier 3: per-inverter rows ─────────────────────────────────────────────
 //
 // One row per visible inverter under the PV pool tile. Measured AC
@@ -2598,9 +2633,7 @@ const inverterRows = (() => {
         <span class="tier3-name">${d.name}</span>
         <span class="tier3-subtype muted">${d.subtype || "—"}</span>
         <span class="tier3-health ${healthCls}">${d.health}</span>
-        <span class="tier3-lower">${fmtPower(d.lower)}</span>
-        <span class="tier3-measured">${fmtPower(d.measured)}</span>
-        <span class="tier3-upper">${fmtPower(d.upper)}</span>
+        ${envelopeBar(d.lower, d.measured, d.upper, fmtPower)}
       `;
       row.addEventListener("click", () => {
         localStorage.setItem(MODE_KEY, "topology");

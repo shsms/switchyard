@@ -359,7 +359,10 @@ Acceptance:
 - Selection still updates the inspector regardless of mode.
 - Page refresh restores the last-picked mode.
 
-** TODO A2. Dashboard view — tiered panels analogous to tradingsim
+** DONE A2. Dashboard view — tiered panels analogous to tradingsim
+   - Tiers 1-5 land via Z2 / Z4 (pool tiles) and F1 / F2 / Tier-5
+     (per-component rows). Multi-column grids on wide displays
+     happen naturally via CSS grid + auto-fit on the pool row.
 
 Stacked tiles, each reading from existing /api/topology +
 /api/history + the formulas from Z2. Each tile collapses cleanly
