@@ -2208,6 +2208,7 @@ function openWebSocket(onTopologyChanged) {
       onTopologyChanged(ev.version);
     } else if (ev.kind === "setpoint") {
       liveCharts.pushSetpoint(ev);
+      pulseBar.recordSetpoint();
     } else if (ev.kind === "log") {
       appendLog(ev);
     }
@@ -2343,6 +2344,131 @@ const dashboardTiles = (() => {
   };
 })();
 
+// ─── Pulse bar ─────────────────────────────────────────────────────────────
+//
+// Always-on system pulse strip. Three live sources today:
+//   - Setpoint sparkbar: rate of /ws/events kind="setpoint" frames,
+//     bucketed into 12 × 5 s windows over the last minute.
+//   - Health pill: rolling counters from /api/topology's health
+//     field — recomputed every refreshTopology() call (WS push on
+//     topology_changed already drives this).
+//   - Loopback pill: /api/microgrid/status polled every 5 s. ✓ when
+//     connected, ⚠ when still booting. The future Z6 graph-pill is
+//     a sibling.
+//   - Wall clock at the right edge, ticked every second.
+//
+// All four panels are read-only and tolerant of partial data — a
+// page loaded before the loopback comes up shows ⚠ and flips to
+// ✓ on the next poll. Mirrors tradingsim's `.pulse` shape so the
+// developer sees the same "is the sim alive" pattern across both
+// simulators.
+const pulseBar = (() => {
+  const SPARK_BUCKETS = 12;
+  const BUCKET_MS = 5000;
+  const buckets = new Array(SPARK_BUCKETS).fill(0);
+  let lastSpan = pulseBucketIndex();
+  function pulseBucketIndex() {
+    // Floor of (now / BUCKET_MS) — when this rolls forward, every
+    // bucket between lastSpan and now shifts in as a 0.
+    return Math.floor(Date.now() / BUCKET_MS);
+  }
+  function rotateIfNeeded() {
+    const idx = pulseBucketIndex();
+    const advance = Math.min(idx - lastSpan, SPARK_BUCKETS);
+    for (let i = 0; i < advance; i++) {
+      buckets.shift();
+      buckets.push(0);
+    }
+    lastSpan = idx;
+  }
+  function recordSetpoint() {
+    rotateIfNeeded();
+    buckets[SPARK_BUCKETS - 1] += 1;
+    renderSpark();
+  }
+  function renderSpark() {
+    const svg = document.getElementById("pulse-spark");
+    if (!svg) return;
+    const max = Math.max(1, ...buckets);
+    // SVG viewBox is 0..60 wide × 0..16 tall. 5 px wide per bar
+    // with no gap (the trace reads as a continuous histogram). Bar
+    // height proportional to bucket / max; minimum 1 px so a single
+    // event is still visible.
+    const bw = 60 / SPARK_BUCKETS;
+    const bars = buckets
+      .map((v, i) => {
+        const h = v === 0 ? 0 : Math.max(1, (v / max) * 16);
+        const x = i * bw;
+        const y = 16 - h;
+        return `<rect class="bar" x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${(bw - 0.5).toFixed(2)}" height="${h.toFixed(2)}" />`;
+      })
+      .join("");
+    svg.innerHTML = bars;
+  }
+  function renderHealth(components) {
+    const counts = { ok: 0, standby: 0, error: 0 };
+    for (const c of components) {
+      const h = (c.health || "ok").toLowerCase();
+      if (h in counts) counts[h] += 1;
+    }
+    const el = document.getElementById("pulse-health");
+    if (!el) return;
+    el.innerHTML = `
+      <span class="health-chip ok"      title="ok components">OK ${counts.ok}</span>
+      <span class="health-chip standby" title="standby components">STDBY ${counts.standby}</span>
+      <span class="health-chip error"   title="error components">ERR ${counts.error}</span>`;
+  }
+  async function refreshLoopback() {
+    const el = document.getElementById("pulse-loopback");
+    if (!el) return;
+    try {
+      const res = await fetch("/api/microgrid/status");
+      const j = await res.json();
+      if (res.ok && j.connected) {
+        el.textContent = `✓ ${j.component_count ?? "?"} nodes`;
+        el.className = "pulse-pill ok";
+      } else {
+        el.textContent = "⚠ connecting";
+        el.className = "pulse-pill warn";
+      }
+    } catch (_) {
+      el.textContent = "✗ unreachable";
+      el.className = "pulse-pill bad";
+    }
+  }
+  function renderClock() {
+    const el = document.getElementById("pulse-clock");
+    if (!el) return;
+    const d = new Date();
+    el.textContent = d.toTimeString().slice(0, 8);
+  }
+  return {
+    setup() {
+      renderSpark();
+      renderHealth([]);
+      refreshLoopback();
+      renderClock();
+      // Loopback poll: every 5 s while not connected, every 15 s
+      // once connected (cheap heartbeat, picks up a server restart
+      // within one cycle). Constants kept generous so a slow page
+      // doesn't see the pill flicker on a stalled fetch.
+      setInterval(refreshLoopback, 5000);
+      // 1 Hz clock + spark rotation; the spark rotator also handles
+      // the case where no setpoints fire for a while (buckets
+      // advance + drop off the left).
+      setInterval(() => {
+        renderClock();
+        rotateIfNeeded();
+        renderSpark();
+      }, 1000);
+    },
+    recordSetpoint,
+    applyTopology(components) {
+      renderHealth(components);
+    },
+  };
+})();
+
 // ─── Mode toggle ────────────────────────────────────────────────────────────
 //
 // The chrome's [Dashboard] [Topology] buttons swap which main pane
@@ -2381,7 +2507,13 @@ async function refreshTopology() {
   try {
     const res = await fetch("/api/topology");
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    topology.apply(await res.json());
+    const data = await res.json();
+    topology.apply(data);
+    // Pulse bar's health counters read from the same component
+    // list — refresh on every topology fetch so a hot-reload that
+    // flips a component's health to 'error shows up on the next
+    // WS topology_changed without a separate fetch.
+    pulseBar.applyTopology(data.components || []);
   } catch (err) {
     setStatus(`error: ${err.message}`, "error");
   }
@@ -2433,6 +2565,7 @@ async function init() {
   setupContextMenu();
   setupHelpButton();
   setupModeToggle();
+  pulseBar.setup();
   await refreshTopology();
   await overrideState.refresh();
   // WS push: refresh both the topology (so the canvas reflects the
