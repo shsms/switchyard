@@ -9,6 +9,57 @@ simulator over a long session — they need at-a-glance state, easy
 scenario picks, easy fault injection, and the topology only when
 they're editing structure.
 
+* Targets
+
+** Display
+
+Primary target is a 32" 4K monitor (3840 × 2160 at 100 % scale or
+1920 × 1080 effective at 200 %). Plenty of horizontal real estate
+— design for *side-by-side density* rather than stacked-column
+fallbacks. Dashboard tier rows should fan out into multi-column
+grids on wide displays:
+
+  - Tier 2 (battery pool + individuals): pool row on the left,
+    per-battery rows in a 2 — 3 column grid on the right.
+  - Tier 3 (PV pool + inverters): same shape.
+  - Tier 5 (EV / CHP): two columns side-by-side rather than
+    stacked.
+
+Keep a single-column fallback for sub-1400 px viewports so a
+laptop / iPad screen still works, but optimise the default layout
+for the wide case. Mirror tradingsim's =.tier-row= +
+=minmax(0, Nfr)= grid pattern (= src/ui-assets/style.css =76-87).
+
+Compact-density mode (A3) further densifies the wide layout —
+useful for showing every battery, every inverter, the pulse bar,
+and the topology canvas's mini-map all at once without scrolling.
+
+** Browser testing
+
+The dev environment has Selenium + Firefox ESR + Chromium with
+headless support — same stack tradingsim's =tests/ui_selenium.py=
+uses (see =/vagrant/tradingsim/CLAUDE.md=, "Browser tests"
+section). =geckodriver= and =chromedriver= are both installed; the
+system =python3-selenium= package is at =/usr/lib/python3/dist-
+packages= (call via =/usr/bin/python3= directly, not the project
+venv).
+
+Use this stack for browser tests of the Dashboard, the Scenarios
+mode, and any interaction that depends on layout / CSS / JS
+behaviour the existing axum =oneshot= integration tests can't
+exercise. Drop Playwright from =todo.org='s F-series in favour of
+the Selenium path — fewer Node / npm dependencies, same coverage.
+
+Test harness shape (matches the tradingsim pattern):
+
+  - Boot switchyard on a free port via a pytest / Python fixture.
+  - Open the page in headless Firefox.
+  - Assert against DOM structure (=By.CSS_SELECTOR=), not
+    pixels — topology layout is non-deterministic across runs.
+  - For Dashboard tiles: assert the number renders within a
+    bounded staleness after a known input (e.g. =set-meter-power=
+    via =/api/eval=, wait for the tile's text content to update).
+
 Inspired by a side-by-side analysis with the tradingsim SPA
 (/vagrant/tradingsim/ui-assets/) — the patterns called out under
 each item below either originated there or are the
