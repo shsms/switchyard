@@ -2305,7 +2305,10 @@ const dashboardTiles = (() => {
     return out;
   }
   function findEls(stream) {
-    return document.querySelectorAll(`.dash-value[data-stream="${stream}"]`);
+    // Any non-svg element tagged with this stream — covers the main
+    // .dash-value number plus envelope `.env-lo` / `.env-hi`
+    // siblings that share the same stream's value formatting.
+    return document.querySelectorAll(`[data-stream="${stream}"]:not(svg)`);
   }
   function findSparks(stream) {
     return document.querySelectorAll(`.dash-spark[data-stream="${stream}"]`);

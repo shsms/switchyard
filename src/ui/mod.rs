@@ -313,20 +313,79 @@ async fn subscribe_power_forwarders(
             handles.push(h);
         }
     }
-    // BatteryPool takes &mut self for power() (it caches subscriber
-    // refs); build it once and let it go out of scope after the
-    // subscription resolves.
+    // BatteryPool takes &mut self for power() / power_bounds() (it
+    // caches subscriber refs); build it once and let it go out of
+    // scope after both subscriptions resolve.
     match microgrid.battery_pool(None) {
         Ok(mut pool) => {
             if let Some(h) =
-                subscribe_power_forwarder("battery_pool_power", pool.power(), world, state).await
+                subscribe_power_forwarder("battery_pool_power", pool.power(), world, state.clone())
+                    .await
             {
                 handles.push(h);
             }
+            // power_bounds returns a Vec<Bounds<Power>>; the
+            // forwarder flattens the first envelope into two
+            // separate streams so the existing point-sample
+            // infrastructure (cache + sparkline) renders both
+            // halves without an envelope-shaped payload variant.
+            handles.push(spawn_bounds_forwarder(pool.power_bounds(), world, state));
         }
         Err(e) => log::info!("microgrid loopback: battery pool absent — skipping: {e}"),
     }
     handles
+}
+
+/// Forward a `Vec<Bounds<Power>>` stream as two point streams
+/// `battery_pool_bounds_lower` + `battery_pool_bounds_upper`. The
+/// upstream tracker emits a fresh Vec on every telemetry snapshot,
+/// so the cadence matches the power forwarders' 1 Hz; sparklines
+/// alongside the pool power tile track the same time axis.
+///
+/// When the Vec is empty (no batteries in the pool) both halves
+/// publish `None`. When it has multiple disjoint regions we keep
+/// only the outermost envelope — single-region is by far the
+/// common case and a multi-region split is a niche signal that the
+/// developer-facing dashboard isn't designed around.
+fn spawn_bounds_forwarder(
+    mut rx: tokio::sync::broadcast::Receiver<Vec<frequenz_microgrid::Bounds<Power>>>,
+    world: &World,
+    state: SharedMicrogrid,
+) -> JoinHandle<()> {
+    let world = world.clone();
+    tokio::spawn(async move {
+        loop {
+            match rx.recv().await {
+                Ok(envelopes) => {
+                    let lower = outer_bound(&envelopes, |b| b.lower(), f32::min);
+                    let upper = outer_bound(&envelopes, |b| b.upper(), f32::max);
+                    let ts_ms = chrono::Utc::now().timestamp_millis();
+                    publish_scalar("battery_pool_bounds_lower", lower, ts_ms, &world, &state);
+                    publish_scalar("battery_pool_bounds_upper", upper, ts_ms, &world, &state);
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    log::warn!("microgrid loopback: battery_pool_bounds lagged {n} samples");
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    log::info!(
+                        "microgrid loopback: battery_pool_bounds closed; forwarder exiting"
+                    );
+                    return;
+                }
+            }
+        }
+    })
+}
+
+fn outer_bound(
+    envelopes: &[frequenz_microgrid::Bounds<Power>],
+    pick: impl Fn(&frequenz_microgrid::Bounds<Power>) -> Option<Power>,
+    fold: fn(f32, f32) -> f32,
+) -> Option<f32> {
+    envelopes
+        .iter()
+        .filter_map(|b| pick(b).map(|p| p.as_watts()))
+        .reduce(fold)
 }
 
 /// Subscribe to one Power-valued formula and spawn a forwarder that
@@ -378,6 +437,23 @@ async fn subscribe_power_forwarder(
 fn publish_power(stream: &'static str, sample: Sample<Power>, world: &World, state: &SharedMicrogrid) {
     let value = sample.value().map(|p| p.as_watts());
     let ts_ms = sample.timestamp().timestamp_millis();
+    publish_scalar(stream, value, ts_ms, world, state);
+}
+
+/// Push a Watts-valued scalar onto both the per-stream `latest`
+/// cache and the WS event bus. Used by every forwarder that emits
+/// Power-quantity samples — the regular per-formula forwarders
+/// derive their `value` from a `Sample<Power>`, the pool-bounds
+/// forwarder synthesises one from `Bounds<Power>::lower / upper`
+/// — but the downstream shape is identical, so a single helper
+/// owns the snapshot and broadcast.
+fn publish_scalar(
+    stream: &'static str,
+    value: Option<f32>,
+    ts_ms: i64,
+    world: &World,
+    state: &SharedMicrogrid,
+) {
     let snapshot = MicrogridSampleSnapshot {
         quantity: "Power",
         unit: "W",

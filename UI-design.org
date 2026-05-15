@@ -221,7 +221,7 @@ Acceptance:
   string that produced it (asked of =ComponentGraph= directly;
   =frequenz-microgrid= exposes the underlying graph).
 
-** TODO Z3. Typed-quantity payloads on the WS / history channels
+** DONE Z3. Typed-quantity payloads on the WS / history channels
 
 =frequenz-microgrid='s subscriptions yield =Sample<Q>= where
 =Q= is =Power= / =ReactivePower= / =Voltage= / =Frequency= /
