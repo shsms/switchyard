@@ -2238,6 +2238,7 @@ function openWebSocket(onTopologyChanged) {
       if (ev.kind === "sample") {
         liveCharts.pushSample(ev.id, ev.metric, ev.ts_ms, ev.value);
         batteryRows.applySample(ev);
+        inverterRows.applySample(ev);
       } else if (ev.kind === "microgrid_sample") {
         dashboardTiles.applySample(ev);
       } else if (ev.kind === "topology_changed") {
@@ -2518,6 +2519,148 @@ const batteryRows = (() => {
       // SoC changes shift sort order; power changes don't. Resort only
       // when worth it.
       if (ev.metric === "soc_pct") resort();
+      render();
+    },
+  };
+})();
+
+// ─── Tier 3: per-inverter rows ─────────────────────────────────────────────
+//
+// One row per visible inverter under the PV pool tile. Measured AC
+// active power gets the highlight when it clips against either
+// envelope bound — that's the operator-visible signal that the
+// upstream control app's setpoint command is being held back by the
+// inverter's own clamp. Setpoint + request-lifetime columns are
+// deferred (they require a /api/setpoints lookup per row); they
+// fold in alongside F3's envelope visual.
+const inverterRows = (() => {
+  const data = new Map(); // id -> { name, subtype, health, measured, lower, upper }
+  let order = [];
+  const TRACKED = new Set([
+    "active_power_w",
+    "active_power_lower_bound_w",
+    "active_power_upper_bound_w",
+  ]);
+
+  function fmtPower(v) {
+    if (v == null || !Number.isFinite(v)) return "—";
+    const a = Math.abs(v);
+    if (a >= 1e6) return `${(v / 1e6).toFixed(2)} MW`;
+    if (a >= 1e3) return `${(v / 1e3).toFixed(2)} kW`;
+    return `${v.toFixed(1)} W`;
+  }
+  function pinned(d) {
+    if (d.measured == null) return false;
+    // 0.5 % of the broader envelope side — tight enough to flag a
+    // genuine clip without false-positiving on a measurement that's
+    // merely near the limit.
+    const span = Math.max(
+      Math.abs(d.upper ?? 0),
+      Math.abs(d.lower ?? 0),
+      1,
+    );
+    const tol = 0.005 * span;
+    return (
+      (d.upper != null && d.measured >= d.upper - tol) ||
+      (d.lower != null && d.measured <= d.lower + tol)
+    );
+  }
+  function resort() {
+    // Pinned first, then by category subtype + id so the listing is
+    // stable across paints.
+    order = [...data.keys()].sort((a, b) => {
+      const A = data.get(a);
+      const B = data.get(b);
+      const pa = pinned(A) ? 0 : 1;
+      const pb = pinned(B) ? 0 : 1;
+      if (pa !== pb) return pa - pb;
+      const sa = A.subtype || "";
+      const sb = B.subtype || "";
+      if (sa !== sb) return sa.localeCompare(sb);
+      return a - b;
+    });
+  }
+  function render() {
+    const grid = document.getElementById("tier-3-rows");
+    const section = grid?.closest(".dash-tier-3");
+    if (!grid || !section) return;
+    section.hidden = data.size === 0;
+    grid.innerHTML = "";
+    for (const id of order) {
+      const d = data.get(id);
+      const row = document.createElement("div");
+      row.className = "tier3-row";
+      row.dataset.id = id;
+      if (pinned(d)) row.classList.add("pinned");
+      const healthCls = d.health === "ok" ? "health-ok" : "health-bad";
+      row.innerHTML = `
+        <span class="tier3-name">${d.name}</span>
+        <span class="tier3-subtype muted">${d.subtype || "—"}</span>
+        <span class="tier3-health ${healthCls}">${d.health}</span>
+        <span class="tier3-lower">${fmtPower(d.lower)}</span>
+        <span class="tier3-measured">${fmtPower(d.measured)}</span>
+        <span class="tier3-upper">${fmtPower(d.upper)}</span>
+      `;
+      row.addEventListener("click", () => {
+        localStorage.setItem(MODE_KEY, "topology");
+        applyMode("topology");
+        topology.select([id]);
+        const c = topology.get(id);
+        if (c) showComponent(c);
+      });
+      grid.appendChild(row);
+    }
+  }
+  async function seedFromHistory(id) {
+    try {
+      const [m, lo, hi] = await Promise.all([
+        fetch(`/api/history?id=${id}&metric=active_power_w&window_s=10`).then((r) => r.json()),
+        fetch(`/api/history?id=${id}&metric=active_power_lower_bound_w&window_s=10`).then((r) => r.json()),
+        fetch(`/api/history?id=${id}&metric=active_power_upper_bound_w&window_s=10`).then((r) => r.json()),
+      ]);
+      const d = data.get(id);
+      if (!d) return;
+      d.measured = m.samples?.at(-1)?.[1] ?? null;
+      d.lower = lo.samples?.at(-1)?.[1] ?? null;
+      d.upper = hi.samples?.at(-1)?.[1] ?? null;
+    } catch (_) {
+      // Live samples will fill in.
+    }
+  }
+  return {
+    async refresh(components) {
+      const inverters = (components || []).filter(
+        (c) => c.category === "inverter" && !c.hidden,
+      );
+      const next = new Map();
+      for (const c of inverters) {
+        const prev = data.get(c.id);
+        next.set(c.id, {
+          name: c.name,
+          subtype: c.subtype,
+          health: c.health,
+          measured: prev?.measured ?? null,
+          lower: prev?.lower ?? null,
+          upper: prev?.upper ?? null,
+        });
+      }
+      data.clear();
+      for (const [k, v] of next) data.set(k, v);
+      resort();
+      render();
+      await Promise.all(inverters.map((c) => seedFromHistory(c.id)));
+      resort();
+      render();
+    },
+    applySample(ev) {
+      if (!TRACKED.has(ev.metric)) return;
+      const d = data.get(ev.id);
+      if (!d) return;
+      if (ev.metric === "active_power_w") d.measured = ev.value;
+      else if (ev.metric === "active_power_lower_bound_w") d.lower = ev.value;
+      else if (ev.metric === "active_power_upper_bound_w") d.upper = ev.value;
+      // Pinning may change on any of these, which affects sort order.
+      resort();
       render();
     },
   };
@@ -2870,6 +3013,7 @@ async function refreshTopology() {
     // already drives a refresh.
     pulseBar.applyTopology(data.components || [], data.graph_status);
     batteryRows.refresh(data.components || []);
+    inverterRows.refresh(data.components || []);
   } catch (err) {
     setStatus(`error: ${err.message}`, "error");
   }
