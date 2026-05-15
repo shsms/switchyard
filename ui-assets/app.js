@@ -2375,9 +2375,38 @@ const dashboardTiles = (() => {
         // Best-effort. If the loopback isn't up yet (503 elsewhere),
         // the tiles stay on "—" until the first WS tick lands.
       }
+      // Same path picks up the rendered formula strings for each
+      // tile's hover tooltip. Static across samples (the formula
+      // doesn't change per tick), so one fetch per mode-enter is
+      // enough — topology mutations re-trigger this via the
+      // refreshTopology path in init().
+      await loadFormulas();
     },
   };
 })();
+
+async function loadFormulas() {
+  try {
+    const res = await fetch("/api/microgrid/formulas");
+    if (!res.ok) return;
+    const map = await res.json();
+    for (const [stream, formula] of Object.entries(map)) {
+      for (const tile of document.querySelectorAll(`.dash-tile`)) {
+        const v = tile.querySelector(`.dash-value[data-stream="${stream}"]`);
+        if (v) {
+          // Tile-level title so hovering anywhere on the card
+          // (number + sparkline + meta) surfaces the same
+          // formula. Click later (F4 stage 2 in UI-design.org)
+          // will navigate to a side-panel formula tree.
+          tile.title = `${stream} = ${formula}`;
+        }
+      }
+    }
+  } catch (_) {
+    // Best-effort — tile tooltips just show their default `title`
+    // (none) if this fails.
+  }
+}
 
 // ─── Clock + TZ toggle ─────────────────────────────────────────────────────
 //
