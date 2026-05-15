@@ -140,6 +140,8 @@ impl Config {
             return Err(formatted);
         }
 
+        log_topology_validation(&world, "boot");
+
         let ctx = SharedMut::new(ctx);
 
         // Pre-tick hook: hold the interpreter lock once per tick,
@@ -435,6 +437,7 @@ impl Config {
         // "removed the only pending entry" case where remove_pending
         // reloads but has no surviving entries to bump-version
         // through eval_with_affects.
+        log_topology_validation(&self.world, "reload");
         self.world.bump_version();
         log::info!(
             "Reloaded config in {:.1}ms",
@@ -510,6 +513,48 @@ impl Config {
             if let Err(msg) = self.reload() {
                 self.world.broadcast_config_error(msg);
             }
+        }
+    }
+}
+
+/// Run the component-graph validator on the current `World` and
+/// log the outcome. `phase` is one of "boot" / "reload" so the log
+/// line tags which path triggered the check.
+///
+/// Log-only, not fatal. Empty worlds (no components yet) skip
+/// because the graph crate requires exactly one
+/// `GridConnectionPoint` and rejects empty graphs — test fixtures
+/// that wire up `Config` against `""` would otherwise fail.
+/// Non-empty worlds that fail validation surface as a `log::warn!`
+/// the dev sees in the simulator log; the future pulse-bar pill
+/// (Z6 in UI-design.org) will surface this in the UI too.
+///
+/// On success the log line includes a one-line summary so a dev
+/// reading the log can confirm switchyard parsed the topology the
+/// same way `frequenz-microgrid` would.
+fn log_topology_validation(world: &World, phase: &str) {
+    let (nodes, edges) = crate::sim::graph_adapter::snapshot(world);
+    let visible_count = nodes.len();
+    if visible_count == 0 {
+        log::debug!("graph: {phase} skipped (no visible components)");
+        return;
+    }
+    match crate::sim::graph_adapter::build_from(nodes, edges) {
+        Ok(graph) => {
+            // `graph.components()` yields nodes that survived
+            // pass-through elision. With no pass-through categories
+            // in switchyard's model yet this equals visible_count;
+            // we log both so the gap is visible the day we add a
+            // transformer / breaker / converter.
+            let logical_count = graph.components().count();
+            log::info!(
+                "graph: {phase} validated ({visible_count} visible, {logical_count} after pass-through elision)"
+            );
+        }
+        Err(e) => {
+            log::warn!(
+                "graph: {phase} validation failed — {visible_count} visible components rejected by frequenz-microgrid-component-graph: {e}"
+            );
         }
     }
 }
