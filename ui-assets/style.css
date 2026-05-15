@@ -415,6 +415,16 @@ body[data-mode="dashboard"] #topology { display: none; }
      "—" placeholder and a populated number. */
   min-height: 38px;
 }
+.dash-spark {
+  display: block;
+  width: 100%;
+  height: 40px;
+  margin-top: 6px;
+  color: var(--accent);
+  overflow: visible;
+}
+.dash-spark .baseline { stroke: var(--border); stroke-width: 0.5; stroke-dasharray: 2 2; }
+.dash-spark .trace    { fill: none; stroke: currentColor; stroke-width: 1.2; }
 .dash-meta {
   font-size: 11px;
   color: var(--muted);

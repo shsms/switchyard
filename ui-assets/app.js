@@ -2226,8 +2226,45 @@ function openWebSocket(onTopologyChanged) {
 // tile selects its source via `data-stream="..."`; new tiles only
 // have to declare the right stream name to participate.
 const dashboardTiles = (() => {
+  // 60 samples × 1 Hz cadence = 60 s sparkline window. Wide enough
+  // to see "did the value just change?" without dominating the
+  // tile visually. Stored as a flat Float32Array of length
+  // SPARK_LEN with a write cursor; on each push we overwrite the
+  // oldest slot and bump the cursor. Cheaper than Array.shift on a
+  // long array. NaN means "no sample at this slot" (page just
+  // loaded — most of the window is still empty).
+  const SPARK_LEN = 60;
+  const sparkBuf = new Map(); // stream -> { values: Float32Array, cursor: int }
+  function buf(stream) {
+    let b = sparkBuf.get(stream);
+    if (!b) {
+      b = { values: new Float32Array(SPARK_LEN).fill(NaN), cursor: 0 };
+      sparkBuf.set(stream, b);
+    }
+    return b;
+  }
+  function pushSample(stream, value) {
+    const b = buf(stream);
+    b.values[b.cursor] = value == null ? NaN : value;
+    b.cursor = (b.cursor + 1) % SPARK_LEN;
+  }
+  // Ordered iterator over the ring — oldest to newest, skipping
+  // empty slots before the first sample lands. Returns array of
+  // {idx, value} where idx is the linearised position 0..SPARK_LEN-1.
+  function orderedSamples(b) {
+    const out = [];
+    for (let i = 0; i < SPARK_LEN; i++) {
+      const slot = (b.cursor + i) % SPARK_LEN;
+      const v = b.values[slot];
+      if (!Number.isNaN(v)) out.push({ idx: i, value: v });
+    }
+    return out;
+  }
   function findEls(stream) {
     return document.querySelectorAll(`.dash-value[data-stream="${stream}"]`);
+  }
+  function findSparks(stream) {
+    return document.querySelectorAll(`.dash-spark[data-stream="${stream}"]`);
   }
   // Power auto-scale: W → kW → MW based on magnitude. Mirrors the
   // existing chooseScale() logic for per-component charts so the
@@ -2244,11 +2281,47 @@ const dashboardTiles = (() => {
     // Voltage, frequency, percentage etc. — fixed unit, modest precision.
     return `${value.toFixed(2)} ${unit}`;
   }
+  function renderSpark(stream) {
+    const b = buf(stream);
+    const samples = orderedSamples(b);
+    for (const svg of findSparks(stream)) {
+      if (samples.length < 2) {
+        // Not enough points to draw a line — show nothing rather
+        // than a misleading single dot.
+        svg.innerHTML = "";
+        continue;
+      }
+      const vals = samples.map((s) => s.value);
+      const min = Math.min(...vals);
+      const max = Math.max(...vals);
+      const range = max - min || 1;
+      // viewBox = 0..100 wide, 0..30 tall. 1 px padding top + bottom
+      // so the line never clips at the edges.
+      const points = samples
+        .map((s) => {
+          const x = (s.idx / (SPARK_LEN - 1)) * 100;
+          const y = 30 - (((s.value - min) / range) * 28 + 1);
+          return `${x.toFixed(1)},${y.toFixed(1)}`;
+        })
+        .join(" ");
+      // Draw a y=0 baseline only when the window crosses zero —
+      // for power tiles this is the import/export divider, and
+      // it's noise on a constant-positive (e.g. consumer) tile.
+      let baseline = "";
+      if (min < 0 && max > 0) {
+        const yZero = 30 - (((0 - min) / range) * 28 + 1);
+        baseline = `<line class="baseline" x1="0" y1="${yZero.toFixed(1)}" x2="100" y2="${yZero.toFixed(1)}" />`;
+      }
+      svg.innerHTML = `${baseline}<polyline class="trace" points="${points}" />`;
+    }
+  }
   function paint(stream, snap) {
     for (const el of findEls(stream)) {
       el.textContent = fmt(snap.quantity, snap.unit, snap.value);
       el.classList.toggle("muted", snap.value == null);
     }
+    pushSample(stream, snap.value);
+    renderSpark(stream);
   }
   return {
     applySample(ev) {
