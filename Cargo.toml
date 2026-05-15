@@ -31,6 +31,11 @@ log = "0.4.22"
 simplelog = "0.12.2"
 rand = { version = "0.8.5", features = ["small_rng"] }
 chrono = { version = "0.4.42", features = ["serde"] }
+# IANA timezone resolution for (set-timezone "Europe/Berlin"). The
+# UI's TZ toggle reads the configured zone name + formats client-
+# side via Intl.DateTimeFormat — switchyard just owns the name +
+# rejects unknown zones at config-load time.
+chrono-tz = "0.10"
 parking_lot = "0.12"
 clap = { version = "4", features = ["derive"] }
 axum = { version = "0.8", features = ["ws"] }

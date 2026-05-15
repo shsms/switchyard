@@ -79,6 +79,12 @@ pub struct Config {
     /// graph pill (see UI-design.org §Z6) can flip between ✓ and ⚠
     /// without polling a separate endpoint.
     graph_status: Arc<RwLock<Option<String>>>,
+    /// Configured display timezone. UI's TZ toggle reads the IANA
+    /// name from /api/clock and formats timestamps client-side via
+    /// `Intl.DateTimeFormat(..., { timeZone })`. Mutated by
+    /// `(set-timezone "…")` in config.lisp; default Europe/Berlin
+    /// matches the canonical European-intraday demo target.
+    clock: crate::sim::clock::SharedClock,
 }
 
 /// One top-level form found in the per-microgrid override file. The
@@ -106,6 +112,7 @@ impl Config {
         let metadata = Arc::new(RwLock::new(Metadata::default()));
         let extra_watches = Arc::new(Mutex::new(HashSet::new()));
         let graph_status: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));
+        let clock = crate::sim::clock::new_clock();
 
         // `Path::parent()` returns `Some("")` for bare filenames like
         // "config.lisp" — tulisp rejects empty paths, so fall back to
@@ -119,6 +126,7 @@ impl Config {
             .map_err(|e| format!("set_load_path({}): {e}", load_dir.display()))?;
 
         register_runtime(&mut ctx, &world, metadata.clone(), load_dir.clone());
+        register_clock(&mut ctx, clock.clone());
         register_watches(&mut ctx, load_dir.clone(), extra_watches.clone());
 
         // tulisp-async gives the config DSL access to run-with-timer,
@@ -180,6 +188,7 @@ impl Config {
             metadata,
             extra_watches,
             graph_status,
+            clock,
         })
     }
 
@@ -260,6 +269,15 @@ impl Config {
     /// the message (see UI-design.org §Z6).
     pub fn graph_status(&self) -> Option<String> {
         self.graph_status.read().clone()
+    }
+
+    /// IANA name of the configured display zone (default
+    /// "Europe/Berlin"; redirected by `(set-timezone "…")`). The
+    /// UI's TZ toggle reads this from /api/clock + formats
+    /// timestamps via Intl.DateTimeFormat without round-tripping
+    /// through Rust.
+    pub fn tz_name(&self) -> &'static str {
+        self.clock.read().tz_name()
     }
 
     /// Evaluate a Lisp expression on the running interpreter and
@@ -586,6 +604,24 @@ fn log_topology_validation(world: &World, phase: &str) -> Option<String> {
             Some(msg)
         }
     }
+}
+
+/// Register the `(set-timezone IANA-NAME)` defun. Validates the
+/// argument via chrono-tz's `FromStr` impl — a typo surfaces as a
+/// lisp error at config-load time rather than silently falling
+/// through to UTC at format time. The UI's TZ toggle picks up the
+/// new zone on its next /api/clock poll.
+fn register_clock(ctx: &mut TulispContext, clock: crate::sim::clock::SharedClock) {
+    ctx.defun(
+        "set-timezone",
+        move |name: String| -> Result<String, tulisp::Error> {
+            let tz: chrono_tz::Tz = name
+                .parse()
+                .map_err(|_| tulisp::Error::os_error(format!("unknown timezone: {name:?}")))?;
+            clock.write().tz = tz;
+            Ok(name)
+        },
+    );
 }
 
 /// Register every Rust function the config DSL needs.

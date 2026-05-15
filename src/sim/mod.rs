@@ -1,6 +1,7 @@
 pub mod battery;
 pub mod bounds;
 pub mod chp;
+pub mod clock;
 pub mod component;
 pub mod decay;
 pub(crate) mod dynamic_scalar;
