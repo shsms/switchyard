@@ -186,6 +186,26 @@ trivial (loopback gRPC at 1 Hz) and the consistency win is the
 whole point — if =frequenz-microgrid='s stream is broken,
 switchyard's own dashboard surfaces it.
 
+Alternative considered: =MicrogridClientHandle::new_from_client=
+takes an =impl MicrogridApiClient= trait, so the dashboard could
+in principle skip the network entirely by impl'ing the trait
+against =&World= and handing the handle to
+=Microgrid::new_from_handles=. The trait surface is four async
+methods plus a =TelemetryStream= associated type. Rejected for
+this round:
+
+- ~200 LOC of in-process proto conversion + stream adapter vs
+  ~5 LOC of =Microgrid::try_new(url, …).await=.
+- Duplicates switchyard's existing server-side conversion in
+  =proto_conv.rs= / =server.rs= — two implementations of the
+  same gRPC contract, with drift risk.
+- The loopback path exercises switchyard's own gRPC server on
+  every dashboard request — a server-side regression breaks the
+  dashboard loudly. The in-process path would mask that.
+
+Performance is a non-factor: localhost gRPC at the UI's 1 Hz
+cadence is ~1 ms per RPC.
+
 Phased rollout:
 - The existing =/api/history?metric=...&id=...= for per-component
   charts stays, fed by the physics history rings.
