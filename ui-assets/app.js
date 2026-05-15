@@ -2202,6 +2202,8 @@ function openWebSocket(onTopologyChanged) {
     }
     if (ev.kind === "sample") {
       liveCharts.pushSample(ev.id, ev.metric, ev.ts_ms, ev.value);
+    } else if (ev.kind === "microgrid_sample") {
+      dashboardTiles.applySample(ev);
     } else if (ev.kind === "topology_changed") {
       onTopologyChanged(ev.version);
     } else if (ev.kind === "setpoint") {
@@ -2213,6 +2215,93 @@ function openWebSocket(onTopologyChanged) {
   ws.onclose = () => setStatus("disconnected", "error");
   ws.onerror = () => setStatus("ws error", "error");
   return ws;
+}
+
+// ─── Dashboard tiles ────────────────────────────────────────────────────────
+//
+// Aggregated metrics from the loopback Microgrid client flow into the
+// Dashboard pane via two paths: (a) /api/microgrid/latest at mode-
+// enter time so the tiles paint immediately with a real number, and
+// (b) microgrid_sample WS frames for the per-second updates. Every
+// tile selects its source via `data-stream="..."`; new tiles only
+// have to declare the right stream name to participate.
+const dashboardTiles = (() => {
+  function findEls(stream) {
+    return document.querySelectorAll(`.dash-value[data-stream="${stream}"]`);
+  }
+  // Power auto-scale: W → kW → MW based on magnitude. Mirrors the
+  // existing chooseScale() logic for per-component charts so the
+  // Dashboard reads in the same units a developer sees in the
+  // inspector panel.
+  function fmt(quantity, unit, value) {
+    if (value == null || !Number.isFinite(value)) return "—";
+    if (quantity === "Power" || unit === "W" || unit === "VAR") {
+      const a = Math.abs(value);
+      if (a >= 1e6) return `${(value / 1e6).toFixed(2)} M${unit}`;
+      if (a >= 1e3) return `${(value / 1e3).toFixed(2)} k${unit}`;
+      return `${value.toFixed(1)} ${unit}`;
+    }
+    // Voltage, frequency, percentage etc. — fixed unit, modest precision.
+    return `${value.toFixed(2)} ${unit}`;
+  }
+  function paint(stream, snap) {
+    for (const el of findEls(stream)) {
+      el.textContent = fmt(snap.quantity, snap.unit, snap.value);
+      el.classList.toggle("muted", snap.value == null);
+    }
+  }
+  return {
+    applySample(ev) {
+      // WS frame shape matches the snapshot shape, minus the kind
+      // discriminator. Pass straight through.
+      paint(ev.stream, ev);
+    },
+    async backfill() {
+      try {
+        const res = await fetch("/api/microgrid/latest");
+        if (!res.ok) return;
+        const map = await res.json();
+        for (const [stream, snap] of Object.entries(map)) paint(stream, snap);
+      } catch (_) {
+        // Best-effort. If the loopback isn't up yet (503 elsewhere),
+        // the tiles stay on "—" until the first WS tick lands.
+      }
+    },
+  };
+})();
+
+// ─── Mode toggle ────────────────────────────────────────────────────────────
+//
+// The chrome's [Dashboard] [Topology] buttons swap which main pane
+// is visible; CSS hides the other via `body[data-mode]`. Preference
+// persists in localStorage so a refresh brings you back where you
+// were. Default = dashboard — the new view is the one we want
+// developers landing on.
+const MODE_KEY = "switchyard-mode";
+const VALID_MODES = new Set(["dashboard", "topology"]);
+
+function applyMode(mode) {
+  if (!VALID_MODES.has(mode)) mode = "dashboard";
+  document.body.dataset.mode = mode;
+  for (const btn of document.querySelectorAll(".mode-btn")) {
+    btn.classList.toggle("active", btn.dataset.mode === mode);
+  }
+  // vis-network needs a redraw nudge when its container goes from
+  // display:none back to visible — the canvas was sized to 0×0 while
+  // hidden. Same shape the splitter resize handler uses.
+  if (mode === "topology") refitCharts();
+  if (mode === "dashboard") dashboardTiles.backfill();
+}
+
+function setupModeToggle() {
+  for (const btn of document.querySelectorAll(".mode-btn")) {
+    btn.addEventListener("click", () => {
+      const mode = btn.dataset.mode;
+      localStorage.setItem(MODE_KEY, mode);
+      applyMode(mode);
+    });
+  }
+  applyMode(localStorage.getItem(MODE_KEY) || "dashboard");
 }
 
 async function refreshTopology() {
@@ -2270,6 +2359,7 @@ async function init() {
   });
   setupContextMenu();
   setupHelpButton();
+  setupModeToggle();
   await refreshTopology();
   await overrideState.refresh();
   // WS push: refresh both the topology (so the canvas reflects the
