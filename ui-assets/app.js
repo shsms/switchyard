@@ -2180,42 +2180,77 @@ function setupRepl() {
   refreshOverlay();
 }
 
+// Self-reconnecting WS with exponential backoff. Starts at 1 s,
+// doubles on each close, caps at 30 s, resets to 1 s on a clean
+// onopen. A laptop returning from sleep, a server bounce, or a
+// notify-reload that briefly drops connections all heal without
+// a manual page refresh — important for an overnight soak run.
+//
+// On reconnect (i.e. open after a previous open) we also nudge a
+// topology refresh because samples may have moved while we were
+// away. The very first open is a no-op there because init()
+// already awaited refreshTopology before opening the WS.
 function openWebSocket(onTopologyChanged) {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  const ws = new WebSocket(`${proto}//${location.host}/ws/events`);
-  ws.onmessage = (msg) => {
-    // Defensive: vis-network and other libs sometimes pump non-string
-    // frames (binary, blob) through fetch / WS pipelines that look
-    // identical from a try/catch perspective. Surface the actual
-    // payload type to console so a "JSON.parse undefined" surprise
-    // points straight at the offending frame.
-    if (typeof msg.data !== "string") {
-      console.warn("WS: non-string payload, skipping:", msg.data);
-      return;
-    }
-    let ev;
-    try {
-      ev = JSON.parse(msg.data);
-    } catch (e) {
-      console.warn("WS: JSON parse failed:", e.message, "payload was:", msg.data);
-      return;
-    }
-    if (ev.kind === "sample") {
-      liveCharts.pushSample(ev.id, ev.metric, ev.ts_ms, ev.value);
-    } else if (ev.kind === "microgrid_sample") {
-      dashboardTiles.applySample(ev);
-    } else if (ev.kind === "topology_changed") {
-      onTopologyChanged(ev.version);
-    } else if (ev.kind === "setpoint") {
-      liveCharts.pushSetpoint(ev);
-      pulseBar.recordSetpoint();
-    } else if (ev.kind === "log") {
-      appendLog(ev);
-    }
-  };
-  ws.onclose = () => setStatus("disconnected", "error");
-  ws.onerror = () => setStatus("ws error", "error");
-  return ws;
+  const url = `${proto}//${location.host}/ws/events`;
+  const MIN_DELAY = 1000;
+  const MAX_DELAY = 30000;
+  let delay = MIN_DELAY;
+  let everConnected = false;
+  function connect() {
+    const ws = new WebSocket(url);
+    ws.onopen = () => {
+      delay = MIN_DELAY;
+      if (everConnected) {
+        // Catch up state the canvas and inspector cached from
+        // before the drop. Loopback pill + dashboard tiles also
+        // self-heal via their next poll / WS frame.
+        onTopologyChanged(0);
+      }
+      everConnected = true;
+    };
+    ws.onmessage = (msg) => {
+      // Defensive: vis-network and other libs sometimes pump non-string
+      // frames (binary, blob) through fetch / WS pipelines that look
+      // identical from a try/catch perspective. Surface the actual
+      // payload type to console so a "JSON.parse undefined" surprise
+      // points straight at the offending frame.
+      if (typeof msg.data !== "string") {
+        console.warn("WS: non-string payload, skipping:", msg.data);
+        return;
+      }
+      let ev;
+      try {
+        ev = JSON.parse(msg.data);
+      } catch (e) {
+        console.warn("WS: JSON parse failed:", e.message, "payload was:", msg.data);
+        return;
+      }
+      if (ev.kind === "sample") {
+        liveCharts.pushSample(ev.id, ev.metric, ev.ts_ms, ev.value);
+      } else if (ev.kind === "microgrid_sample") {
+        dashboardTiles.applySample(ev);
+      } else if (ev.kind === "topology_changed") {
+        onTopologyChanged(ev.version);
+      } else if (ev.kind === "setpoint") {
+        liveCharts.pushSetpoint(ev);
+        pulseBar.recordSetpoint();
+      } else if (ev.kind === "log") {
+        appendLog(ev);
+      }
+    };
+    ws.onclose = () => {
+      const secs = Math.round(delay / 1000);
+      setStatus(`disconnected — retry in ${secs}s`, "error");
+      setTimeout(connect, delay);
+      delay = Math.min(delay * 2, MAX_DELAY);
+    };
+    // onerror fires alongside onclose; setStatus message stays as
+    // the "retry in Xs" we just set so the user sees the recovery
+    // plan rather than an opaque "ws error".
+    ws.onerror = () => {};
+  }
+  connect();
 }
 
 // ─── Dashboard tiles ────────────────────────────────────────────────────────
