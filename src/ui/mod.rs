@@ -5,9 +5,10 @@
 //! via rust-embed.
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use axum::{
-    Json, Router,
+    Extension, Json, Router,
     body::Body,
     extract::{
         Path, Query, State,
@@ -18,9 +19,10 @@ use axum::{
     routing::{get, post},
 };
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
+use frequenz_microgrid::{LogicalMeterConfig, Microgrid};
 use rust_embed::Embed;
 use serde::{Deserialize, Serialize};
-use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::{OnceCell, broadcast::error::RecvError};
 
 use crate::{
     lisp::Config,
@@ -40,14 +42,61 @@ use crate::{
 #[folder = "ui-assets/"]
 struct Assets;
 
+/// Shared handle to the loopback Microgrid client. Populated by a
+/// background task `spawn_microgrid_loopback` kicks off; UI endpoints
+/// that depend on aggregated formulas return 503 until the OnceCell
+/// is set. Wrapping in `Arc` lets the background task, the router
+/// extension layer, and (eventually) the WS fan-out share it
+/// without contending.
+pub type SharedMicrogrid = Arc<OnceCell<Microgrid>>;
+
+pub fn new_microgrid_slot() -> SharedMicrogrid {
+    Arc::new(OnceCell::new())
+}
+
+/// Spawn a tokio task that constructs a [`Microgrid`] pointed at
+/// `grpc_url` and stores it in `slot` once the connection succeeds.
+/// `Microgrid::try_new` already retries lazily until the gRPC server
+/// is reachable; this wrapper exists so the UI's `serve` doesn't
+/// block on the gRPC server coming up — UI startup proceeds, and
+/// dashboard endpoints return 503 until the slot fills.
+pub fn spawn_microgrid_loopback(grpc_url: String, slot: SharedMicrogrid) {
+    tokio::spawn(async move {
+        // 1 Hz sample cadence matches the existing history sampler;
+        // dashboard tiles refresh at this rate.
+        let config = LogicalMeterConfig::new(chrono::TimeDelta::seconds(1));
+        match Microgrid::try_new(grpc_url, config).await {
+            Ok(mg) => {
+                if slot.set(mg).is_err() {
+                    log::warn!("microgrid loopback: slot already set, dropping new handle");
+                } else {
+                    log::info!("microgrid loopback: connected + graph built");
+                }
+            }
+            Err(e) => {
+                log::error!("microgrid loopback: try_new failed: {e}");
+            }
+        }
+    });
+}
+
 /// Spawn the UI HTTP server on `addr`. Returns once the listener is
 /// bound and accepting connections; the server itself runs to
 /// completion of the returned future.
 ///
+/// `microgrid` is the loopback client slot — the binary populates it
+/// via [`spawn_microgrid_loopback`] before / alongside the gRPC
+/// server starting. Pass an empty slot if the UI doesn't need
+/// aggregated Dashboard data (tests, etc.).
+///
 /// Localhost-only by default (the caller decides the bind address);
 /// non-loopback is opt-in via the `--ui-bind` CLI flag.
-pub async fn serve(addr: SocketAddr, config: Config) -> Result<(), std::io::Error> {
-    let app = router(config);
+pub async fn serve(
+    addr: SocketAddr,
+    config: Config,
+    microgrid: SharedMicrogrid,
+) -> Result<(), std::io::Error> {
+    let app = router(config, microgrid);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     log::info!("Switchyard UI listening on http://{addr}");
     axum::serve(listener, app).await
@@ -59,11 +108,12 @@ pub async fn serve(addr: SocketAddr, config: Config) -> Result<(), std::io::Erro
 pub async fn serve_with_listener(
     listener: tokio::net::TcpListener,
     config: Config,
+    microgrid: SharedMicrogrid,
 ) -> Result<(), std::io::Error> {
-    axum::serve(listener, router(config)).await
+    axum::serve(listener, router(config, microgrid)).await
 }
 
-fn router(config: Config) -> Router {
+fn router(config: Config, microgrid: SharedMicrogrid) -> Router {
     Router::new()
         .route("/", get(index))
         .route("/assets/{*path}", get(asset))
@@ -83,8 +133,50 @@ fn router(config: Config) -> Router {
         .route("/api/scenario", get(scenario_summary))
         .route("/api/scenario/events", get(scenario_events))
         .route("/api/scenario/report", get(scenario_report))
+        .route("/api/microgrid/status", get(microgrid_status))
         .route("/ws/events", get(events_ws))
+        .layer(Extension(microgrid))
         .with_state(config)
+}
+
+#[derive(Serialize)]
+struct MicrogridStatusResp {
+    /// Loopback handle is up and the component graph built.
+    /// Mirrors `Microgrid::try_new`'s success guarantee — if this
+    /// is true, every `LogicalMeterHandle::xxx<M>()` is reachable.
+    connected: bool,
+    /// Round-trip count from `list_electrical_components` —
+    /// confirms switchyard's gRPC server returned what the
+    /// graph crate accepted.
+    component_count: Option<usize>,
+}
+
+async fn microgrid_status(
+    Extension(microgrid): Extension<SharedMicrogrid>,
+) -> (StatusCode, Json<MicrogridStatusResp>) {
+    if let Some(mg) = microgrid.get() {
+        // `logical_meter().graph()` is the cached snapshot the
+        // crate built at try_new. Component count there is the
+        // post-pass-through view, matching what the formula
+        // generators see.
+        let lm = mg.logical_meter();
+        let count = lm.graph().components().count();
+        (
+            StatusCode::OK,
+            Json(MicrogridStatusResp {
+                connected: true,
+                component_count: Some(count),
+            }),
+        )
+    } else {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(MicrogridStatusResp {
+                connected: false,
+                component_count: None,
+            }),
+        )
+    }
 }
 
 async fn index() -> Response {

@@ -32,9 +32,16 @@ async fn config_with(body: &str) -> Config {
 static UNIQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// One-shot a request and return (status, body). axum's `oneshot`
-/// avoids binding a real port.
+/// avoids binding a real port. Microgrid loopback slot is empty —
+/// the new `/api/microgrid/status` endpoint returns 503 without a
+/// real gRPC server, which is exactly the expected unit-test
+/// behaviour. Tests that want a populated handle would have to
+/// spin up the gRPC server too.
 async fn call(config: Config, req: Request<Body>) -> (StatusCode, Vec<u8>) {
-    let resp = router(config).oneshot(req).await.unwrap();
+    let resp = router(config, new_microgrid_slot())
+        .oneshot(req)
+        .await
+        .unwrap();
     let status = resp.status();
     let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
     (status, bytes.to_vec())
