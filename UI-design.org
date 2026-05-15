@@ -23,18 +23,32 @@ are most likely to be written against:
     over =metric::AcPowerActive= / =SoC= / =Voltage= / etc. Plus
     =BatteryPool= as a first-class aggregation (combined bounds +
     SoC). Quantities (=Power=, =Current=, =Voltage=, =Frequency=)
-    are typed and unit-checked.
+    are typed and unit-checked. The surface is *named*
+    aggregations only — =grid<M>()=, =battery<M>(Option<ids>)=,
+    =pv<M>(Option<ids>)=, =chp/ev_charger<M>(Option<ids>)=,
+    =consumer<M>()=, =producer<M>()=, =component<M>(id)= — plus
+    the public composable =Formula= enum
+    (=Add/Subtract/Coalesce/Min/Max/Avg/…=) for hand-built ASTs.
+    There is no =Formula::from_str= parser; the graph crate's
+    rendered formula strings are inspection output, not evaluator
+    input.
   - frequenz-microgrid-component-graph-rs: graph crate underneath.
     DAG validation against per-category neighbour rules, formula
     string generation (=#1 + COALESCE(#2, #3, 0.0)=), pass-through
     handling for transformers/breakers/converters/HVAC etc.
 
-These crates are what developers consuming the production
-Microgrid API write their apps against. Aligning switchyard's UI
-data shapes with them means a dev debugging "my app reads the
-wrong battery-pool SoC" can compare what switchyard's Dashboard
-shows for the same =battery_formula= to what their client computes,
-side-by-side. That's the convenience target.
+The integration shape: switchyard's UI server runs
+=frequenz-microgrid= as a client pointed at switchyard's own gRPC
+server on localhost — switchyard is both Microgrid server and
+Microgrid client, of itself. Aggregated Dashboard tiles (grid,
+battery pool, PV pool, consumer / producer aggregates) come from
+=LogicalMeterHandle::xxx<Q>().subscribe()= the same way a
+production control app would consume them. Per-component charts
+keep flowing from switchyard's physics history rings via the
+existing =/api/history=. This means the Dashboard's pool numbers
+match what the developer's app sees not because switchyard
+reimplemented the formulas, but because both clients use the same
+library.
 
 * Integration
 
@@ -70,74 +84,125 @@ Acceptance:
 - The graph's =predecessors= / =successors= iterators are used by
   the inspector pane (replacing the current hand-rolled lookup).
 
-** TODO Z2. Adopt component-graph formulas for the Dashboard's
-   aggregated tiles
+** TODO Z2. Drive Dashboard aggregates through frequenz-microgrid's
+   own LogicalMeterHandle
 
-Today the scenario reporter hand-codes "sum across batteries",
-"sum across PV". The graph crate emits formulas:
+Switchyard's UI server becomes a =frequenz-microgrid= client of
+the switchyard gRPC server it's running alongside. The Dashboard
+doesn't evaluate formulas itself — it subscribes to the same
+typed streams a downstream control app would:
 
-  battery_formula  → "#1003 + #1006 + COALESCE(…)"
-  pv_formula       → "#200"
-  grid_formula     → "#2"
-  consumer_formula → …
-  producer_formula → "#200 + #1003 + …"
+  // in the UI server task, once per boot
+  let microgrid = Microgrid::try_new(
+      grpc_addr,
+      LogicalMeterConfig::new(TimeDelta::seconds(1)),
+  ).await?;
+  let grid_power     = microgrid.logical_meter().grid::<AcPowerActive>()?.subscribe().await?;
+  let battery_pool_p = microgrid.battery_pool().active_power().subscribe().await?;
+  let pv_power       = microgrid.logical_meter().pv::<AcPowerActive>()?.subscribe().await?;
+  // …per Dashboard tier
 
-Implement a tiny evaluator (or borrow one — the formulas are
-trivial arithmetic over component-id references) and feed the
-Dashboard's aggregated rows. Same formulas the production
-=Microgrid= client computes against, so the numbers match.
+Each subscription is a typed =Sample<Q>= stream. The UI server
+fans these out over the existing =/ws/events= channel (one frame
+shape per metric, carrying =unit= + =value=). The SPA's tier
+panels bind directly.
+
+Two payoffs over a hand-rolled evaluator:
+
+1. The graph-crate formulas, =BatteryPool= aggregation,
+   =combine_parallel= bounds math, =COALESCE= for missing
+   meters, =prefer_meters_in_component_formulas=, per-formula
+   overrides — switchyard gets all of them for free because
+   =frequenz-microgrid= already does this work.
+2. The Dashboard's numbers are computed by the *same code path*
+   a production app would use. A developer comparing
+   "switchyard says 18.2 kW pool, my app says 17.6 kW" is now
+   doing a stream-shape / config diff against the same client
+   library, not against a switchyard reimplementation that
+   could drift.
+
+The =Option<BTreeSet<u64>>= "ids" parameter on
+=battery/pv/chp/ev_charger= scopes the aggregation to a subset of
+components — useful for "show the south-yard battery pool"
+without writing a custom formula. Truly ad-hoc aggregations
+(e.g. one specific branch) would compose the public =Formula=
+enum by hand; for the Dashboard's planned tiers, named
+aggregations + scope-by-ids covers everything.
+
+Note on layering: switchyard ends up being both Microgrid server
+and Microgrid client (of itself, on localhost). The overhead is
+trivial (loopback gRPC at 1 Hz) and the consistency win is the
+whole point — if =frequenz-microgrid='s stream is broken,
+switchyard's own dashboard surfaces it.
+
+Phased rollout:
+- The existing =/api/history?metric=...&id=...= for per-component
+  charts stays, fed by the physics history rings.
+- The new aggregated tiles (battery pool, PV pool, grid, consumer,
+  producer) all read from =frequenz-microgrid= subscriptions.
 
 Acceptance:
-- Dashboard's "battery pool" row shows the result of the literal
-  =battery_formula= string. The string itself is visible in a
-  tooltip / debug overlay so a developer reading "20 kW" can see
-  it came from =#1003 + COALESCE(#1006, 0)=.
+- Dashboard's pool tiles render numbers that match what =swctl
+  pool battery --stream= prints (both go through
+  =frequenz-microgrid=, so this is a tautology — but it's the
+  invariant we want).
+- Dashboard hover-tooltip on a pool number shows the formula
+  string that produced it (asked of =ComponentGraph= directly;
+  =frequenz-microgrid= exposes the underlying graph).
 
-** TODO Z3. Typed-quantity metric streams on /api/history
+** TODO Z3. Typed-quantity payloads on the WS / history channels
 
-frequenz-microgrid exposes =Sample<Q>= carrying =timestamp() +
-value(): Q= where =Q= is =Power= / =Voltage= / =SoC= / etc. Each
-quantity has explicit unit conversions.
-
-Today switchyard's =/api/history?metric=active_power_w= returns
-raw floats with the unit baked into the name. Restructure:
+=frequenz-microgrid='s subscriptions yield =Sample<Q>= where
+=Q= is =Power= / =ReactivePower= / =Voltage= / =Frequency= /
+=Percentage= / =Energy= / =Current=, each with an explicit
+=base_unit()=. Use that as the wire shape for the new aggregated
+streams (Z2) and retrofit the existing per-component history
+endpoint:
 
   /api/history?metric=active_power
-    → { unit: "W", samples: [{ ts, value }] }
+    → { quantity: "Power", unit: "W", samples: [{ ts, value }] }
 
   /api/history?metric=soc
-    → { unit: "%", samples: [{ ts, value }] }
+    → { quantity: "Percentage", unit: "%", samples: [{ ts, value }] }
 
-  /api/history?metric=frequency
-    → { unit: "Hz", samples: [{ ts, value }] }
+The WS aggregated-stream frames carry the same =quantity= +
+=unit= fields. UI's chart auto-scale (W → kW → MW) already
+exists; this just removes the JS-side metric-name parsing.
 
-UI renders the unit from the response, applies the same auto-
-scale (W → kW → MW) it already does for power. Lets the chart
-title carry the correct unit without the JS guessing from the
-metric name.
+Acceptance:
+- Chart axis label updates when toggling between =active_power=
+  and =reactive_power= because the response =unit= differs.
+- Two metric streams of the same quantity (e.g. battery-pool P
+  and grid P) auto-scale together within a tier so the rows
+  share a visual baseline.
 
-Acceptance: chart axis label updates when the toggle between
-=active_power= and =reactive_power= flips the unit.
+** TODO Z4. BatteryPool / PvPool as first-class Dashboard rows
 
-** TODO Z4. BatteryPool / PvPool / ConsumerPool as first-class
-   Dashboard rows
-
-frequenz-microgrid surfaces =BatteryPool= with =Bounds<Power>= and
-=Percentage= SoC aggregates. The Dashboard's tier-2 (batteries)
-gains a "pool" row at the top, computed via the graph crate's
-=battery_formula= for instantaneous power and =Bounds::combine_
-parallel= over each battery's current bounds for the envelope.
-Same shape for tier-3 (PV) and a new tier-4 (consumers).
+=Microgrid::battery_pool()= returns a =BatteryPool= with
+aggregated active-power, =Bounds<Power>=, and =SoC= subscriptions
+ready to go. The Dashboard's tier-2 (batteries) gains a "pool"
+row at the top fed by those subscriptions; tier-3 (PV) gets the
+PV equivalent; tier-4 leans on the graph crate's
+=consumer_formula= and =producer_formula= via the logical-meter
+handle.
 
 This is the row a control-app developer cares about most — their
 SetPower call targets the pool, not an individual battery, and
 they want to see the aggregated answer.
 
+The =combine_parallel= bounds math, =COALESCE= over missing
+component samples, and =prefer_meters_in_component_formulas=
+selection all live inside =frequenz-microgrid= — switchyard just
+subscribes.
+
 Acceptance:
 - Sum-of-individuals = pool row, within tick-tolerance.
-- Pool bounds = =combine_parallel= over the per-battery bounds.
 - A fault that errors one battery shows the pool's bounds
-  shrinking by that battery's contribution.
+  shrinking by that battery's contribution (the pool's
+  =Bounds<Power>= stream emits the new envelope automatically).
+- The Dashboard renders the pool row even before all individual
+  batteries have reported their first sample, because the pool
+  stream =COALESCE='s missing values.
 
 ** TODO Z5. Import topology from frequenz-microgrid's
    ComponentGraphConfig format
@@ -177,6 +242,27 @@ per =allow_*=-downgraded validation failure. Capture these
 
 Acceptance: a config that registers an unknown pass-through
 category shows the pill within one reload cycle.
+
+** TODO Z7. Open question — ad-hoc / custom aggregations
+
+=LogicalMeterHandle='s surface is named aggregations only.
+Scope-by-ids on =battery/pv/chp/ev_charger= covers "pool over a
+subset"; everything else (arbitrary branch sum, "every component
+under this meter", custom mix) needs either:
+
+a. Hand-built =Formula= AST via the public enum's variants
+   (=Add/Subtract/Coalesce/…=). Doable; not ergonomic.
+b. A switchyard-side helper that walks the graph crate's
+   =predecessors=/=successors= and emits a =Formula= AST for a
+   subtree. Would live in switchyard, not upstream.
+c. Skip aggregation: surface the participating components as a
+   row group on the Dashboard, let the user eyeball the sum.
+
+Worth flagging because the topology canvas's "select N components"
+gesture is a natural launching point — "sum these into a custom
+tile" would feel like a feature, but the path through
+=frequenz-microgrid= isn't paved yet. Defer until a concrete use
+case lands.
 
 * Layout
 
@@ -514,7 +600,11 @@ whether the underlying value is Power, Current, or Percentage.
 ** TODO F4. Formula-debug overlay
 
 Hover any aggregated number on the Dashboard → tooltip shows
-the formula string emitted by the graph crate (Z2). Click → a
+the formula string the graph crate would render for that
+metric, fetched via =LogicalMeterHandle::graph()= →
+=graph.battery_formula(ids)= (or peer). The string is
+inspection-only — it does not feed any evaluator; the number
+itself comes from the corresponding subscription. Click → a
 side-panel mode lists the formula tree with each =#N= node
 linked to the topology canvas. Lets a developer trace "why
 does =consumer_formula= equal 23 kW when I expect 25?" to the
