@@ -277,6 +277,7 @@ fn router(config: Config, microgrid: SharedMicrogrid) -> Router {
         .route("/api/clock", get(clock_info))
         .route("/api/microgrid/status", get(microgrid_status))
         .route("/api/microgrid/latest", get(microgrid_latest))
+        .route("/api/microgrid/formulas", get(microgrid_formulas))
         .route("/ws/events", get(events_ws))
         .layer(Extension(microgrid))
         .with_state(config)
@@ -346,6 +347,42 @@ async fn microgrid_latest(
     Extension(state): Extension<SharedMicrogrid>,
 ) -> Json<HashMap<&'static str, MicrogridSampleSnapshot>> {
     Json(state.latest.read().clone())
+}
+
+/// Rendered formula strings (e.g. `"#1 + COALESCE(#2, #3, 0.0)"`)
+/// per stream, lifted from the graph crate's per-category formula
+/// generators. Inspection-only — these are what the dashboard
+/// tooltip surfaces so a developer reading "−25 kW" can see which
+/// component ids participate and how. Absent categories don't
+/// appear in the response.
+///
+/// 503 when the loopback Microgrid handle hasn't built its
+/// ComponentGraph yet — same lifecycle as `/api/microgrid/status`.
+async fn microgrid_formulas(
+    Extension(state): Extension<SharedMicrogrid>,
+) -> (StatusCode, Json<HashMap<&'static str, String>>) {
+    let Some(mg) = state.microgrid.get() else {
+        return (StatusCode::SERVICE_UNAVAILABLE, Json(HashMap::new()));
+    };
+    let lm = mg.logical_meter();
+    let graph = lm.graph();
+    let mut out: HashMap<&'static str, String> = HashMap::new();
+    if let Ok(f) = graph.grid_formula() {
+        out.insert("grid_power", format!("{f}"));
+    }
+    if let Ok(f) = graph.battery_formula(None) {
+        out.insert("battery_pool_power", format!("{f}"));
+    }
+    if let Ok(f) = graph.pv_formula(None) {
+        out.insert("pv_power", format!("{f}"));
+    }
+    if let Ok(f) = graph.consumer_formula() {
+        out.insert("consumer_power", format!("{f}"));
+    }
+    if let Ok(f) = graph.producer_formula() {
+        out.insert("producer_power", format!("{f}"));
+    }
+    (StatusCode::OK, Json(out))
 }
 
 async fn index() -> Response {
