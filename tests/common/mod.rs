@@ -86,7 +86,11 @@ impl TestServer {
         // task below comes up. Integration tests for the
         // /api/microgrid/* endpoints exercise this whole loop.
         let microgrid = ui::new_microgrid_slot();
-        ui::spawn_microgrid_loopback(format!("http://{grpc_addr}"), microgrid.clone());
+        ui::spawn_microgrid_loopback(
+            format!("http://{grpc_addr}"),
+            microgrid.clone(),
+            config.world(),
+        );
         handles.push(tokio::spawn(async move {
             let _ = ui::serve_with_listener(ui_listener, ui_config, microgrid).await;
         }));
