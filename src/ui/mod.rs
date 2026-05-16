@@ -606,6 +606,12 @@ fn router(
         .route("/api/scenarios/{name}/jump/{idx}", post(scenarios_jump))
         .route("/api/microgrids", get(microgrids_list))
         .route("/api/microgrids/create", post(microgrids_create))
+        .route("/api/mg/{mg_id}/topology", get(topology_for_mg))
+        .route("/api/mg/{mg_id}/eval", post(eval_for_mg))
+        .route("/api/mg/{mg_id}/history", get(history_for_mg))
+        .route("/api/mg/{mg_id}/microgrid/status", get(microgrid_status_for_mg))
+        .route("/api/mg/{mg_id}/microgrid/latest", get(microgrid_latest_for_mg))
+        .route("/api/mg/{mg_id}/microgrid/formulas", get(microgrid_formulas_for_mg))
         .route("/ws/events", get(events_ws))
         .layer(Extension(microgrid))
         .layer(Extension(loopbacks))
@@ -629,6 +635,38 @@ async fn microgrids_list(
     State(config): State<Config>,
 ) -> Json<Vec<crate::sim::microgrids::MicrogridView>> {
     Json(crate::sim::microgrids::snapshot(&config.microgrids()))
+}
+
+/// Look up the site for `mg_id` in the registry. Per-microgrid
+/// handlers call this at the start; a miss returns 404 verbatim
+/// so the SPA can highlight a stale microgrid card and reload
+/// without retrying every per-mg fetch on the page.
+fn resolve_site(
+    config: &Config,
+    mg_id: u64,
+) -> Result<crate::sim::MicrogridSite, (StatusCode, String)> {
+    config
+        .microgrids()
+        .lock()
+        .get(&mg_id)
+        .map(|e| e.site.clone())
+        .ok_or((
+            StatusCode::NOT_FOUND,
+            format!("microgrid {mg_id} not registered"),
+        ))
+}
+
+/// Mirror of [`resolve_site`] for the loopback Microgrid client
+/// slot a microgrid owns. Used by the per-mg
+/// `/microgrid/{status,latest,formulas}` endpoints.
+fn resolve_loopback(
+    loopbacks: &MicrogridLoopbacks,
+    mg_id: u64,
+) -> Result<SharedMicrogrid, (StatusCode, String)> {
+    loopbacks.read().get(&mg_id).cloned().ok_or((
+        StatusCode::NOT_FOUND,
+        format!("microgrid {mg_id} not registered"),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -858,23 +896,33 @@ async fn snapshots_load(
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
-async fn microgrid_status(
-    Extension(state): Extension<SharedMicrogrid>,
-) -> (StatusCode, Json<MicrogridStatusResp>) {
-    // Clone the logical-meter handle under a brief read lock so
-    // the supervisor task can grab the write lock for a rebuild
-    // mid-request without contending. LogicalMeterHandle is Arc-
-    // backed so this is cheap.
-    let lm = state
-        .microgrid
-        .read()
-        .as_ref()
-        .map(|mg| mg.logical_meter());
+async fn microgrid_status_for_mg(
+    Extension(loopbacks): Extension<MicrogridLoopbacks>,
+    Path(mg_id): Path<u64>,
+) -> Result<(StatusCode, Json<MicrogridStatusResp>), (StatusCode, String)> {
+    let slot = resolve_loopback(&loopbacks, mg_id)?;
+    Ok(microgrid_status_body(&slot))
+}
+
+async fn microgrid_latest_for_mg(
+    Extension(loopbacks): Extension<MicrogridLoopbacks>,
+    Path(mg_id): Path<u64>,
+) -> Result<Json<HashMap<&'static str, MicrogridSampleSnapshot>>, (StatusCode, String)> {
+    let slot = resolve_loopback(&loopbacks, mg_id)?;
+    Ok(Json(slot.latest.read().clone()))
+}
+
+async fn microgrid_formulas_for_mg(
+    Extension(loopbacks): Extension<MicrogridLoopbacks>,
+    Path(mg_id): Path<u64>,
+) -> Result<(StatusCode, Json<HashMap<&'static str, String>>), (StatusCode, String)> {
+    let slot = resolve_loopback(&loopbacks, mg_id)?;
+    Ok(microgrid_formulas_body(&slot))
+}
+
+fn microgrid_status_body(state: &SharedMicrogrid) -> (StatusCode, Json<MicrogridStatusResp>) {
+    let lm = state.microgrid.read().as_ref().map(|mg| mg.logical_meter());
     if let Some(lm) = lm {
-        // `logical_meter().graph()` is the cached snapshot the
-        // crate built at try_new. Component count there is the
-        // post-pass-through view, matching what the formula
-        // generators see.
         let count = lm.graph().components().count();
         (
             StatusCode::OK,
@@ -892,6 +940,12 @@ async fn microgrid_status(
             }),
         )
     }
+}
+
+async fn microgrid_status(
+    Extension(state): Extension<SharedMicrogrid>,
+) -> (StatusCode, Json<MicrogridStatusResp>) {
+    microgrid_status_body(&state)
 }
 
 #[derive(Serialize)]
@@ -931,6 +985,12 @@ async fn microgrid_latest(
 /// ComponentGraph yet — same lifecycle as `/api/microgrid/status`.
 async fn microgrid_formulas(
     Extension(state): Extension<SharedMicrogrid>,
+) -> (StatusCode, Json<HashMap<&'static str, String>>) {
+    microgrid_formulas_body(&state)
+}
+
+fn microgrid_formulas_body(
+    state: &SharedMicrogrid,
 ) -> (StatusCode, Json<HashMap<&'static str, String>>) {
     let lm = match state.microgrid.read().as_ref() {
         Some(mg) => mg.logical_meter(),
@@ -1035,7 +1095,18 @@ struct ComponentSummary {
 }
 
 async fn topology(State(config): State<Config>) -> Json<TopologySnapshot> {
-    let world = config.site();
+    Json(topology_snapshot(&config, &config.site()))
+}
+
+async fn topology_for_mg(
+    State(config): State<Config>,
+    Path(mg_id): Path<u64>,
+) -> Result<Json<TopologySnapshot>, (StatusCode, String)> {
+    let site = resolve_site(&config, mg_id)?;
+    Ok(Json(topology_snapshot(&config, &site)))
+}
+
+fn topology_snapshot(config: &Config, world: &crate::sim::MicrogridSite) -> TopologySnapshot {
     let components = world
         .components()
         .iter()
@@ -1043,8 +1114,6 @@ async fn topology(State(config): State<Config>) -> Json<TopologySnapshot> {
             let runtime = world.runtime_of(c.id());
             ComponentSummary {
                 id: c.id(),
-                // Display-name override (set by world-rename-component)
-                // wins over the component's intrinsic name.
                 name: world
                     .display_name(c.id())
                     .unwrap_or_else(|| c.name().to_string()),
@@ -1057,13 +1126,13 @@ async fn topology(State(config): State<Config>) -> Json<TopologySnapshot> {
             }
         })
         .collect();
-    Json(TopologySnapshot {
+    TopologySnapshot {
         components,
         connections: world.connections(),
         hidden_connections: world.hidden_connections(),
         graph_status: config.graph_status(),
         main_meter_id: world.main_meter_id(),
-    })
+    }
 }
 
 #[derive(Serialize)]
@@ -1085,14 +1154,38 @@ struct EvalResponse {
 /// the JSON body. Reserves HTTP 4xx/5xx for transport-level problems
 /// (bad UTF-8, the spawn_blocking task panicking, etc.).
 async fn eval(State(config): State<Config>, body: String) -> impl IntoResponse {
-    let result = tokio::task::spawn_blocking(move || config.eval(&body))
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("eval task panicked: {e}"),
-            )
-        });
+    eval_response(tokio::task::spawn_blocking(move || config.eval(&body)).await)
+}
+
+async fn eval_for_mg(
+    State(config): State<Config>,
+    Path(mg_id): Path<u64>,
+    body: String,
+) -> impl IntoResponse {
+    if !config.microgrids().lock().contains_key(&mg_id) {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(EvalResponse {
+                ok: false,
+                value: None,
+                error: Some(format!("microgrid {mg_id} not registered")),
+            }),
+        );
+    }
+    let result = tokio::task::spawn_blocking(move || {
+        crate::sim::microgrids::with_microgrid(
+            &config.current_microgrid_handle(),
+            mg_id,
+            || config.eval(&body),
+        )
+    })
+    .await;
+    eval_response(result)
+}
+
+fn eval_response(
+    result: Result<Result<String, String>, tokio::task::JoinError>,
+) -> (StatusCode, Json<EvalResponse>) {
     match result {
         Ok(Ok(value)) => (
             StatusCode::OK,
@@ -1110,12 +1203,12 @@ async fn eval(State(config): State<Config>, body: String) -> impl IntoResponse {
                 error: Some(error),
             }),
         ),
-        Err((status, msg)) => (
-            status,
+        Err(join_err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
             Json(EvalResponse {
                 ok: false,
                 value: None,
-                error: Some(msg),
+                error: Some(format!("eval task panicked: {join_err}")),
             }),
         ),
     }
@@ -1176,6 +1269,22 @@ async fn history(
     State(config): State<Config>,
     Query(q): Query<HistoryQuery>,
 ) -> Result<Json<HistoryResponse>, (StatusCode, String)> {
+    history_body(&config.site(), q)
+}
+
+async fn history_for_mg(
+    State(config): State<Config>,
+    Path(mg_id): Path<u64>,
+    Query(q): Query<HistoryQuery>,
+) -> Result<Json<HistoryResponse>, (StatusCode, String)> {
+    let site = resolve_site(&config, mg_id)?;
+    history_body(&site, q)
+}
+
+fn history_body(
+    site: &crate::sim::MicrogridSite,
+    q: HistoryQuery,
+) -> Result<Json<HistoryResponse>, (StatusCode, String)> {
     let metric: Metric = q.metric.parse().map_err(|_| {
         (
             StatusCode::BAD_REQUEST,
@@ -1184,15 +1293,12 @@ async fn history(
     })?;
     let window = ChronoDuration::seconds(q.window_s.unwrap_or(600));
     let since: DateTime<Utc> = Utc::now() - window;
-
-    let samples = config
-        .site()
+    let samples = site
         .history_window(q.id, metric, since)
         .unwrap_or_default()
         .into_iter()
         .map(|s| (s.ts.timestamp_millis(), s.value))
         .collect();
-
     Ok(Json(HistoryResponse {
         id: q.id,
         metric: q.metric,

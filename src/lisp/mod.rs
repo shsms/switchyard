@@ -297,6 +297,14 @@ impl Config {
         self.enterprise_id_allocator.clone()
     }
 
+    /// Mutable handle on the active microgrid id. Per-microgrid
+    /// HTTP routes (`/api/mg/{id}/eval` and friends) flip this via
+    /// `with_microgrid` so the lisp defuns + the override-file
+    /// path resolve to the URL's microgrid.
+    pub fn current_microgrid_handle(&self) -> crate::sim::microgrids::CurrentMicrogrid {
+        self.current_microgrid.clone()
+    }
+
     /// Configured display-zone clock handle. The scenarios HTTP
     /// layer calls this to derive `local_hour(now)` so `start` /
     /// `auto_advance` agree on which stage wallclock-NOW maps to.
@@ -580,10 +588,17 @@ impl Config {
             .filter(|p| !p.as_os_str().is_empty())
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| PathBuf::from("."));
-        load_dir.join(format!(
-            "config.ui-overrides.{}.lisp",
-            self.metadata.read().microgrid_id
-        ))
+        // Per-microgrid overrides: prefer the active microgrid id
+        // (set by /api/mg/{id}/eval and the scenarios per-mg
+        // replay). Fall back to the legacy `set-microgrid-id`
+        // metadata field so single-microgrid configs keep landing
+        // in the same `config.ui-overrides.<id>.lisp` they did
+        // pre-rebase.
+        let mg_id = self
+            .current_microgrid
+            .read()
+            .unwrap_or_else(|| self.metadata.read().microgrid_id);
+        load_dir.join(format!("config.ui-overrides.{mg_id}.lisp"))
     }
 
     /// Directory snapshots are stored in: a `snapshots/` subdirectory
