@@ -55,7 +55,7 @@ async fn eval_endpoint_round_trips_world_state() {
 
     let resp = client
         .post(format!("{}/api/eval", s.ui_url))
-        .body("(world-rename-component 2 \"main\")")
+        .body("(rename-component 2 \"main\")")
         .send()
         .await
         .unwrap();
@@ -119,8 +119,8 @@ async fn overrides_endpoint_lists_each_successful_eval() {
     let client = reqwest::Client::new();
 
     for body in [
-        "(world-rename-component 2 \"a\")",
-        "(world-rename-component 2 \"b\")",
+        "(rename-component 2 \"a\")",
+        "(rename-component 2 \"b\")",
     ] {
         client
             .post(format!("{}/api/eval", s.ui_url))

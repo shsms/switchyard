@@ -101,7 +101,7 @@ struct MicrogridSiteInner {
     /// command mode). Defaulted on register, mutated via the
     /// `set-component-*` Lisp defuns or directly from server.rs.
     runtime: RwLock<HashMap<u64, ComponentRuntime>>,
-    /// User-facing name overrides set via `(world-rename-component …)`.
+    /// User-facing name overrides set via `(rename-component …)`.
     /// Reads go through `display_name`; the component's intrinsic
     /// `SimulatedComponent::name()` stays as the auto-derived default.
     name_overrides: RwLock<HashMap<u64, String>>,
@@ -665,7 +665,7 @@ impl MicrogridSite {
     /// paths (meter / inverter / `aggregate_child_bounds`) that need
     /// to walk the *physical* graph; the visible-only filter in
     /// [`Self::connections`] is for the user-facing surface.
-    /// `world-connect` and `world-disconnect` flow through the same
+    /// `connect` and `disconnect` flow through the same
     /// underlying vec, so anything wired up post-make from the UI /
     /// REPL automatically lands here.
     pub fn children_of(&self, parent: u64) -> Vec<u64> {
@@ -786,7 +786,7 @@ impl MicrogridSite {
     /// true if at least one edge was removed. Doesn't touch either
     /// endpoint's registration.
     ///
-    /// Duplicates collapse — if `(world-connect …)` was called
+    /// Duplicates collapse — if `(connect …)` was called
     /// twice with the same pair, one disconnect removes both. The
     /// connections graph carries no positional identity, so there's
     /// no "remove only the first instance" semantics.

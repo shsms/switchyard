@@ -29,12 +29,12 @@
 
 (defun reset-state ()
   "Cancel every timer registered via `every` / `run-with-timer-tracked`,
-then wipe the World registry. Call this at the top of your config so a
-hot-reload starts from a clean slate."
+then wipe the active microgrid's components. Call this at the top of
+your config so a hot-reload starts from a clean slate."
   (dolist (tm active-timers)
     (cancel-timer tm))
   (setq active-timers nil)
-  (world-reset))
+  (reset-microgrid))
 
 ;; -----------------------------------------------------------------------------
 ;; Periodic helper

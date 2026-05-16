@@ -1376,33 +1376,68 @@ fn register_setpoints(ctx: &mut TulispContext, router: SharedSiteRouter, metadat
 /// Mutation defuns the UI editor (and power-user REPL) call to
 /// reshape the running MicrogridSite — remove a component, drop an edge,
 /// rename for display.
+///
+/// Component arguments accept either a raw integer id or a
+/// `ComponentHandle` (as returned by `make-*` calls), so paste
+/// templates can pass bindings directly without an outer
+/// `(component-id …)` wrapper.
 fn register_world_ops(ctx: &mut TulispContext, router: SharedSiteRouter) {
     let r = router.clone();
-    ctx.defun("world-connect", move |parent: i64, child: i64| -> bool {
-            let w = r.site();
-        // MicrogridSite::connect doesn't return a status; we always ack.
-        w.connect(parent as u64, child as u64);
-        true
-    });
-    let r = router.clone();
-    ctx.defun("world-remove-component", move |id: i64| -> bool {
-            let w = r.site();
-        w.remove_component(id as u64)
-    });
-    let r = router.clone();
-    ctx.defun("world-disconnect", move |parent: i64, child: i64| -> bool {
-            let w = r.site();
-        w.disconnect(parent as u64, child as u64)
-    });
-    let r = router;
     ctx.defun(
-        "world-rename-component",
-        move |id: i64, name: String| -> bool {
+        "connect",
+        move |parent: TulispObject, child: TulispObject| -> Result<bool, Error> {
+            let parent = arg_to_component_id(&parent)?;
+            let child = arg_to_component_id(&child)?;
             let w = r.site();
-            w.rename(id as u64, name);
-            true
+            // MicrogridSite::connect doesn't return a status; we always ack.
+            w.connect(parent, child);
+            Ok(true)
         },
     );
+    let r = router.clone();
+    ctx.defun(
+        "remove-component",
+        move |id: TulispObject| -> Result<bool, Error> {
+            let id = arg_to_component_id(&id)?;
+            Ok(r.site().remove_component(id))
+        },
+    );
+    let r = router.clone();
+    ctx.defun(
+        "disconnect",
+        move |parent: TulispObject, child: TulispObject| -> Result<bool, Error> {
+            let parent = arg_to_component_id(&parent)?;
+            let child = arg_to_component_id(&child)?;
+            Ok(r.site().disconnect(parent, child))
+        },
+    );
+    let r = router;
+    ctx.defun(
+        "rename-component",
+        move |id: TulispObject, name: String| -> Result<bool, Error> {
+            let id = arg_to_component_id(&id)?;
+            r.site().rename(id, name);
+            Ok(true)
+        },
+    );
+}
+
+/// Resolve a `connect` / `disconnect` / `remove-component` /
+/// `rename-component` argument to a component id. Accepts a raw
+/// integer (for REPL convenience) or a `ComponentHandle` (so pasted
+/// `(let* ((m1 (make-…))) (connect m1 m2))` bodies don't need to
+/// wrap each binding in `(component-id …)`).
+fn arg_to_component_id(v: &TulispObject) -> Result<u64, Error> {
+    use crate::sim::ComponentHandle;
+    if let Ok(h) = ComponentHandle::try_from(v) {
+        return Ok(h.id());
+    }
+    if let Ok(n) = v.as_int() {
+        return Ok(n as u64);
+    }
+    Err(Error::type_mismatch(format!(
+        "expected component id (integer) or handle, got {v}"
+    )))
 }
 
 /// Filesystem helpers the override-file loader needs.
@@ -1719,11 +1754,11 @@ fn add_log_functions(ctx: &mut TulispContext) {
 }
 
 fn register_reset(ctx: &mut TulispContext, router: SharedSiteRouter) {
-    // Rust-side: clear the MicrogridSite registry. The Lisp-side `reset-state`
-    // (in sim/common.lisp) wraps this and also cancels any
-    // outstanding tulisp-async timers so the next config load doesn't
-    // double-fire `every` callbacks.
-    ctx.defun("world-reset", move || -> Result<bool, Error> {
+    // Rust-side: clear the active MicrogridSite's components. The
+    // Lisp-side `reset-state` (in sim/common.lisp) wraps this and
+    // also cancels any outstanding tulisp-async timers so the next
+    // config load doesn't double-fire `every` callbacks.
+    ctx.defun("reset-microgrid", move || -> Result<bool, Error> {
         router.site().reset();
         Ok(true)
     });
@@ -1930,12 +1965,12 @@ mod tests {
     #[test]
     fn eval_appends_each_successful_form_to_override_file() {
         let (cfg, dir) = config_with("(set-microgrid-id 9) (%make-grid-connection-point :id 1)");
-        cfg.eval("(world-rename-component 1 \"a\")").unwrap();
-        cfg.eval("(world-rename-component 1 \"b\")").unwrap();
+        cfg.eval("(rename-component 1 \"a\")").unwrap();
+        cfg.eval("(rename-component 1 \"b\")").unwrap();
         let path = dir.join("microgrids/config.9.overrides.lisp");
         let body = std::fs::read_to_string(&path).unwrap();
-        assert!(body.contains("(world-rename-component 1 \"a\")"));
-        assert!(body.contains("(world-rename-component 1 \"b\")"));
+        assert!(body.contains("(rename-component 1 \"a\")"));
+        assert!(body.contains("(rename-component 1 \"b\")"));
         // Errored eval doesn't land in the file.
         assert!(cfg.eval("(undefined-fn 1)").is_err());
         let body = std::fs::read_to_string(&path).unwrap();

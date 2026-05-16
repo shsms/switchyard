@@ -402,7 +402,7 @@ const topology = (() => {
       // Ctrl/Cmd toggles vis-network's addEdge mode. Hold Ctrl
       // (Cmd on Mac), drag from one node to another to wire them.
       // The addEdge callback (defined in visOptions) POSTs
-      // world-connect and the WS topology refresh redraws.
+      // connect and the WS topology refresh redraws.
       document.addEventListener("keydown", (e) => {
         if ((e.key === "Control" || e.key === "Meta") && network) {
           network.addEdgeMode();
@@ -709,7 +709,7 @@ const visOptions = {
       }
       fetch(mgPath("eval"), {
         method: "POST",
-        body: `(world-connect ${data.from} ${data.to})`,
+        body: `(connect ${data.from} ${data.to})`,
       })
         .then((r) => r.json())
         .then((res) => {
@@ -819,7 +819,7 @@ function renderInspect(d, parentIds, childIds) {
   document.getElementById("rename").addEventListener("change", (e) => {
     const name = e.target.value.trim();
     if (!name) return;
-    evalQuoted(`(world-rename-component ${d.id} "${jsToLispString(name)}")`);
+    evalQuoted(`(rename-component ${d.id} "${jsToLispString(name)}")`);
   });
   for (const [key, defun] of [
     ["health", "set-component-health"],
@@ -847,12 +847,12 @@ function renderInspect(d, parentIds, childIds) {
   }
   for (const btn of inspectEl.querySelectorAll("[data-disconnect-from]")) {
     btn.addEventListener("click", () =>
-      evalQuoted(`(world-disconnect ${btn.dataset.disconnectFrom} ${d.id})`),
+      evalQuoted(`(disconnect ${btn.dataset.disconnectFrom} ${d.id})`),
     );
   }
   for (const btn of inspectEl.querySelectorAll("[data-disconnect-to]")) {
     btn.addEventListener("click", () =>
-      evalQuoted(`(world-disconnect ${d.id} ${btn.dataset.disconnectTo})`),
+      evalQuoted(`(disconnect ${d.id} ${btn.dataset.disconnectTo})`),
     );
   }
 }
@@ -1115,7 +1115,7 @@ async function pasteClipboard() {
     })
     .join(" ");
   const reconnects = snap.edges
-    .map(([from, to]) => `(world-connect (component-id m${from}) (component-id m${to}))`)
+    .map(([from, to]) => `(connect m${from} m${to})`)
     .join(" ");
   const src = reconnects
     ? `(let* (${bindings}) ${reconnects})`
@@ -1131,7 +1131,7 @@ async function deleteSelection() {
     notify("Nothing selected to delete.");
     return;
   }
-  const removes = ids.map((id) => `(world-remove-component ${id})`).join(" ");
+  const removes = ids.map((id) => `(remove-component ${id})`).join(" ");
   const src = `(progn ${removes})`;
   const res = await fetch(mgPath("eval"), { method: "POST", body: src });
   const data = await res.json();
@@ -1691,12 +1691,12 @@ async function backfillLogs() {
 // switchyard exposes by hand. Drop-in replacement: hit /api/symbols
 // (TBD) and merge the response into this array.
 const COMPLETIONS = [
-  // World mutations
-  "world-connect",
-  "world-disconnect",
-  "world-remove-component",
-  "world-rename-component",
-  "world-reset",
+  // Microgrid topology mutations
+  "connect",
+  "disconnect",
+  "remove-component",
+  "rename-component",
+  "reset-microgrid",
   // Make-* primitives
   "%make-grid-connection-point",
   "%make-meter",

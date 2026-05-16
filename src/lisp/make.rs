@@ -626,7 +626,7 @@ mod tests {
     }
 
     /// `:name "..."` on any %make-* lands as a display-name override
-    /// — same path as `(world-rename-component …)` — so the gRPC
+    /// — same path as `(rename-component …)` — so the gRPC
     /// listing and the UI's topology endpoint both pick it up.
     /// Omitting `:name` falls through to the component's
     /// auto-generated default (`category-id`).

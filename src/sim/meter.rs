@@ -292,7 +292,7 @@ mod tests {
         assert!((m_top.aggregate_power_w(&w) - 10_000.0).abs() < 1e-3);
     }
 
-    /// `(world-disconnect …)` must take aggregation effect even for
+    /// `(disconnect …)` must take aggregation effect even for
     /// children that were wired at make-time. Pre-fix the meter
     /// cached its full successor list and ignored disconnects.
     #[test]
@@ -316,7 +316,7 @@ mod tests {
         assert_eq!(m.aggregate_power_w(&w), 0.0);
     }
 
-    /// Children connected via post-make `(world-connect …)` (eg.
+    /// Children connected via post-make `(connect …)` (eg.
     /// the UI's copy / paste flow) must aggregate too — the meter's
     /// internal successor list isn't the only source of truth.
     #[test]

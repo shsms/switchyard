@@ -252,7 +252,7 @@ async fn overrides_endpoint_lists_appended_evals() {
     // Two successful evals + one error. Errors don't append.
     call(
         cfg.clone(),
-        post("/api/eval", "(world-rename-component 1 \"a\")"),
+        post("/api/eval", "(rename-component 1 \"a\")"),
     )
     .await;
     call(cfg.clone(), post("/api/eval", "(undefined-fn 1)")).await;
@@ -297,12 +297,12 @@ async fn persisted_remove_drops_form_immediately() {
     let cfg = config_with(&body).await;
     call(
         cfg.clone(),
-        post("/api/eval", "(world-rename-component 1 \"a\")"),
+        post("/api/eval", "(rename-component 1 \"a\")"),
     )
     .await;
     call(
         cfg.clone(),
-        post("/api/eval", "(world-rename-component 1 \"b\")"),
+        post("/api/eval", "(rename-component 1 \"b\")"),
     )
     .await;
 
@@ -350,17 +350,17 @@ async fn persisted_bulk_remove_drops_indices_in_one_reload() {
     let cfg = config_with(&body).await;
     call(
         cfg.clone(),
-        post("/api/eval", "(world-rename-component 1 \"a\")"),
+        post("/api/eval", "(rename-component 1 \"a\")"),
     )
     .await;
     call(
         cfg.clone(),
-        post("/api/eval", "(world-rename-component 1 \"b\")"),
+        post("/api/eval", "(rename-component 1 \"b\")"),
     )
     .await;
     call(
         cfg.clone(),
-        post("/api/eval", "(world-rename-component 1 \"c\")"),
+        post("/api/eval", "(rename-component 1 \"c\")"),
     )
     .await;
 
