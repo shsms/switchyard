@@ -157,6 +157,12 @@ enum Cmd {
         cmd: PoolCmd,
     },
 
+    /// List + control registered multi-stage scenarios (`define-
+    /// scenario` from config.lisp). The journal-only verbs are
+    /// under the singular `scenario` subcommand.
+    #[command(subcommand)]
+    Scenarios(ScenariosCmd),
+
     /// Terminal-resident pulse bar — one line per second showing
     /// component health, the grid / PV / battery readouts, and the
     /// loopback Microgrid status. Useful in a tmux pane next to
@@ -170,6 +176,26 @@ enum Cmd {
         #[arg(long, default_value_t = 1.0)]
         interval: f64,
     },
+}
+
+#[derive(Subcommand, Debug)]
+enum ScenariosCmd {
+    /// List every registered scenario with its current runtime
+    /// state (running / stopped, current stage, manual-override
+    /// flag).
+    List,
+    /// Start NAME at the wallclock-current stage. Runs that
+    /// stage's :on lambda immediately.
+    Start { name: String },
+    /// Stop NAME. World state (component setpoints, installed
+    /// timers) is NOT rolled back automatically.
+    Stop { name: String },
+    /// Advance NAME by one stage. Pins manual_override = true.
+    Next { name: String },
+    /// Step NAME back one stage. Pins manual_override = true.
+    Prev { name: String },
+    /// Jump NAME to stage IDX (0-indexed).
+    Jump { name: String, idx: usize },
 }
 
 #[derive(Subcommand, Debug)]
@@ -300,6 +326,9 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     if let Cmd::Pool { cmd } = cli.cmd {
         return run_pool(cmd, &cli.ui_addr, cli.json).await;
     }
+    if let Cmd::Scenarios(s) = cli.cmd {
+        return run_scenarios(s, &cli.ui_addr, cli.json).await;
+    }
     let mut client = MicrogridClient::connect(cli.addr.clone()).await?;
     match cli.cmd {
         Cmd::Info => cmd_info(&mut client, cli.json).await,
@@ -323,12 +352,112 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             upper,
             lifetime,
         } => cmd_augment(&mut client, id, lower, upper, lifetime).await,
-        // Scenario, Snapshot, Dashboard, Pool handled before the
-        // gRPC connect above.
+        // Scenario, Scenarios, Snapshot, Dashboard, Pool handled
+        // before the gRPC connect above.
         Cmd::Scenario(_)
+        | Cmd::Scenarios(_)
         | Cmd::Snapshot(_)
         | Cmd::Dashboard { .. }
         | Cmd::Pool { .. } => unreachable!(),
+    }
+}
+
+async fn run_scenarios(
+    cmd: ScenariosCmd,
+    ui_addr: &str,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let http = reqwest::Client::new();
+    match cmd {
+        ScenariosCmd::List => {
+            let resp: serde_json::Value = http
+                .get(format!("{ui_addr}/api/scenarios"))
+                .send()
+                .await?
+                .error_for_status()?
+                .json()
+                .await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&resp)?);
+                return Ok(());
+            }
+            print_scenarios(&resp);
+        }
+        ScenariosCmd::Start { name } => post_scenario_action(&http, ui_addr, &name, "start", json).await?,
+        ScenariosCmd::Stop { name }  => post_scenario_action(&http, ui_addr, &name, "stop",  json).await?,
+        ScenariosCmd::Next { name }  => post_scenario_action(&http, ui_addr, &name, "next",  json).await?,
+        ScenariosCmd::Prev { name }  => post_scenario_action(&http, ui_addr, &name, "prev",  json).await?,
+        ScenariosCmd::Jump { name, idx } => {
+            post_scenario_action(&http, ui_addr, &name, &format!("jump/{idx}"), json).await?
+        }
+    }
+    Ok(())
+}
+
+async fn post_scenario_action(
+    http: &reqwest::Client,
+    ui_addr: &str,
+    name: &str,
+    action: &str,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let resp = http
+        .post(format!("{ui_addr}/api/scenarios/{name}/{action}"))
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("{status}: {body}").into());
+    }
+    if json {
+        println!("{}", resp.text().await?);
+    } else {
+        println!("{action} {name}");
+    }
+    Ok(())
+}
+
+fn print_scenarios(resp: &serde_json::Value) {
+    let Some(arr) = resp.as_array() else {
+        println!("(unexpected response shape)");
+        return;
+    };
+    if arr.is_empty() {
+        println!("(no scenarios registered)");
+        return;
+    }
+    for s in arr {
+        let name = s.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+        let desc = s.get("description").and_then(|v| v.as_str()).unwrap_or("");
+        let stages = s
+            .get("stages")
+            .and_then(|v| v.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0);
+        let rt = s.get("runtime").cloned().unwrap_or_default();
+        let cur = rt.get("current_stage");
+        let manual = rt
+            .get("manual_override")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let state = match cur {
+            Some(serde_json::Value::Null) | None => "stopped".to_owned(),
+            Some(serde_json::Value::Number(n)) => {
+                let i = n.as_u64().unwrap_or(0) as usize;
+                let stage_name = s
+                    .get("stages")
+                    .and_then(|v| v.as_array())
+                    .and_then(|a| a.get(i))
+                    .and_then(|st| st.get("name"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?");
+                let m = if manual { " (manual)" } else { "" };
+                format!("running stage {i}/{stages} = {stage_name}{m}")
+            }
+            _ => "?".to_owned(),
+        };
+        println!("{name}  [{state}]  {desc}");
     }
 }
 
