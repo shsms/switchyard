@@ -315,12 +315,12 @@ across the enterprise.
 
 ** Phase F — Enterprise dashboard (deferred)
 
-*** WAIT F1. Cross-microgrid aggregate dashboard
+*** TODO F1. Cross-microgrid aggregate dashboard
 Top-level Microgrids mode could carry an enterprise dashboard
 above the per-microgrid card grid: sum of grid power across all
-microgrids, sum of battery pools, etc. Waits on the basic
-multi-microgrid stack being live so the aggregation has
-something to aggregate.
+microgrids, sum of battery pools, etc. The multi-microgrid stack
+(Phases A-E + G) is now live, so the prerequisite "have something
+to aggregate" is satisfied — ready to pick up.
 
 ** Phase G — Drop single-microgrid fallback
 

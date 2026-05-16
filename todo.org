@@ -115,12 +115,13 @@ broken assertion.
 
 ** E. Smaller deferred items
 
-*** TODO E1. Compact: rewrite =build-topology= body
+*** TODO E1. Compact: rewrite per-mg :topology body
 
-UI button → =POST /api/compact=. Server walks =World=, emits a fresh
-=build-topology= defun body, replaces the existing one in
-=config.lisp= in place, deletes
-=config.ui-overrides.<microgrid-id>.lisp=. Needs the per-component
+UI button → =POST /api/mg/<id>/compact=. Server walks the
+microgrid's =MicrogridSite=, emits a fresh =:topology= lambda body,
+replaces the body inside the matching =(make-microgrid …)= form in
+=microgrids/config.<id>.lisp= in place, deletes
+=microgrids/config.<id>.overrides.lisp=. Needs the per-component
 =OriginalArgs= snapshot stored at registration time (each
 =AsPlist!=-derived args struct re-serialized via =tulisp-fmt=).
 
@@ -142,15 +143,25 @@ fine for the current category count.
 
 ** F. Additional gRPC services
 
-*** INPROGRESS F1. Expose the assets API                          :switchyard:rust:
-DEADLINE: <2026-05-22 Fr>
+*** DONE F1. Expose the assets API                                :switchyard:rust:
+CLOSED: [2026-05-16 Sa]
 :LOGBOOK:
+- State "DONE"       from "INPROGRESS"  [2026-05-16 Sa]
 - State "INPROGRESS" from              [2026-05-15 Fr]
 :END:
 
-Mount the [[https://github.com/frequenz-floss/frequenz-api-assets][frequenz-api-assets]] gRPC service alongside =MicrogridServer=,
-serving the same topology data that =Microgrid= already exposes (just
-under the assets API surface).
+Mounted the [[https://github.com/frequenz-floss/frequenz-api-assets][frequenz-api-assets]] gRPC service on [::1]:9900 (its own
+listener, separate from the per-microgrid =MicrogridServer= ports).
+=GetMicrogrid=, =ListMicrogridElectricalComponents=, and
+=ListMicrogridElectricalComponentConnections= dispatch per-request by
+looking the requested =microgrid_id= up in =Config::microgrids()=, so
+the single assets service answers for every microgrid switchyard
+manages. Unknown ids → =NotFound=.
+
+Follow-up that didn't make it into F1: there's no =ListMicrogrids=
+RPC in the upstream proto, so clients still need =/api/microgrids=
+(HTTP) to discover available ids. Worth a switchyard-side proto
+extension if a gRPC-only client ever needs it.
 
 *** TODO F2. Expose the reporting API                             :switchyard:rust:
 
@@ -244,8 +255,8 @@ load directory (the same base =(load PATH)= uses). The motivation
 was to keep =load-overrides='s gate
 
 #+begin_src elisp
-(when (file-exists-p "config.ui-overrides.7.lisp")
-  (load "config.ui-overrides.7.lisp"))
+(when (file-exists-p "microgrids/config.7.overrides.lisp")
+  (load "microgrids/config.7.overrides.lisp"))
 #+end_src
 
 answering the same question both halves of that =when= ask — the
@@ -292,15 +303,17 @@ from =Config::new=. The matching test
 local =load-overrides= defun and relies on this resolution to find
 the override file.
 
-** d2. Promote override file into ~config.lisp~
+** d2. Promote per-mg override file into the per-mg config file
 
 Currently every successful eval lands in the per-microgrid override
-file (=config.ui-overrides.<id>.lisp=). The next step in that flow:
-a UI action that takes the override file's contents and appends them
-to =config.lisp= (somewhere — see below), then empties the override
-file. After the action the world is unchanged but the source-of-truth
-has shifted from "runtime edit" to "canonical config" and the entry
-is no longer editable from the UI overrides dialog.
+file (=microgrids/config.<id>.overrides.lisp=). The next step in
+that flow: a UI action that takes the override file's contents and
+folds them into the matching =microgrids/config.<id>.lisp= (inside
+the =:topology= lambda — see below), then empties the override
+file. After the action the world is unchanged but the source-of-
+truth has shifted from "runtime edit" to "canonical microgrid
+config" and the entry is no longer editable from the UI overrides
+dialog.
 
 *Where it'd land:* a button in the chrome (probably called Persist
 or Promote), a server-side endpoint that does the file munging, and
@@ -308,31 +321,34 @@ an entry in this UI dialog that confirms the move.
 
 *Open questions to settle before coding:*
 
-- Where in =config.lisp= does the appended content go? End of file?
-  Before a designated marker comment? Inside the
-  =(unless (boundp 'switchyard-loaded) …)= guard? Mid-topology? Most
-  user configs have a structure (timers near the top, topology in
-  the middle, =(load-overrides)= at the bottom) — blindly appending
-  at the end works mechanically but loses semantic grouping.
-- Does the action try to dedup against existing forms in
-  =config.lisp=? eg. if the override is
-  =(world-rename-component 1 "alpha")= and config.lisp already
-  =(world-rename-component 1 "main-grid")=, do we replace the
-  existing call, append after it, or just append at the end and let
-  last-write-win semantics carry the day?
-- Does the action run =tulisp-fmt= over the merged config.lisp, or
+- Where in =microgrids/config.<id>.lisp= does the content go? The
+  natural slot is inside the =(make-microgrid :topology (lambda
+  () …))= lambda body, alongside whatever topology the file
+  already declares. Insertion point: before the trailing
+  =(load-overrides)= call, so the canonical forms run first and
+  then any remaining overrides layer on top. Mechanical append at
+  the end of the lambda is the floor — semantic grouping (collect
+  rename-component calls near the renamed components, etc.) is
+  much harder and probably not worth automating in v1.
+- Does the action try to dedup against existing forms in the
+  per-mg config file? eg. if the override is
+  =(rename-component 1 "alpha")= and the config already calls
+  =(rename-component 1 "main-grid")= inside the topology, do we
+  replace the existing call, append after it, or just append at
+  the end and let last-write-win semantics carry the day?
+- Does the action run =tulisp-fmt= over the merged file, or
   preserve the existing whitespace / comments verbatim and only
   format the appended block?
-- After the move, the override file is empty and config.lisp grew.
-  Reloading should yield the same world (same forms, just
-  relocated). Worth a test that round-trips
+- After the move, the override file is empty and the per-mg config
+  file grew. Reloading should yield the same microgrid (same
+  forms, just relocated). Worth a test that round-trips
   add → promote → reload → state-equal.
 
-*Why deferred:* the immediate-write override file makes the override
-file the pending log. Promote-to-config.lisp is a one-way commit
-gate on top of that, but the design questions above need a real
-config sample to test against — easier to settle once a heavy
-switchyard config has accumulated some real overrides.
+*Why deferred:* the immediate-write override file makes the
+override file the pending log. Promote-to-config is a one-way
+commit gate on top of that, but the design questions above need a
+real config sample to test against — easier to settle once a heavy
+microgrid config has accumulated some real overrides.
 
 ** d3. Parallel-paths share semantic — does this match real installs?
 
