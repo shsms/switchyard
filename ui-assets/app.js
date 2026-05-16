@@ -2394,14 +2394,17 @@ function openWebSocket(onTopologyChanged) {
 // tile selects its source via `data-stream="..."`; new tiles only
 // have to declare the right stream name to participate.
 const dashboardTiles = (() => {
-  // 60 samples × 1 Hz cadence = 60 s sparkline window. Wide enough
-  // to see "did the value just change?" without dominating the
-  // tile visually. Stored as a flat Float32Array of length
-  // SPARK_LEN with a write cursor; on each push we overwrite the
-  // oldest slot and bump the cursor. Cheaper than Array.shift on a
-  // long array. NaN means "no sample at this slot" (page just
-  // loaded — most of the window is still empty).
-  const SPARK_LEN = 60;
+  // 900 samples × 1 Hz cadence = 15 min sparkline window. Backfilled
+  // from `/api/microgrid/history` on each backfill() (page load + mode
+  // re-enter) so the trace shows the past quarter-hour immediately
+  // instead of growing from empty. Per-tick noise from formula
+  // sample-time misalignment looks like signal at 60 s windows; at
+  // 15 min the trend dominates. Stored as a flat Float32Array of
+  // length SPARK_LEN with a write cursor; on each push we overwrite
+  // the oldest slot and bump the cursor. Cheaper than Array.shift on
+  // a long array. NaN means "no sample at this slot" (the ring isn't
+  // yet full).
+  const SPARK_LEN = 900;
   const sparkBuf = new Map(); // stream -> { values: Float32Array, cursor: int }
   function buf(stream) {
     let b = sparkBuf.get(stream);
@@ -2501,11 +2504,46 @@ const dashboardTiles = (() => {
       paint(ev.stream, ev);
     },
     async backfill() {
+      // Past 15 min of samples per stream, server-side. Pre-populate
+      // the ring so the spark shows the historical trend right away
+      // instead of growing from empty (60 s of jitter dominates an
+      // unbackfilled trace; 15 min flattens it into a small bar).
+      try {
+        const hres = await fetch(mgPath("microgrid/history"));
+        if (hres.ok) {
+          const hmap = await hres.json();
+          for (const [stream, samples] of Object.entries(hmap)) {
+            const b = buf(stream);
+            b.values.fill(NaN);
+            // Keep only the last SPARK_LEN samples — the server cap
+            // sits a hair over 900, but a slow client tab could lag
+            // and pull more than that on a future endpoint version.
+            const slice = samples.slice(-SPARK_LEN);
+            const start = SPARK_LEN - slice.length;
+            for (let i = 0; i < slice.length; i++) {
+              const v = slice[i]?.value;
+              b.values[start + i] = v == null ? NaN : v;
+            }
+            b.cursor = 0;
+            renderSpark(stream);
+          }
+        }
+      } catch (_) {
+        // Best-effort. WS frames will fill the ring forward from here.
+      }
       try {
         const res = await fetch(mgPath("microgrid/latest"));
         if (!res.ok) return;
         const map = await res.json();
-        for (const [stream, snap] of Object.entries(map)) paint(stream, snap);
+        // Paint the latest readouts in the tile value boxes — but
+        // don't append again (the history backfill above already
+        // included the most recent sample).
+        for (const [stream, snap] of Object.entries(map)) {
+          for (const el of findEls(stream)) {
+            el.textContent = fmt(snap.quantity, snap.unit, snap.value);
+            el.classList.toggle("muted", snap.value == null);
+          }
+        }
       } catch (_) {
         // Best-effort. If the loopback isn't up yet (503 elsewhere),
         // the tiles stay on "—" until the first WS tick lands.

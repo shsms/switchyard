@@ -4,7 +4,7 @@
 //! port (default 8801). The SPA shell + vendored assets are bundled
 //! via rust-embed.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -102,6 +102,12 @@ pub struct MicrogridState {
     /// rebuild so absent streams in the new graph don't surface
     /// stale values.
     pub latest: RwLock<HashMap<&'static str, MicrogridSampleSnapshot>>,
+    /// Rolling history per stream (timestamp + value), ring-buffered
+    /// to 1000 entries — 15 minutes at the 1 Hz forwarder cadence
+    /// with a little slack. Feeds `/api/microgrid/history` so the
+    /// Dashboard tile sparklines can backfill on page load instead
+    /// of starting empty.
+    pub history: RwLock<HashMap<&'static str, VecDeque<HistorySample>>>,
     /// Currently-running forwarder tasks. Rebuilds abort these +
     /// spawn fresh ones bound to the new Microgrid handle's
     /// subscriptions. Dropping the old `Microgrid` alone isn't
@@ -119,9 +125,21 @@ pub fn new_microgrid_slot() -> SharedMicrogrid {
         microgrid: RwLock::new(None),
         client: tokio::sync::OnceCell::new(),
         latest: RwLock::new(HashMap::new()),
+        history: RwLock::new(HashMap::new()),
         forwarders: Mutex::new(Vec::new()),
     })
 }
+
+/// One point on a microgrid_sample stream's rolling history ring.
+/// Cap = 1000 (15 min at 1 Hz with slack); oldest entry drops on
+/// insert when full.
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct HistorySample {
+    pub ts_ms: i64,
+    pub value: Option<f32>,
+}
+
+const MICROGRID_HISTORY_CAP: usize = 1000;
 
 /// Enterprise map from microgrid id to its loopback state. Each
 /// `MicrogridServer` registered in `Config::microgrids` gets one
@@ -526,6 +544,17 @@ fn publish_scalar(
         value,
     };
     state.latest.write().insert(stream, snapshot);
+    // Append to the rolling history ring so the Dashboard tile
+    // sparklines have past data to backfill from on page load.
+    // Drop the oldest entry when the ring is full.
+    {
+        let mut history = state.history.write();
+        let ring = history.entry(stream).or_default();
+        if ring.len() == MICROGRID_HISTORY_CAP {
+            ring.pop_front();
+        }
+        ring.push_back(HistorySample { ts_ms, value });
+    }
     site.broadcast_microgrid_sample(stream, quantity, unit, ts_ms, value);
 }
 
@@ -594,6 +623,7 @@ fn router(
         .route("/api/clock", get(clock_info))
         .route("/api/microgrid/status", get(microgrid_status))
         .route("/api/microgrid/latest", get(microgrid_latest))
+        .route("/api/microgrid/history", get(microgrid_history))
         .route("/api/microgrid/formulas", get(microgrid_formulas))
         .route("/api/snapshots", get(snapshots_list))
         .route("/api/snapshots/save", post(snapshots_save))
@@ -611,6 +641,7 @@ fn router(
         .route("/api/mg/{mg_id}/history", get(history_for_mg))
         .route("/api/mg/{mg_id}/microgrid/status", get(microgrid_status_for_mg))
         .route("/api/mg/{mg_id}/microgrid/latest", get(microgrid_latest_for_mg))
+        .route("/api/mg/{mg_id}/microgrid/history", get(microgrid_history_for_mg))
         .route("/api/mg/{mg_id}/microgrid/formulas", get(microgrid_formulas_for_mg))
         .route("/ws/events", get(events_ws))
         .layer(Extension(microgrid))
@@ -977,6 +1008,31 @@ async fn microgrid_latest_for_mg(
 ) -> Result<Json<HashMap<&'static str, MicrogridSampleSnapshot>>, (StatusCode, String)> {
     let slot = resolve_loopback(&loopbacks, mg_id)?;
     Ok(Json(slot.latest.read().clone()))
+}
+
+async fn microgrid_history_for_mg(
+    Extension(loopbacks): Extension<MicrogridLoopbacks>,
+    Path(mg_id): Path<u64>,
+) -> Result<Json<HashMap<&'static str, Vec<HistorySample>>>, (StatusCode, String)> {
+    let slot = resolve_loopback(&loopbacks, mg_id)?;
+    Ok(Json(microgrid_history_body(&slot)))
+}
+
+async fn microgrid_history(
+    Extension(state): Extension<SharedMicrogrid>,
+) -> Json<HashMap<&'static str, Vec<HistorySample>>> {
+    Json(microgrid_history_body(&state))
+}
+
+fn microgrid_history_body(
+    state: &SharedMicrogrid,
+) -> HashMap<&'static str, Vec<HistorySample>> {
+    state
+        .history
+        .read()
+        .iter()
+        .map(|(k, ring)| (*k, ring.iter().copied().collect()))
+        .collect()
 }
 
 async fn microgrid_formulas_for_mg(
