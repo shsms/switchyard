@@ -1,4 +1,5 @@
 #+TITLE: Switchyard code review — 2026-05-16
+#+TODO: TODO IN-PROGRESS WAIT | DONE CANCELLED
 
 Findings from a comprehensive read of /vagrant/switchyard after the
 multi-microgrid merge: =src/=, =tests/=, =build.rs=, the Lisp glue
@@ -11,13 +12,13 @@ behind the green test suite.
 
 The branch fails CI right now. Concrete, mechanical fixes.
 
-** CI1. ~cargo fmt --check~ — ~70 file diffs                          :DONE:
+** DONE CI1. ~cargo fmt --check~ — ~70 file diffs
 
 Worst offenders: =src/lisp/mod.rs= (16 diffs), =src/ui/mod.rs= (12),
 =src/lisp/make.rs= (6), =src/bin/swctl.rs= (4),
 =src/bin/switchyard.rs= (4). One-shot fix: =cargo fmt=.
 
-** CI2. ~cargo clippy --all-targets --all-features -- -D warnings~ — 2 errors :DONE:
+** DONE CI2. ~cargo clippy --all-targets --all-features -- -D warnings~ — 2 errors
 
 - [[file:src/lisp/mod.rs::312][src/lisp/mod.rs:312]] — ~site: site,~
   (~redundant_field_names~). One-character fix.
@@ -26,7 +27,7 @@ Worst offenders: =src/lisp/mod.rs= (16 diffs), =src/ui/mod.rs= (12),
   (~too_many_arguments~). Bundle the shared handles into a struct
   (A6 below) or ~#[allow(clippy::too_many_arguments)]~.
 
-** CI3. biome lint of ~ui-assets/app.js~ — 1 error, 2 warnings, 2 infos :DONE:
+** DONE CI3. biome lint of ~ui-assets/app.js~ — 1 error, 2 warnings, 2 infos
 
 - [[file:ui-assets/app.js::3166][ui-assets/app.js:3166]] —
   ~const escape = …~ inside ~formulaToHtml~ shadows the global
@@ -42,7 +43,7 @@ Worst offenders: =src/lisp/mod.rs= (16 diffs), =src/ui/mod.rs= (12),
 
 * High severity — real bugs
 
-** H1. XSS gap in setpoint-event row rendering                       :DONE:
+** DONE H1. XSS gap in setpoint-event row rendering
 [[file:ui-assets/app.js::198][ui-assets/app.js:198]],
 [[file:ui-assets/app.js::964][:964]]
 
@@ -56,7 +57,7 @@ Today the server only sends fixed strings and floats, so the gap
 is theoretical — but defense-in-depth: every interpolation into
 ~innerHTML~ should go through ~escapeHtml~.
 
-** H2. ~microgrids_create~ port allocation race                     :DONE:
+** DONE H2. ~microgrids_create~ port allocation race
 [[file:src/ui/mod.rs::747][src/ui/mod.rs:747-748]]
 
 ~next_free_id~ and ~next_free_port~ run outside the registry lock.
@@ -70,7 +71,7 @@ microgrid sits "connecting" forever.
 Fix: re-probe id + port inside the same lock that does the insert,
 or wrap allocate-then-insert in a single critical section.
 
-** H3. ~microgrids_create~ half-failed state ordering                :DONE:
+** DONE H3. ~microgrids_create~ half-failed state ordering
 [[file:src/ui/mod.rs::775][src/ui/mod.rs:775-784]]
 
 Current order: insert into registry → call ~spawner~ →
@@ -82,7 +83,7 @@ the live microgrid (no stub file to recreate it).
 Fix: write the stub BEFORE the spawner. On stub-write failure,
 roll back the registry insert and return without starting tasks.
 
-** H4. ~Config::watch~ unwraps                                       :DONE:
+** DONE H4. ~Config::watch~ unwraps
 [[file:src/lisp/mod.rs::870][src/lisp/mod.rs:870, 876]]
 
 #+begin_src rust
@@ -95,7 +96,7 @@ exhausted by a heavy IDE) or the config file vanishing mid-boot
 panics this task. Binary keeps serving but hot-reload is dead
 silently. Log + return on error.
 
-** H5. ~overrides_path~ fallback to id 0                             :DONE:
+** DONE H5. ~overrides_path~ fallback to id 0
 [[file:src/lisp/mod.rs::682][src/lisp/mod.rs:682-689]]
 
 #+begin_src rust
@@ -111,7 +112,7 @@ makes the boot path unreachable, but a future
 ~reset-microgrid~-then-eval flow could trip it. Return a ~Result~
 and refuse to write overrides without a resolved id.
 
-** H6. ~set_main_meter~ failure mid-~make-meter~ leaves a partial meter :DONE:
+** DONE H6. ~set_main_meter~ failure mid-~make-meter~ leaves a partial meter
 [[file:src/lisp/make.rs::257][src/lisp/make.rs:257-260]]
 
 #+begin_src rust
@@ -130,7 +131,7 @@ Eval surfaces the error but the world is partially mutated.
 Fix: probe the main-meter slot BEFORE ~register_with_modes~, or
 roll back the registry insert on Err.
 
-** H7. ~pre_tick~ hook holds the interpreter lock through the whole tick :TODO:
+** TODO H7. ~pre_tick~ hook holds the interpreter lock through the whole tick
 [[file:src/lisp/mod.rs::274][src/lisp/mod.rs:274-282]]
 
 #+begin_src rust
@@ -150,7 +151,7 @@ No quick fix — splitting ~refresh_inputs~ to an atomics-only path
 that doesn't need the interpreter is a real refactor. Worth a doc
 note in the hook installer until then.
 
-** H8. ~microgrid_registered~ broadcast capacity 64 + Lagged handling :DONE:
+** DONE H8. ~microgrid_registered~ broadcast capacity 64 + Lagged handling
 [[file:src/lisp/mod.rs::174][src/lisp/mod.rs:174]],
 [[file:src/ui/mod.rs::1830][src/ui/mod.rs:1830]]
 
@@ -162,7 +163,7 @@ that lacks one) or bump capacity to 1024.
 
 * Medium severity
 
-** M1. ~start_timeout_loop~ cadence drift                           :DONE:
+** DONE M1. ~start_timeout_loop~ cadence drift
 [[file:src/lisp/mod.rs::392][src/lisp/mod.rs:392]]
 
 ~tokio::time::sleep(Duration::from_millis(100))~ instead of
@@ -170,7 +171,7 @@ that lacks one) or bump capacity to 1024.
 actual delay per iteration drifts above 100 ms; timeout precision
 follows. Mostly best-effort already; easy idiom fix.
 
-** M2. Per-mg config files have no forward-reference safety          :TODO:
+** TODO M2. Per-mg config files have no forward-reference safety
 [[file:sim/common.lisp::68][sim/common.lisp]] +
 [[file:src/lisp/mod.rs::1497][~load-microgrid-configs~ in src/lisp/mod.rs]]
 
@@ -181,7 +182,7 @@ per-mg file is expected to be self-contained, but the rule isn't
 enforced. Either document the constraint prominently or sandbox
 each file with its own lexical scope.
 
-** M3. No graceful shutdown                                          :TODO:
+** TODO M3. No graceful shutdown
 Every tokio task (physics, history sampler, scenario auto-advance,
 frequency driver, WS forwarders per session, gRPC servers, timeout
 loop) runs until process exit. No ~CancellationToken~ plumbed. Ctrl-C
@@ -194,7 +195,7 @@ tool is fine as-is. Flagging for visibility.
 Not bugs. Directional suggestions for refactoring as the codebase
 grows.
 
-** A1. ~src/lisp/mod.rs~ is 2621 lines                              :TODO:
+** TODO A1. ~src/lisp/mod.rs~ is 2621 lines
 
 Holds: Config + Metadata + PersistedOverride structs, ~Config::new~
 (~170 lines), ~Config::reload~, ~Config::watch~, all ~AsPlist!~
@@ -225,7 +226,7 @@ src/lisp/
 └── tests.rs
 #+end_example
 
-** A2. ~src/ui/mod.rs~ is 1857 lines                                 :TODO:
+** TODO A2. ~src/ui/mod.rs~ is 1857 lines
 
 Same shape as lisp/mod.rs. Suggested split:
 
@@ -248,7 +249,7 @@ src/ui/
 └── tests.rs
 #+end_example
 
-** A3. ~ui-assets/app.js~ is 4178 lines                              :TODO:
+** TODO A3. ~ui-assets/app.js~ is 4178 lines
 
 Single-file JS with no module system. Pieces that obviously want
 their own files: ~topology~ module (~250 lines), ~dashboardTiles~
@@ -267,7 +268,7 @@ Two paths:
 
 Recommend ES modules.
 
-** A4. ~src/sim/microgrid_site.rs~ is 1536 lines                     :TODO:
+** TODO A4. ~src/sim/microgrid_site.rs~ is 1536 lines
 
 Container of MicrogridSite with 30+ methods plus runtime modes,
 history sampling, scenario journal, CSV sinks, main-meter slot,
@@ -281,7 +282,7 @@ src/sim/microgrid_site/
 └── csv.rs           # scenario_csv_* wrappers
 #+end_example
 
-** A5. ~Config::new~ has delicate ordering invariants                :TODO:
+** TODO A5. ~Config::new~ has delicate ordering invariants
 
 Pre_tick installs AFTER eval_file (so the hook closure can capture
 the timer handle), but the hook is installed retroactively on every
@@ -295,7 +296,7 @@ at the top of ~Config::new~ listing them, or factor the bootstrap
 into explicit phases (~prepare_state~, ~register_defuns~,
 ~spawn_long_lived_tasks~, ~eval_config~, ~install_post_eval_hooks~).
 
-** A6. Bundle shared handles into a ~RuntimeHandles~ struct          :TODO:
+** TODO A6. Bundle shared handles into a ~RuntimeHandles~ struct
 
 ~Config::new~ plumbs ~12 Arc-clones through the call. Define a
 ~RuntimeHandles~ struct (or similar) that carries ~ctx~, ~router~,
@@ -305,7 +306,7 @@ into explicit phases (~prepare_state~, ~register_defuns~,
 fixes CI2's ~too_many_arguments~ on ~register_microgrids~ without
 an ~#[allow]~.
 
-** A7. "Snapshot under lock, fire callbacks outside" pattern         :TODO:
+** TODO A7. "Snapshot under lock, fire callbacks outside" pattern
 
 [[file:src/sim/scenarios.rs::334][~auto_advance_tick~]] and the start /
 stop / jump siblings all replicate the same three-step dance: lock
