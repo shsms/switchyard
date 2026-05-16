@@ -11,13 +11,13 @@ behind the green test suite.
 
 The branch fails CI right now. Concrete, mechanical fixes.
 
-** CI1. ~cargo fmt --check~ — ~70 file diffs                          :TODO:
+** CI1. ~cargo fmt --check~ — ~70 file diffs                          :DONE:
 
 Worst offenders: =src/lisp/mod.rs= (16 diffs), =src/ui/mod.rs= (12),
 =src/lisp/make.rs= (6), =src/bin/swctl.rs= (4),
 =src/bin/switchyard.rs= (4). One-shot fix: =cargo fmt=.
 
-** CI2. ~cargo clippy --all-targets --all-features -- -D warnings~ — 2 errors :TODO:
+** CI2. ~cargo clippy --all-targets --all-features -- -D warnings~ — 2 errors :DONE:
 
 - [[file:src/lisp/mod.rs::312][src/lisp/mod.rs:312]] — ~site: site,~
   (~redundant_field_names~). One-character fix.
@@ -26,7 +26,7 @@ Worst offenders: =src/lisp/mod.rs= (16 diffs), =src/ui/mod.rs= (12),
   (~too_many_arguments~). Bundle the shared handles into a struct
   (A6 below) or ~#[allow(clippy::too_many_arguments)]~.
 
-** CI3. biome lint of ~ui-assets/app.js~ — 1 error, 2 warnings, 2 infos :TODO:
+** CI3. biome lint of ~ui-assets/app.js~ — 1 error, 2 warnings, 2 infos :DONE:
 
 - [[file:ui-assets/app.js::3166][ui-assets/app.js:3166]] —
   ~const escape = …~ inside ~formulaToHtml~ shadows the global
@@ -42,7 +42,7 @@ Worst offenders: =src/lisp/mod.rs= (16 diffs), =src/ui/mod.rs= (12),
 
 * High severity — real bugs
 
-** H1. XSS gap in setpoint-event row rendering                       :TODO:
+** H1. XSS gap in setpoint-event row rendering                       :DONE:
 [[file:ui-assets/app.js::198][ui-assets/app.js:198]],
 [[file:ui-assets/app.js::964][:964]]
 
@@ -56,7 +56,7 @@ Today the server only sends fixed strings and floats, so the gap
 is theoretical — but defense-in-depth: every interpolation into
 ~innerHTML~ should go through ~escapeHtml~.
 
-** H2. ~microgrids_create~ port allocation race                     :TODO:
+** H2. ~microgrids_create~ port allocation race                     :DONE:
 [[file:src/ui/mod.rs::747][src/ui/mod.rs:747-748]]
 
 ~next_free_id~ and ~next_free_port~ run outside the registry lock.
@@ -70,7 +70,7 @@ microgrid sits "connecting" forever.
 Fix: re-probe id + port inside the same lock that does the insert,
 or wrap allocate-then-insert in a single critical section.
 
-** H3. ~microgrids_create~ half-failed state ordering                :TODO:
+** H3. ~microgrids_create~ half-failed state ordering                :DONE:
 [[file:src/ui/mod.rs::775][src/ui/mod.rs:775-784]]
 
 Current order: insert into registry → call ~spawner~ →
@@ -82,7 +82,7 @@ the live microgrid (no stub file to recreate it).
 Fix: write the stub BEFORE the spawner. On stub-write failure,
 roll back the registry insert and return without starting tasks.
 
-** H4. ~Config::watch~ unwraps                                       :TODO:
+** H4. ~Config::watch~ unwraps                                       :DONE:
 [[file:src/lisp/mod.rs::870][src/lisp/mod.rs:870, 876]]
 
 #+begin_src rust
@@ -95,7 +95,7 @@ exhausted by a heavy IDE) or the config file vanishing mid-boot
 panics this task. Binary keeps serving but hot-reload is dead
 silently. Log + return on error.
 
-** H5. ~overrides_path~ fallback to id 0                             :TODO:
+** H5. ~overrides_path~ fallback to id 0                             :DONE:
 [[file:src/lisp/mod.rs::682][src/lisp/mod.rs:682-689]]
 
 #+begin_src rust
@@ -111,7 +111,7 @@ makes the boot path unreachable, but a future
 ~reset-microgrid~-then-eval flow could trip it. Return a ~Result~
 and refuse to write overrides without a resolved id.
 
-** H6. ~set_main_meter~ failure mid-~make-meter~ leaves a partial meter :TODO:
+** H6. ~set_main_meter~ failure mid-~make-meter~ leaves a partial meter :DONE:
 [[file:src/lisp/make.rs::257][src/lisp/make.rs:257-260]]
 
 #+begin_src rust
@@ -150,7 +150,7 @@ No quick fix — splitting ~refresh_inputs~ to an atomics-only path
 that doesn't need the interpreter is a real refactor. Worth a doc
 note in the hook installer until then.
 
-** H8. ~microgrid_registered~ broadcast capacity 64 + Lagged handling :TODO:
+** H8. ~microgrid_registered~ broadcast capacity 64 + Lagged handling :DONE:
 [[file:src/lisp/mod.rs::174][src/lisp/mod.rs:174]],
 [[file:src/ui/mod.rs::1830][src/ui/mod.rs:1830]]
 
@@ -162,7 +162,7 @@ that lacks one) or bump capacity to 1024.
 
 * Medium severity
 
-** M1. ~start_timeout_loop~ cadence drift                           :TODO:
+** M1. ~start_timeout_loop~ cadence drift                           :DONE:
 [[file:src/lisp/mod.rs::392][src/lisp/mod.rs:392]]
 
 ~tokio::time::sleep(Duration::from_millis(100))~ instead of
