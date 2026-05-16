@@ -1,514 +1,334 @@
-#+TITLE: Switchyard code review
+#+TITLE: Switchyard code review — 2026-05-16
 
-Findings from a comprehensive read of /vagrant/switchyard, including
-~src/~, ~tests/~, ~build.rs~, and the Lisp glue under ~sim/~. Tests
-currently green (130 unit + 13 integration); clippy clean. The
-review covers correctness, design, doc accuracy, and test coverage
-gaps. Items are grouped by severity and area.
+Findings from a comprehensive read of /vagrant/switchyard after the
+multi-microgrid merge: =src/=, =tests/=, =build.rs=, the Lisp glue
+under =sim/= + =scenarios/=, and =ui-assets/=. Tests currently green
+(155 unit + 20 integration). The branch wouldn't survive a push to
+=main= as-is — three lint suites fail and a handful of bugs hide
+behind the green test suite.
 
-* High severity — real bugs or surprising behavior
+* CI lint breakage
 
-** H1. ~World::reset~ leaves several piles of state un-cleared :DONE:
-[[file:src/sim/world.rs::608][src/sim/world.rs:608]]
+The branch fails CI right now. Concrete, mechanical fixes.
 
-(Setpoint_logs *was* already cleared — my note on first pass was
-wrong; verified at line 615.) The remaining gaps were ~scenario~,
-~main_meter_id~, and ~scenario_csv~. ~reset()~ now flushes all
-three: the journal becomes a fresh ~ScenarioJournal::default()~,
-the main-meter flag is dropped so a reload can claim a different
-meter, and active CSV sinks are dropped (each ~BufWriter~ flushes
-on drop). New test ~reset_clears_scenario_and_main_meter~
-exercises the contract.
+** CI1. ~cargo fmt --check~ — ~70 file diffs                          :TODO:
 
-** H2. ~SetpointError::OutOfBounds~ reports rated bounds, not effective :DONE:
-[[file:src/sim/inverter/battery_inverter.rs::212][battery_inverter.rs:212]],
-[[file:src/sim/inverter/solar_inverter.rs::192][solar_inverter.rs:192]]
+Worst offenders: =src/lisp/mod.rs= (16 diffs), =src/ui/mod.rs= (12),
+=src/lisp/make.rs= (6), =src/bin/swctl.rs= (4),
+=src/bin/switchyard.rs= (4). One-shot fix: =cargo fmt=.
 
-The check uses ~self.bounds.lock().effective()~ — which can be
-narrower than rated when an augmentation is live — but the error
-constructs ~OutOfBounds { lower: cfg.rated_lower_w, upper:
-cfg.rated_upper_w }~. A user who augments down to ±10 kW and then
-tries 15 kW sees "out of bounds [-30000, 30000]". Misleading.
+** CI2. ~cargo clippy --all-targets --all-features -- -D warnings~ — 2 errors :TODO:
 
-Fix: pass the effective bounds into the error. ~VecBounds~ doesn't
-have a single ~(f32, f32)~ accessor; extract via ~bounds.0.first()~
-or extend ~SetpointError::OutOfBounds~ to carry a Vec.
+- [[file:src/lisp/mod.rs::312][src/lisp/mod.rs:312]] — ~site: site,~
+  (~redundant_field_names~). One-character fix.
+- [[file:src/lisp/mod.rs::1129][src/lisp/mod.rs:1129]] —
+  ~register_microgrids~ takes 8 args; clippy's threshold is 7
+  (~too_many_arguments~). Bundle the shared handles into a struct
+  (A6 below) or ~#[allow(clippy::too_many_arguments)]~.
 
-EV charger (~ev_charger.rs:191~) deliberately validates against
-rated, not effective, with a documented rationale ("avoid bouncing
-between accept/reject as the cell tops up"). Inconsistency: clients
-seeing OutOfBounds responses can't tell which discipline applied.
+** CI3. biome lint of ~ui-assets/app.js~ — 1 error, 2 warnings, 2 infos :TODO:
 
-** H3. EV charger silently drops AugmentBounds requests :DONE:
-[[file:src/sim/ev_charger.rs::117][ev_charger.rs:117]]
+- [[file:ui-assets/app.js::3166][ui-assets/app.js:3166]] —
+  ~const escape = …~ inside ~formulaToHtml~ shadows the global
+  ~escape~ function (~noShadowRestrictedNames~). Rename.
+- [[file:ui-assets/app.js::3682][ui-assets/app.js:3682]] — ~[+\-]~
+  has a useless backslash (~noUselessEscapeInRegex~). Drop it.
+- [[file:ui-assets/app.js::3557][ui-assets/app.js:3557]] — string
+  concatenation; biome wants a template literal (~useTemplate~).
+- [[file:ui-assets/app.js::4072][ui-assets/app.js:4072]] +
+  [[file:ui-assets/app.js::4073][:4073]] — ~t && t.tagName~ /
+  ~t && t.isContentEditable~ should be ~t?.tagName~ /
+  ~t?.isContentEditable~ (~useOptionalChain~).
 
-Battery inverter, solar inverter, and battery override
-~augment_active_bounds~. EV charger doesn't, so the trait default
-(empty body) wins. ~/api/eval (augment-bounds 1234 …)~ or the gRPC
-~augment_electrical_component_bounds~ targeting an EV charger
-returns ~valid_until_time~ and logs a setpoint event — but the
-augmentation is dropped. UI inspector shows "accepted"; the
-inverter behavior doesn't change.
+* High severity — real bugs
 
-Fix: implement ~augment_active_bounds~ on EV charger (carry a
-~ComponentBounds~ instead of computing on the fly). Or document
-that augmentation is meter / inverter only and reject earlier in
-the gRPC handler.
+** H1. XSS gap in setpoint-event row rendering                       :TODO:
+[[file:ui-assets/app.js::198][ui-assets/app.js:198]],
+[[file:ui-assets/app.js::964][:964]]
 
-** H4. Inverter publishes commanded P even when no child accepted it :DONE:
-[[file:src/sim/inverter/battery_inverter.rs::171][battery_inverter.rs:171]]
-
-In ~tick~:
-
-#+begin_src rust
-let healthy: Vec<u64> = world.children_of(self.id, &self.hidden_successors)
-    .into_iter()
-    .filter(|id| world.runtime_of(*id).health == Health::Ok)
-    .collect();
-if !healthy.is_empty() {
-    // distribute share to each healthy child
-}
-*self.measured_w.lock() = commanded_p;
+#+begin_src js
+const tag = ev.setpoint_kind.replace("_", " ");
+const head = `<span class="sp-ts">${ts}</span> <span class="sp-tag">${tag}</span> <span class="sp-val">${ev.value}</span>`;
 #+end_src
 
-If ~healthy~ is empty (all batteries are ~Health::Error~ /
-~Standby~), no child receives the push, but ~measured_w~ still
-absorbs the commanded value. ~telemetry()~ reports nonzero
-active_power_w that was never actually delivered.
+~ev.reason~ is escaped on the next line; ~tag~ and ~ev.value~ aren't.
+Today the server only sends fixed strings and floats, so the gap
+is theoretical — but defense-in-depth: every interpolation into
+~innerHTML~ should go through ~escapeHtml~.
 
-Fix: track the dispatched-to-children sum, set ~measured_w~ to that
-(zero when ~healthy~ is empty).
+** H2. ~microgrids_create~ port allocation race                     :TODO:
+[[file:src/ui/mod.rs::747][src/ui/mod.rs:747-748]]
 
-** H5. ~SetpointError::NotHealthy~ is defined but never raised :DONE:
-[[file:src/sim/component.rs::23][component.rs:23]],
-[[file:src/server.rs::493][server.rs:493]]
+~next_free_id~ and ~next_free_port~ run outside the registry lock.
+Two concurrent create requests can pick the same id AND the same
+port. The duplicate-key check on insert catches the id collision
+(409), but two concurrent calls landing on different ids can still
+both pick port 8810; the second tonic ~Server::serve~ then fails
+silently inside its ~tokio::spawn~ and the loopback for that
+microgrid sits "connecting" forever.
 
-The variant is declared in ~SetpointError~ and mapped to
-~failed_precondition~ in ~setpoint_error_to_status~, but no
-~set_active_setpoint~ / ~set_reactive_setpoint~ impl returns it.
-The server-side ~runtime.health != Health::Ok~ check in
-~do_set_power~ rejects before the component is touched, returning
-its own ~Status::failed_precondition~ — so the variant is
-unreachable.
+Fix: re-probe id + port inside the same lock that does the insert,
+or wrap allocate-then-insert in a single critical section.
 
-Either lift the health check into the component (so the error
-flows through ~SetpointError~) or remove the variant. Right now
-it's misleading: a reader assumes components self-gate on health,
-but actually they don't.
+** H3. ~microgrids_create~ half-failed state ordering                :TODO:
+[[file:src/ui/mod.rs::775][src/ui/mod.rs:775-784]]
 
-** H6. ~request_lifetime~ ranges differ between SetPower and Augment :DONE:
-[[file:src/server.rs::120][server.rs:120]],
-[[file:src/server.rs::404][server.rs:404]]
+Current order: insert into registry → call ~spawner~ →
+~write_microgrid_stub~. If the stub write fails, we 500 but the
+registry entry stays AND the spawner already started physics +
+history sampler + gRPC server + loopback tasks. Next boot orphans
+the live microgrid (no stub file to recreate it).
 
-- SetPower: rejected if not in ~[10, 900]~ (10 s to 15 min).
-- AugmentBounds: clamped to ~[5, 900]~ (5 s to 15 min); default 5 s.
+Fix: write the stub BEFORE the spawner. On stub-write failure,
+roll back the registry insert and return without starting tasks.
 
-If the Frequenz API spec dictates these, fine — but the
-inconsistency isn't documented. A client SDK shared between the
-two endpoints will discover the 5 vs 10 s mismatch the hard way.
-Worth a doc note even if it's spec-driven.
-
-** H7. ~Config::new~ swallows file-eval errors :DONE:
-[[file:src/lisp/mod.rs::121][lisp/mod.rs:121]]
+** H4. ~Config::watch~ unwraps                                       :TODO:
+[[file:src/lisp/mod.rs::870][src/lisp/mod.rs:870, 876]]
 
 #+begin_src rust
-if let Err(e) = ctx.eval_file(filename) {
-    log::error!("Tulisp error:\n{}", e.format(&ctx));
-}
+let mut watcher = RecommendedWatcher::new(...).unwrap();
+watcher.watch(Path::new(&self.filename), ...).unwrap();
 #+end_src
 
-A config with a syntax error or undefined function logs and
-continues. Caller (test harness, ~bin/switchyard.rs~) sees a
-"successful" ~Config~ with empty / partial World. Tests that assert
-on topology shape after ~Config::new(bad)~ get confusing assertion
-failures rather than the original lisp error.
+inotify watch limit (~/proc/sys/fs/inotify/max_user_watches~
+exhausted by a heavy IDE) or the config file vanishing mid-boot
+panics this task. Binary keeps serving but hot-reload is dead
+silently. Log + return on error.
 
-Same shape in ~reload~ (line 397): error logged, ~bump_version~
-*not* called, World left in a half-state (reset already happened).
-The first eval that hits an error leaves the rest of config.lisp
-unevaluated.
-
-Fix: return ~Result<Self, Error>~ from ~Config::new~; same for
-~reload~. The binary's ~main~ should panic or exit nonzero on
-construction failure; the watcher's reload can keep going but
-should at least surface the failure on /api/scenario or some
-visible channel.
-
-* Medium severity — design issues, surprising semantics
-
-** M1. ~World::disconnect~ doc says "drop a single edge" but drops all :DONE:
-[[file:src/sim/world.rs::641][world.rs:641]]
+** H5. ~overrides_path~ fallback to id 0                             :TODO:
+[[file:src/lisp/mod.rs::682][src/lisp/mod.rs:682-689]]
 
 #+begin_src rust
-edges.retain(|(p, c)| !(*p == parent && *c == child));
+let mg_id = self.current_microgrid.read().unwrap_or_else(|| {
+    self.microgrids.lock().keys().next().copied().unwrap_or_default()
+});
 #+end_src
 
-If the user double-connects ~(world-connect 1 2)~ twice, one
-~(world-disconnect 1 2)~ removes both. The test
-~disconnect_drops_one_edge_keeps_endpoints~ explicitly verifies
-this ("retain semantics") but the docstring says "Drop a single
-parent → child edge." Either fix the doc or change to remove only
-the first matching edge.
+When ~current_microgrid~ is None AND the registry is empty,
+~unwrap_or_default()~ returns 0; the override path becomes
+~microgrids/config.0.overrides.lisp~. The hard-error in ~Config::new~
+makes the boot path unreachable, but a future
+~reset-microgrid~-then-eval flow could trip it. Return a ~Result~
+and refuse to write overrides without a resolved id.
 
-** M2. ~Config::watch~ has minimal debouncing :DONE:
-[[file:src/lisp/mod.rs::445][lisp/mod.rs:445]]
-
-50 ms ~sleep~ after each ~Modify~ event before reload, but no
-cross-event dedup. An editor save that triggers two ~Modify~ events
-in quick succession (write + close-after-write, or write +
-fsync) triggers two reloads. Same for plugin-driven reformatters.
-
-Fix: collect events in a window (e.g. 100 ms after the last event)
-and reload once. Standard ~notify~ debouncer pattern.
-
-** M3. Reactive defaults "either-or" overriding is non-obvious :DONE:
-[[file:src/lisp/make.rs::511][make.rs:511]] and
-[[file:src/lisp/make.rs::601][make.rs:601]]
-
-The build-time policy: if either ~:reactive-pf-limit~ or
-~:reactive-apparent-va~ is mentioned, the *whole* ~ReactiveCapability~
-is replaced with both — silently disabling the unspecified
-constraint. So:
-
-#+begin_src lisp
-(make-battery-inverter :reactive-pf-limit 0.5)
-;; ↑ silently discards the inherited :reactive-apparent-va 32000
-;;   from battery-inverter-defaults
-#+end_src
-
-Documented in the make.rs comment and via the explicit
-~:reactive-pf-limit 0.0~ in ~battery-inverter-defaults~, but a
-user reading only the defaults file might miss it. Could either:
-
-- Make defaults merge per-field (~pf_limit.or(default.pf_limit)~)
-  so partial overrides work intuitively.
-- Or surface a warning when defaults are mentioned and only one
-  reactive arg is given.
-
-** M4. Battery telemetry mixes "active P" and "signed apparent magnitude" :DONE:
-[[file:src/sim/battery.rs::182][battery.rs:182]]
-
-- ~aggregate_power_w~ returns ~power_w~ (clamped active P).
-- ~telemetry().dc_power_w~ returns ~signed_apparent~ = √(P²+Q²)
-  with the sign of P.
-
-A control app comparing the two paths sees the apparent-Q
-contribution missing from one but present in the other.
-Documented in the comment, but worth surfacing in the public
-trait docs (~Telemetry::dc_power_w~).
-
-** M5. Stub leaks String through Box::leak per-call :DONE:
-[[file:src/sim/world.rs::1217][world.rs:1217]]
-
-The test stub's ~name(&self)~ does ~Box::leak(format!(...))~ each
-invocation. Marked "fine for tests" but a future test that loops a
-million ~stub.name()~ calls would burn through memory. Use
-~static "stub"~ or build the name once in ~new()~ and return ~&str~
-into a stored ~String~.
-
-** M6. Connections + edges are linear scans on every read :DEFER:
-[[file:src/sim/world.rs::529][world.rs:529]], also ~parent_count~,
-~aggregate_child_bounds~
-
-~Vec<(u64, u64)>~ filtered by parent/child on every aggregation
-call. For a 50-component topology with ~50 edges, that's ~2500
-ops per tick. Fine today. If scaled to thousands of components,
-consider a ~HashMap<u64, Vec<u64>>~ index alongside the Vec
-(rebuilt on edit).
-
-** M7. ~scenario_events_since~ silently swallows the gap on eviction :DONE:
-[[file:src/sim/scenario.rs::281][scenario.rs:281]]
-
-The capped ring (~SCENARIO_EVENT_CAPACITY = 4096~) evicts oldest.
-A client polling ~since=N~ sees only events with ~id >= N~ that
-survived. If the cursor is in the evicted range, the client misses
-events without any indication. The /api/scenario response doesn't
-carry an "earliest available id." Add it:
+** H6. ~set_main_meter~ failure mid-~make-meter~ leaves a partial meter :TODO:
+[[file:src/lisp/make.rs::257][src/lisp/make.rs:257-260]]
 
 #+begin_src rust
-struct ScenarioEventsResponse {
-    events: Vec<ScenarioEvent>,
-    next_event_id: u64,
-    earliest_id: u64,  // new
+let h = register_with_modes(&w, meter, ...)?;
+apply_initial_name(&w, id, a.name);
+if a.main.unwrap_or(false) {
+    w.set_main_meter(id).map_err(Error::invalid_argument)?;
 }
 #+end_src
 
-Client compares ~since~ against ~earliest_id~ and surfaces "lost
-N events."
+A second ~:main t~ meter in the same microgrid hits the
+~set_main_meter~ Err — but the meter is already in the registry,
+named, and (if anyone followed up) connected to its successors.
+Eval surfaces the error but the world is partially mutated.
 
-** M8. ~Config::reload~ leaves the world reset when eval fails :DONE:
-[[file:src/lisp/mod.rs::397][lisp/mod.rs:397]]
+Fix: probe the main-meter slot BEFORE ~register_with_modes~, or
+roll back the registry insert on Err.
 
-~reload~ runs ~world.reset()~ before ~eval_file~. If the eval
-fails, the world stays empty (all components gone) and the error is
-just logged. Subsequent gRPC / UI requests see no components until
-the user saves a valid config again.
-
-Better: eval into a side context first, swap on success. Or at
-least keep a snapshot for rollback. As a v1 minimum, surface the
-failure on /api/scenario or in a "config status" endpoint so the UI
-can show a banner.
-
-* Low severity — polish
-
-** L1. ~ui::parse_metric~ is hand-maintained :DONE:
-[[file:src/ui/mod.rs::324][ui/mod.rs:324]]
-
-Match arm per ~Metric~ variant. Adding a metric without touching
-this returns ~unknown metric~ from the UI. Derive ~FromStr~ for
-~Metric~ off ~Metric::as_str~ to keep it in sync.
-
-** L2. ~DEFAULT_CATEGORIES~ is a hardcoded list :DONE:
-[[file:src/ui/mod.rs::379][ui/mod.rs:379]]
-
-New component category in Rust requires manual addition to this
-slice. Could iterate over Category variants reflectively (or just
-hardcode and note the duplication in CLAUDE.md).
-
-** L3. Empty body in tick for Meter/Grid/Chp is fine but worth a doc note :DONE:
-Telegraphs that these are read-only aggregators / markers. Not a
-bug; trait default would do the same. Re-reading: ~tick~ is a
-*required* trait method (no default), so each component has to
-spell it out — empty body is the contract for "this component
-has no per-tick internal state to advance." Not worth changing.
-
-** L4. ~ComponentHistory::push_snapshot~ only takes the first VecBounds segment for charts :DONE:
-[[file:src/sim/history.rs::152][history.rs:152]]
-
-For multi-segment bounds (e.g. forbidden gap), only the first
-[lower, upper] feeds the chart series. Documented in the comment.
-Worth surfacing in the API: ~/api/history~ returns a single series
-but the underlying envelope might be multi-band. Future work.
-
-** L5. ~Config::reload~ doesn't return / surface eval errors :DONE:
-~reload(&self)~ returns ~()~. The watcher loop has nowhere to send
-the error. Could broadcast a ~WorldEvent::ConfigError~ for the UI
-to display.
-
-** L6. ~scenario-event~ accepts symbol or string; renders as string :DONE:
-[[file:src/lisp/mod.rs::515][lisp/mod.rs:515]]
-
-Re-reading: both branches canonicalize to a string with the same
-content (symbol "outage" → "outage", string "outage" → "outage").
-The wire shape is consistent regardless of input form, so the
-"inconsistency" my review note flagged isn't actually one. No
-change needed.
-
-** L7. ~ScenarioJournal::record_sample~ reaper uses an inefficient loop :DONE:
-[[file:src/sim/scenario.rs::150][scenario.rs:150]]
+** H7. ~pre_tick~ hook holds the interpreter lock through the whole tick :TODO:
+[[file:src/lisp/mod.rs::274][src/lisp/mod.rs:274-282]]
 
 #+begin_src rust
-while self.window_avgs.len() > WINDOW_AVG_CAPACITY {
-    if let Some(&oldest) = self.window_avgs.keys().next() {
-        self.window_avgs.remove(&oldest);
-    }
-}
+let pre_tick_hook = Arc::new(move |w: &MicrogridSite| {
+    let mut guard = hook_ctx.borrow_mut();   // global ctx lock
+    for c in w.components() { c.refresh_inputs(&mut guard); }
+    timer_handle.tick(&mut guard);
+});
 #+end_src
 
-BTreeMap has ~pop_first~ — single call, no key clone. Tiny perf
-nit; runs at most once per sample.
+~hook_ctx~ is the ~SharedMut<TulispContext>~ — same lock
+~/api/eval~ grabs. A long-running paste blocks every microgrid's
+physics tick until eval finishes. ~auto_advance~ also grabs this
+lock for its ~:on~ funcalls.
 
-** L8. Unmatched single quote in runtime_modes error message :DONE:
-[[file:src/lisp/runtime_modes.rs::43][runtime_modes.rs:43]]
+No quick fix — splitting ~refresh_inputs~ to an atomics-only path
+that doesn't need the interpreter is a real refactor. Worth a doc
+note in the hook installer until then.
 
-#+begin_src rust
-"unknown :{} '{sym}; expected one of {}"
-//                ^ no closing single quote
-#+end_src
+** H8. ~microgrid_registered~ broadcast capacity 64 + Lagged handling :TODO:
+[[file:src/lisp/mod.rs::174][src/lisp/mod.rs:174]],
+[[file:src/ui/mod.rs::1830][src/ui/mod.rs:1830]]
 
-Cosmetic; renders as ~unknown :health 'borked; expected one of ...~.
-Likely intentional (treating ~'borked~ as the symbol literal) but
-inconsistent with normal English quoting.
+A 64+ make-microgrid burst (mass-create script) lags the WS pump's
+receiver. The pump's Lagged branch just ~continue~ — silently
+dropping any registrations that fell off the back. Re-snapshot on
+Lagged (re-read the registry, spawn forwarders for every entry
+that lacks one) or bump capacity to 1024.
 
-** L9. Empty Grid telemetry :DONE:
-[[file:src/sim/grid.rs::45][grid.rs:45]]
+* Medium severity
 
-Telemetry returns only id + category. A control app reading grid
-voltage / frequency goes to the meter, not the grid. Probably
-intentional but worth a doc note.
+** M1. ~start_timeout_loop~ cadence drift                           :TODO:
+[[file:src/lisp/mod.rs::392][src/lisp/mod.rs:392]]
 
-** L10. ~timeout_tracker~'s ~remove_expired~ walks the whole map :DONE:
-[[file:src/timeout_tracker.rs::26][timeout_tracker.rs:26]]
+~tokio::time::sleep(Duration::from_millis(100))~ instead of
+~interval(100ms)~ with ~MissedTickBehavior::Skip~. Under load the
+actual delay per iteration drifts above 100 ms; timeout precision
+follows. Mostly best-effort already; easy idiom fix.
 
-O(N) over registered components per poll (100 ms interval). For
-typical scales, fine. For thousands of components with active
-timeouts, a ~BinaryHeap<(Instant, u64)>~ would let the loop pop the
-single earliest entry.
+** M2. Per-mg config files have no forward-reference safety          :TODO:
+[[file:sim/common.lisp::68][sim/common.lisp]] +
+[[file:src/lisp/mod.rs::1497][~load-microgrid-configs~ in src/lisp/mod.rs]]
 
-** L11. Default ~default_request_lifetime~ is 60 s :DONE:
-[[file:src/lisp/mod.rs::53][lisp/mod.rs:53]]
+~(load-microgrid-configs)~ loads ~microgrids/config.*.lisp~ in
+sorted order. Nothing prevents ~config.2.lisp~ from referencing a
+defvar or defun that only ~config.10.lisp~ introduces. Today each
+per-mg file is expected to be self-contained, but the rule isn't
+enforced. Either document the constraint prominently or sandbox
+each file with its own lexical scope.
 
-Hardcoded; ~(set-default-request-lifetime-ms N)~ can override. The
-gRPC server's clamp ~[10, 900]~ doesn't apply to the default
-path — a config that sets default to 3 s would arm 3 s timeouts
-through ~set-active-power~. Mostly OK because the lisp side has
-its own ~MIN_SET_ACTIVE_POWER_LIFETIME_MS = 150~ clamp.
+** M3. No graceful shutdown                                          :TODO:
+Every tokio task (physics, history sampler, scenario auto-advance,
+frequency driver, WS forwarders per session, gRPC servers, timeout
+loop) runs until process exit. No ~CancellationToken~ plumbed. Ctrl-C
+kills mid-tick — history rings lose the last second of samples, an
+open CSV sink loses its trailing fsync. Production-grade fix; dev
+tool is fine as-is. Flagging for visibility.
 
-* Documentation accuracy
+* Architecture / complexity
 
-** D1. ~World::disconnect~ doc says "single edge" :DONE:
-Fixed alongside M1.
+Not bugs. Directional suggestions for refactoring as the codebase
+grows.
 
-** D2. ~SetpointError::NotHealthy~ docstring :DONE:
-Variant removed in H5; the surviving ~Unsupported~ doc spells out
-where the health check actually lives.
+** A1. ~src/lisp/mod.rs~ is 2621 lines                              :TODO:
 
-** D3. ~World::reset~ doc doesn't list what's *not* reset :DONE:
-Rewritten alongside H1 to call out grid state as the one
-intentional carry-over.
+Holds: Config + Metadata + PersistedOverride structs, ~Config::new~
+(~170 lines), ~Config::reload~, ~Config::watch~, all ~AsPlist!~
+arg structs, 20+ ~register_*~ defun installers, the timeout loop,
+the TAGS pass, overrides plumbing, and tests. Suggested split:
 
-** D4. ~setpoint_logs~ field doc — accurate, no change needed :DONE:
-Re-read confirms the existing field doc spells out the broadcast
-fan-out clearly.
+#+begin_example
+src/lisp/
+├── mod.rs           # Config, Metadata, re-exports
+├── boot.rs          # Config::new, reload, watch, start_timeout_loop
+├── overrides.rs     # overrides_path, persisted_overrides, append/remove
+├── tags.rs          # tags_table
+├── defuns/
+│   ├── mod.rs       # register_runtime entry point
+│   ├── microgrids.rs
+│   ├── frequency.rs
+│   ├── grid_state.rs
+│   ├── world_ops.rs
+│   ├── scenario.rs
+│   ├── reset.rs
+│   ├── fs.rs
+│   ├── watches.rs
+│   ├── load_drivers.rs
+│   ├── reactive.rs
+│   ├── setpoints.rs
+│   └── time.rs
+├── args.rs          # AsPlist! arg structs
+└── tests.rs
+#+end_example
 
-** D5. ~Battery::aggregate_power_w~ doesn't note the apparent/active asymmetry :DONE:
-Added the asymmetry note on ~aggregate_power_w~ in the M4 sweep.
+** A2. ~src/ui/mod.rs~ is 1857 lines                                 :TODO:
 
-* Test coverage gaps
+Same shape as lisp/mod.rs. Suggested split:
 
-** T1. No test for ~reset()~ leaving non-history state behind :DONE:
-~reset_clears_scenario_and_main_meter~ added in the H1 commit.
+#+begin_example
+src/ui/
+├── mod.rs           # serve(), router(), re-exports
+├── state.rs         # MicrogridState, MicrogridLoopbacks
+├── loopback.rs      # spawn_microgrid_loopback, build_microgrid, supervisor
+├── events_ws.rs     # event_pump, WireEvent
+├── handlers/
+│   ├── topology.rs
+│   ├── eval.rs
+│   ├── history.rs
+│   ├── snapshots.rs
+│   ├── scenario.rs
+│   ├── scenarios.rs
+│   ├── microgrids.rs
+│   ├── microgrid_status.rs
+│   └── persisted.rs
+└── tests.rs
+#+end_example
 
-** T2. No test for inverter dispatch when every child is unhealthy :DONE:
-~no_healthy_children_means_zero_published~ added in the H4 commit.
+** A3. ~ui-assets/app.js~ is 4178 lines                              :TODO:
 
-** T3. No test for augmenting bounds on an EV charger :DONE:
-~augment_active_bounds_narrows_validation_and_telemetry~ and
-~augmentation_expires_and_rated_returns~ added in the H3 commit.
+Single-file JS with no module system. Pieces that obviously want
+their own files: ~topology~ module (~250 lines), ~dashboardTiles~
++ ~batteryPairs~ + ~pvRows~ + ~evRows~ + ~chpRows~ (~900 lines),
+~scenariosPanel~, ~liveCharts~, ~pulseBar~, ~repl~ module
+(overlay + autocomplete + indent + paste handlers), ~inspect~,
+~gridFrequency~, ~microgridsPanel~, ~openWebSocket~,
+mode/subview persistence.
 
-** T4. No test for ~SetpointError::OutOfBounds~ bounds-field correctness :DONE:
-~out_of_bounds_error_reports_augmented_envelope~ added in the H2
-commit.
+Two paths:
+- Switch to native ES modules (~<script type="module">~). Largest
+  change but most idiomatic; modern browsers + dev-local-only
+  deployment make it painless.
+- Concatenated single-file build via a tiny make step or ~cat~ +
+  manifest. Cheaper, but every dev has to remember to run it.
 
-** T5. No test for hot-reload with active scenario :DEFER:
-The scenario-journal-reset half is pinned by T1's
-~reset_clears_scenario_and_main_meter~; an end-to-end
-hot-reload-on-running-scenario test would chain that against the
-notify-watch path. Worth adding when the watch path gets more
-complex; minimal value right now since the H1 fix already
-discharges the journal in ~reset()~.
+Recommend ES modules.
 
-** T6. No test for ~Config::watch~ debouncing :DEFER:
-Timing-based; the natural shape is "touch the file twice within
-DEBOUNCE, assert exactly one reload" which is flaky without
-mocking the inotify clock.
+** A4. ~src/sim/microgrid_site.rs~ is 1536 lines                     :TODO:
 
-** T7. No test for ~scenario_events_since~ with evicted history :DEFER:
-Pinned the new ~earliest_event_id~ cursor in the M7 commit at the
-API surface; a "fill the ring past capacity" test in a unit module
-would be straightforward, but the contract is asserted at the
-HTTP layer (clients see the field). Could add a journal-level
-unit test as follow-up.
+Container of MicrogridSite with 30+ methods plus runtime modes,
+history sampling, scenario journal, CSV sinks, main-meter slot,
+timeout tracker. Could pull:
 
-** T8. No test for ~CommandMode::Timeout~ actually hanging :DEFER:
-Needs ~tokio::time::timeout~ wrapping the call; not load-bearing
-behavior — a deferred follow-up.
+#+begin_example
+src/sim/microgrid_site/
+├── mod.rs           # Core registry + topology
+├── history.rs       # record_history_snapshot, spawn_history_sampler
+├── scenarios.rs     # scenario_record, scenario_summary, scenario_report
+└── csv.rs           # scenario_csv_* wrappers
+#+end_example
 
-** T9. No test for ~world-connect~ / ~world-disconnect~ to non-existent ids :DEFER:
-Behavior is documented by code (silent drop via filter_map) and
-caught by the M1 doc fix. Edge case, deferred.
+** A5. ~Config::new~ has delicate ordering invariants                :TODO:
 
-* Architecture observations (not bugs, just notes)
+Pre_tick installs AFTER eval_file (so the hook closure can capture
+the timer handle), but the hook is installed retroactively on every
+site that registered DURING eval. The ~make-microgrid~ defun reads
+~pre_tick_slot~ to install on later sites. Frequency driver spawns
+BEFORE eval. Timeout loop spawns BEFORE eval. Microgrid-registered
+channel is created BEFORE eval but subscribed-to from WS later.
 
-** A1. World is implicitly shared via Arc<WorldInner>
-~Clone~ on World is shallow — every clone points at the same inner.
-~set_pre_tick~, ~scenario_start~ etc. mutate state visible to all
-clones. Consistent with the simulator-is-a-singleton model;
-documented in field docstrings.
+The constraints are real but invisible. Either add a comment block
+at the top of ~Config::new~ listing them, or factor the bootstrap
+into explicit phases (~prepare_state~, ~register_defuns~,
+~spawn_long_lived_tasks~, ~eval_config~, ~install_post_eval_hooks~).
 
-** A2. Inverter/battery DC-bus contract is per-tick additive
-~set_dc_active_reactive~ accumulates into ~pending_p/q~; ~tick~
-drains and clamps the sum. This is the right semantics for an
-M×N (multiple inverters → one battery) topology. Verified by
-~parallel_paths_share_one_inverter~ for the *aggregation* side, but
-not for the *dispatch* (multi-inverter pushing same battery) side.
+** A6. Bundle shared handles into a ~RuntimeHandles~ struct          :TODO:
 
-** A3. ~refresh_inputs~ holds the interpreter write lock for the full
-component loop
-[[file:src/lisp/mod.rs::134][lisp/mod.rs:134]] — every
-~refresh_inputs~ runs sequentially under one lock acquisition.
-Documented in the doc on ~SimulatedComponent::refresh_inputs~:
-"the lock is held for every component in turn and the loop's
-total cost is bounded by the slowest implementor." Right design;
-worth surfacing if a future implementor wants to do something
-expensive there.
+~Config::new~ plumbs ~12 Arc-clones through the call. Define a
+~RuntimeHandles~ struct (or similar) that carries ~ctx~, ~router~,
+~current_microgrid~, ~id_allocator~, ~pre_tick_slot~,
+~microgrid_registered~, ~grid_frequency~, etc. Pass that into each
+~register_*~. Each fn picks the fields it needs. Side benefit:
+fixes CI2's ~too_many_arguments~ on ~register_microgrids~ without
+an ~#[allow]~.
 
-** A4. ~spawn_physics~ / ~spawn_history_sampler~ never exit
-Single-config-per-process pattern. ~main~ doesn't ~join~ them; on
-process exit tokio kills the runtime. Fine.
+** A7. "Snapshot under lock, fire callbacks outside" pattern         :TODO:
 
-** A5. The pre-tick hook now drains the tulisp-async mailbox
-(After the recent migration.) Documented in our updated CLAUDE.md.
-A timer that takes longer than ~physics_tick_ms~ (default 100 ms)
-will delay the *next* tick, since the hook holds the lock for the
-whole drain + refresh pass. Worth a comment in the hook installer.
-
-* Lisp DSL findings
-
-** LD1. ~sim/scenarios.lisp~ comment is stale post-same-ctx-rewrite :DONE:
-[[file:sim/scenarios.lisp::23][sim/scenarios.lisp:23]]
-
-#+begin_quote
-Timer callbacks run in a fresh tulisp ctx — they can see global
-symbols + defuns but NOT let-bound state from the surrounding
-scope. The random-outage--* state below is therefore deliberately
-hoisted to globals so each timer firing can read it.
-#+end_quote
-
-Outdated. Under the same-ctx tulisp-async we just migrated to,
-timer bodies funcall on the parent ~TulispContext~ — lexical
-captures via lambda *do* survive across firings. The hoisted
-~random-outage--*~ globals could be replaced with a closure over
-let-bound state, which would also lift the "only one chain per
-process" limitation the comment calls out.
-
-Not a bug; the current implementation still works. Worth noting
-in a follow-up since the file is user-visible (load'd by sample
-scenarios) and the comment is misleading for users writing their
-own scenarios.
-
-** LD2. ~every~ macro doesn't expose the new ~&rest ARGS~ on run-with-timer :DONE:
-[[file:sim/common.lisp::37][sim/common.lisp:37]]
-
-After our tulisp-async migration ~run-with-timer~ supports
-trailing args, but ~every~'s wrapper doesn't pass anything
-through. Adding a ~:args~ plist field would let users write
-
-#+begin_src lisp
-(every :milliseconds 500 :call 'tick :args (list battery-id))
-#+end_src
-
-instead of having to construct a closing lambda. Cosmetic;
-flagged in our last conversation about tulisp-async.
-
-** LD3. ~scenario-end-after~ takes minutes, not seconds :DONE:
-[[file:sim/common.lisp::71][sim/common.lisp:71]]
-
-Most other DSL ops are in seconds (e.g. ~run-with-timer~) or
-milliseconds (~every :milliseconds N~). ~scenario-end-after~ takes
-minutes. Surface in the docstring (already mentions "MINUTES"
-explicitly) but a consistency-with-the-rest argument could
-push toward seconds.
-
-** LD4. ~active-timers~ is process-global :DONE:
-[[file:sim/common.lisp::21][sim/common.lisp:21]]
-
-Single global list. If two distinct scenario scripts ever load
-into the same process (unlikely with current single-Config
-design), they'd share the list and ~reset-state~ would cancel
-both. Document or namespace.
+[[file:src/sim/scenarios.rs::334][~auto_advance_tick~]] and the start /
+stop / jump siblings all replicate the same three-step dance: lock
+registry, snapshot the transitions, drop lock, funcall lambdas
+outside the lock. Worth a helper like ~transition_under_lock<T>(reg,
+f) -> Vec<T>~ that callers thread their lambdas through.
 
 * Recommended remediation order
 
-1. *H1* and *T1* — state leaks in ~reset~. Small fix; test caught
-   the day they were introduced wouldn't have shipped.
-2. *H4* and *T2* — inverter lying about delivered power when all
-   children unhealthy. Real telemetry correctness bug.
-3. *H3* and *T3* — EV charger silently dropping augmentations.
-4. *H2* and *T4* — setpoint error reports wrong bounds.
-5. *H7* — surface config-load errors to the caller.
-6. *M1* doc fix on ~disconnect~ — quick win.
-7. *M3* reactive-defaults overriding — pick a policy and stick to
-   it (per-field merge is the least-surprising option).
-8. The Low-severity items can be batched into a single pass; none
-   require coordination.
+1. *CI1 + CI2 + CI3* — one commit each, gets CI green.
+2. *H1* (XSS escapes) — 30 lines.
+3. *H3* (write stub before spawner) + *H2* (port race) — together,
+   they fix the create handler's failure modes.
+4. *H4* (Config::watch unwraps) + *H5* (overrides path fallback) +
+   *H6* (set_main_meter rollback) — small contained fixes.
+5. *H8* (broadcast capacity + Lagged re-snapshot) — touches WS
+   pump.
+6. *H7* (interpreter-lock pre_tick) — doc note for now; real fix is
+   a refactor.
+7. *M1* (interval), *M2* (forward-ref doc), *M3* (graceful
+   shutdown deferred).
+8. *A6* (RuntimeHandles) — pulls in cleanly under CI2's clippy
+   threshold and unblocks the bigger splits.
+9. *A1 / A2 / A4* — module splits. Pick one per branch; each is
+   ~1 day.
+10. *A3* — JS modules. Bigger; do after the Rust splits.
