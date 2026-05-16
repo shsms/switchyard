@@ -1648,7 +1648,13 @@ function setupDrawerSplitter() {
     splitter: document.getElementById("drawer-splitter"),
     getStart: () => drawer.getBoundingClientRect().height,
     apply: (h) => {
-      main.style.gridTemplateRows = `1fr 5px ${h}px`;
+      // Main's grid template has FOUR rows: the auto mgheader, the
+      // 1fr topology/side row, the 5px splitter, the drawer.
+      // An earlier shape rewrote only three values here, dropping
+      // the mgheader's `auto` track — the grid then collapsed
+      // and the canvas + side panel disappeared as soon as the
+      // user dragged the splitter at all. Keep all four tracks.
+      main.style.gridTemplateRows = `auto 1fr 5px ${h}px`;
     },
     clamp: (h, vh) => {
       const mainH = main.getBoundingClientRect().height;
