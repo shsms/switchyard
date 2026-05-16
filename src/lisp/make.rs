@@ -248,6 +248,23 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
                 .power
                 .as_ref()
                 .and_then(|v| DynamicScalar::from_lisp(v.as_inner(), 0.0));
+            // Probe the main-meter slot BEFORE registering. The
+            // previous shape registered first and only checked at
+            // `set_main_meter` time — a `:main t` collision left a
+            // half-registered meter (in the components vec + named
+            // + reachable via get) without the main flag, since the
+            // Err from set_main_meter propagated past the in-progress
+            // construction. Failing the eval before any registry
+            // mutation keeps the world consistent on rejection.
+            let wants_main = a.main.unwrap_or(false);
+            if wants_main
+                && let Some(existing) = w.main_meter_id()
+                && existing != id
+            {
+                return Err(Error::invalid_argument(format!(
+                    "main meter already set to {existing}; can't claim {id}"
+                )));
+            }
             let meter = Meter::new(
                 id,
                 interval,
@@ -257,7 +274,7 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
             );
             let h = register_with_modes(&w, meter, a.health, a.telemetry_mode, a.command_mode)?;
             apply_initial_name(&w, id, a.name);
-            if a.main.unwrap_or(false) {
+            if wants_main {
                 w.set_main_meter(id).map_err(Error::invalid_argument)?;
             }
             connect_successors(&w, id, &a.successors);

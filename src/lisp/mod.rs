@@ -516,10 +516,11 @@ impl Config {
         if result.is_ok()
             && let Err(e) = self.append_to_overrides_file(src)
         {
-            log::error!(
-                "Failed to append override to {}: {e}",
-                self.overrides_path().display(),
-            );
+            let label = self
+                .overrides_path()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "<no resolvable microgrid>".to_string());
+            log::error!("Failed to append override to {label}: {e}");
         }
         // Bump the version on the microgrid the eval actually
         // mutated (the one current_microgrid points at, or — if no
@@ -545,7 +546,15 @@ impl Config {
     }
 
     fn append_to_overrides_file(&self, src: &str) -> std::io::Result<()> {
-        let path = self.overrides_path();
+        let Some(path) = self.overrides_path() else {
+            // No resolvable microgrid scope — nothing to persist
+            // against. Boot path can't reach this; a future
+            // `(reset-microgrid)`-then-eval flow would.
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "no resolvable microgrid scope; can't persist override",
+            ));
+        };
         // Per-mg overrides live under `microgrids/`; the dir might not
         // exist yet on a fresh checkout. Create lazily on the first
         // write so the user doesn't have to seed it manually.
@@ -571,7 +580,9 @@ impl Config {
     /// surface a parse error on the next reload, so we don't bother
     /// propagating it here.
     pub fn persisted_overrides(&self) -> Vec<PersistedOverride> {
-        let path = self.overrides_path();
+        let Some(path) = self.overrides_path() else {
+            return Vec::new();
+        };
         if !path.exists() {
             return Vec::new();
         }
@@ -622,7 +633,17 @@ impl Config {
         if dropped == 0 {
             return Ok(0);
         }
-        let path = self.overrides_path();
+        let Some(path) = self.overrides_path() else {
+            // persisted_overrides() returned entries above, so the
+            // path was resolvable then; reach here only if the
+            // current-microgrid pointer flipped to None in between.
+            // Bail rather than touch the filesystem with a nonsense
+            // path.
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "no resolvable microgrid scope; can't rewrite overrides",
+            ));
+        };
         let tmp = path.with_extension("lisp.tmp");
         {
             let mut file = fs::OpenOptions::new()
@@ -660,30 +681,32 @@ impl Config {
         Ok(dropped)
     }
 
-    fn overrides_path(&self) -> PathBuf {
+    /// Resolve the per-microgrid overrides file path. Keyed off the
+    /// active microgrid id (set by /api/mg/{id}/eval and the
+    /// scenarios per-mg replay), falling back to the first registry
+    /// entry when nothing's selected.
+    ///
+    /// Returns `None` when neither source resolves — current is
+    /// `None` AND the registry is empty. The boot path can't reach
+    /// that case (`Config::new` rejects an empty registry), but
+    /// guarding against it here keeps a future `(reset-microgrid)`-
+    /// then-eval flow from writing to a meaningless
+    /// `config.0.overrides.lisp`.
+    fn overrides_path(&self) -> Option<PathBuf> {
         let load_dir = Path::new(&self.filename)
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| PathBuf::from("."));
-        // Per-microgrid overrides live next to the per-mg config file
-        // under `microgrids/`. Keyed by the active microgrid id (set
-        // by /api/mg/{id}/eval and the scenarios per-mg replay).
-        // Falls back to the first registered microgrid for callers
-        // that read overrides before any UI request has selected one
-        // — every config registers at least one microgrid, so this
-        // is always a valid id.
-        let mg_id = self.current_microgrid.read().unwrap_or_else(|| {
-            self.microgrids
-                .lock()
-                .keys()
-                .next()
-                .copied()
-                .unwrap_or_default()
-        });
-        load_dir
-            .join("microgrids")
-            .join(format!("config.{mg_id}.overrides.lisp"))
+        let mg_id = self
+            .current_microgrid
+            .read()
+            .or_else(|| self.microgrids.lock().keys().next().copied())?;
+        Some(
+            load_dir
+                .join("microgrids")
+                .join(format!("config.{mg_id}.overrides.lisp")),
+        )
     }
 
     /// Directory holding per-microgrid `config.<id>.lisp` +
@@ -727,14 +750,18 @@ impl Config {
         let dir = self.snapshots_dir();
         let dest = sanitise_snapshot_path(&dir, name)?;
         fs::create_dir_all(&dir)?;
-        let src = self.overrides_path();
-        if src.exists() {
-            fs::copy(&src, &dest)?;
-        } else {
-            // No overrides means the snapshot is empty config + base
-            // config.lisp; write an empty file so load_snapshot has
-            // something to read.
-            fs::write(&dest, "")?;
+        // Empty (no overrides for this mg yet) is a valid snapshot —
+        // the user just hasn't edited anything. Treat a missing
+        // resolvable scope the same way: write an empty snapshot so
+        // load_snapshot can replay it. Reading a path that doesn't
+        // exist falls through to the same empty-file write.
+        match self.overrides_path() {
+            Some(src) if src.exists() => {
+                fs::copy(&src, &dest)?;
+            }
+            _ => {
+                fs::write(&dest, "")?;
+            }
         }
         Ok(dest)
     }
@@ -749,7 +776,9 @@ impl Config {
         if !src.exists() {
             return Err(format!("snapshot {name:?} not found"));
         }
-        let dest = self.overrides_path();
+        let dest = self.overrides_path().ok_or_else(|| {
+            "no resolvable microgrid scope; can't pick a destination".to_string()
+        })?;
         fs::copy(&src, &dest).map_err(|e| format!("copy snapshot failed: {e}"))?;
         self.reload()
     }
@@ -849,21 +878,35 @@ impl Config {
 
     pub async fn watch(self) {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-        let mut watcher = RecommendedWatcher::new(
+        // notify can fail at construction (out of inotify slots —
+        // `fs.inotify.max_user_watches` exhausted by an IDE running
+        // alongside) or at watch-registration time (file vanished).
+        // Either case kills hot-reload but the rest of the binary
+        // should keep serving; log and bail out of just this task.
+        let mut watcher = match RecommendedWatcher::new(
             move |res| {
                 futures::executor::block_on(async {
                     let _ = tx.send(res).await;
                 });
             },
             notify::Config::default(),
-        )
-        .unwrap();
-        watcher
-            .watch(
-                Path::new(&self.filename),
-                notify::RecursiveMode::NonRecursive,
-            )
-            .unwrap();
+        ) {
+            Ok(w) => w,
+            Err(e) => {
+                log::error!("watch: notify init failed: {e}; hot-reload disabled");
+                return;
+            }
+        };
+        if let Err(e) = watcher.watch(
+            Path::new(&self.filename),
+            notify::RecursiveMode::NonRecursive,
+        ) {
+            log::error!(
+                "watch: registering {}: {e}; hot-reload disabled",
+                self.filename
+            );
+            return;
+        }
         // Add every path the config registered via `(watch-file …)`.
         // Snapshotted now; reload-time additions take effect on the
         // next process restart (the live notify watcher isn't held
@@ -2586,6 +2629,30 @@ mod tests {
         let res = cfg.eval("(%make-meter :id 2 :main t)");
         assert!(res.is_err(), "expected duplicate-main error");
         assert!(res.unwrap_err().contains("main meter"));
+    }
+
+    /// The rejection from `duplicate_main_meter_rejects` shouldn't
+    /// leave a half-registered meter behind: the failing
+    /// `(%make-meter :main t)` must not land in `world.components()`
+    /// or `world.get(id)`. Regressed once when the slot check fired
+    /// AFTER `register_with_modes`.
+    #[test]
+    fn duplicate_main_meter_rejection_doesnt_register() {
+        let (cfg, _dir) = config_with(
+            "(set-microgrid-id 9)
+             (%make-meter :id 1 :main t)",
+        );
+        let before = cfg.site().components().len();
+        let _ = cfg.eval("(%make-meter :id 2 :main t)");
+        let after = cfg.site().components().len();
+        assert_eq!(
+            before, after,
+            "rejected :main meter leaked into the components list",
+        );
+        assert!(
+            cfg.site().get(2).is_none(),
+            "rejected :main meter is still reachable via get(2)"
+        );
     }
 
     /// A second `(scenario-start)` clears the previous run's events
