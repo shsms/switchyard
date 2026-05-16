@@ -751,7 +751,7 @@ reconnect within 30 s without manual refresh.
 ** TODO J1. tsctl-style scenarios commands (see B3)
 ** TODO J2. tsctl-style faults commands (see E2)
 ** DONE J3. swctl snapshot save/load (see G1)
-** TODO J4. swctl dashboard --tail
+** DONE J4. swctl dashboard --tail
 
   swctl dashboard --tail
 
