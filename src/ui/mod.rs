@@ -1751,11 +1751,17 @@ async fn event_pump(mut socket: WebSocket, config: Config) {
             }
         });
     }
+    // Track every mg id we've already spawned a forwarder for, so a
+    // Lagged on the registered channel can re-snapshot the registry
+    // and back-fill forwarders for any entries that landed during
+    // the gap (mass-create burst) without duplicating live ones.
+    let mut subscribed_ids: std::collections::HashSet<u64> = std::collections::HashSet::new();
     {
         let reg = config.microgrids();
         let r = reg.lock();
         for (id, entry) in r.iter() {
             spawn_forwarder(*id, entry.site.subscribe_events(), fwd_tx.clone());
+            subscribed_ids.insert(*id);
         }
     }
     let mut registered_rx = config.subscribe_microgrid_registered();
@@ -1823,16 +1829,43 @@ async fn event_pump(mut socket: WebSocket, config: Config) {
             // process lifetime.
             new_id = registered_rx.recv() => match new_id {
                 Ok(id) => {
+                    if subscribed_ids.contains(&id) {
+                        // Race-tolerant: a Lagged-driven re-snapshot
+                        // already picked this id up. Drop the dupe.
+                        continue;
+                    }
                     let entry = config.microgrids().lock().get(&id).cloned();
                     if let Some(e) = entry {
                         spawn_forwarder(id, e.site.subscribe_events(), fwd_tx_keepalive.clone());
+                        subscribed_ids.insert(id);
                     } else {
                         log::warn!("ws: microgrid_registered({id}) but registry has no entry");
                     }
                 }
                 Err(BroadcastRecv::Lagged(n)) => {
-                    log::warn!("ws: microgrid_registered channel lagged {n} ids");
-                    continue;
+                    // A create-burst overflowed the broadcast channel;
+                    // the per-id notifications between our last
+                    // recv and now are lost. Re-snapshot the registry
+                    // and spawn forwarders for any entry we don't
+                    // already have a subscription for.
+                    log::warn!(
+                        "ws: microgrid_registered channel lagged {n} ids; re-snapshotting registry",
+                    );
+                    let entries: Vec<(u64, crate::sim::microgrids::MicrogridEntry)> = config
+                        .microgrids()
+                        .lock()
+                        .iter()
+                        .map(|(id, e)| (*id, e.clone()))
+                        .collect();
+                    for (id, entry) in entries {
+                        if subscribed_ids.insert(id) {
+                            spawn_forwarder(
+                                id,
+                                entry.site.subscribe_events(),
+                                fwd_tx_keepalive.clone(),
+                            );
+                        }
+                    }
                 }
                 Err(BroadcastRecv::Closed) => {
                     // Config dropped its Sender; nothing more will arrive.

@@ -165,12 +165,14 @@ impl Config {
         let microgrids = crate::sim::microgrids::new_registry();
         let current_microgrid = crate::sim::microgrids::new_current_microgrid();
         let router = SiteRouter::new(microgrids.clone(), current_microgrid.clone(), site.clone());
-        // Capacity = 64 because new-microgrid bursts are tiny (config
-        // eval emits a few in quick succession, runtime creates are
-        // one-at-a-time). Lagged receivers can only miss notifications
-        // here, not events on per-site buses — the SPA's reconnect
-        // already covers WS sessions that fall behind.
-        let microgrid_registered = Arc::new(broadcast::channel(64).0);
+        // Capacity = 1024 to absorb a mass-create burst (e.g. a
+        // script POST'ing /api/microgrids/create a few hundred times
+        // back-to-back) without lagging the WS event pump's
+        // receiver. Even on Lagged the pump re-snapshots the
+        // registry and back-fills forwarders, so capacity tuning is
+        // belt-and-suspenders — but a fresh subscriber spinning up
+        // mid-burst still benefits from the extra slack.
+        let microgrid_registered = Arc::new(broadcast::channel(1024).0);
         // Enterprise-wide grid frequency state — one OU process drives
         // every MicrogridSite in the registry so they share the
         // physically-correct same frequency. The driver task is
