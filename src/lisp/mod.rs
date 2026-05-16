@@ -252,7 +252,8 @@ impl Config {
         crate::sim::scenarios::spawn_auto_advance(
             scenarios.clone(),
             ctx.clone(),
-            world.clone(),
+            microgrids.clone(),
+            current_microgrid.clone(),
             clock.clone(),
         );
 

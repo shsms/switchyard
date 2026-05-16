@@ -785,7 +785,8 @@ async fn scenarios_start(
         crate::sim::scenarios::start(
             &cfg.scenarios(),
             &cfg.interpreter(),
-            &cfg.site(),
+            &cfg.microgrids(),
+            &cfg.current_microgrid_handle(),
             &clock,
             &name,
             now,
@@ -799,7 +800,7 @@ async fn scenarios_stop(
     Path(name): Path<String>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     run_scenario_op(config, move |cfg, now| {
-        crate::sim::scenarios::stop(&cfg.scenarios(), &cfg.site(), &name, now)
+        crate::sim::scenarios::stop(&cfg.scenarios(), &cfg.microgrids(), &name, now)
     })
     .await
 }
@@ -812,7 +813,8 @@ async fn scenarios_next(
         crate::sim::scenarios::step(
             &cfg.scenarios(),
             &cfg.interpreter(),
-            &cfg.site(),
+            &cfg.microgrids(),
+            &cfg.current_microgrid_handle(),
             &name,
             1,
             now,
@@ -829,7 +831,8 @@ async fn scenarios_prev(
         crate::sim::scenarios::step(
             &cfg.scenarios(),
             &cfg.interpreter(),
-            &cfg.site(),
+            &cfg.microgrids(),
+            &cfg.current_microgrid_handle(),
             &name,
             -1,
             now,
@@ -846,7 +849,8 @@ async fn scenarios_jump(
         crate::sim::scenarios::jump(
             &cfg.scenarios(),
             &cfg.interpreter(),
-            &cfg.site(),
+            &cfg.microgrids(),
+            &cfg.current_microgrid_handle(),
             &name,
             idx,
             now,

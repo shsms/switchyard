@@ -33,6 +33,7 @@ use tulisp::{SharedMut, TulispContext, TulispObject};
 
 use crate::sim::MicrogridSite;
 use crate::sim::clock::{Clock, SharedClock};
+use crate::sim::microgrids::{CurrentMicrogrid, SharedMicrogrids, with_microgrid};
 
 #[derive(Clone, Debug)]
 pub struct Stage {
@@ -174,15 +175,32 @@ fn funcall_lambda(ctx: &SharedMut<TulispContext>, lam: &TulispObject) -> Result<
         .map_err(|e| e.format(&c))
 }
 
+/// Snapshot every (id, site) pair in the registry. Used by the
+/// per-microgrid scenario replay: scenario stage transitions
+/// journal + funcall the `:on` lambda once per microgrid, so
+/// scripts that reference globally-unique component ids land
+/// their side-effects on whichever microgrid owns the id, while
+/// id-less actions (e.g. `(set-frequency 50.0)`) apply across
+/// the enterprise.
+fn registered_sites(reg: &SharedMicrogrids) -> Vec<(u64, MicrogridSite)> {
+    reg.lock()
+        .iter()
+        .map(|(id, e)| (*id, e.site.clone()))
+        .collect()
+}
+
 /// Start a scenario at the wallclock-current stage. Clears any
-/// manual override and runs the entered stage's `:on` lambda.
-/// Records a `'scenario-start` event in the world's journal so the
+/// manual override and runs the entered stage's `:on` lambda
+/// once per registered microgrid (with `current_microgrid`
+/// flipped to that microgrid's id for the duration). Records a
+/// `'scenario-start` event in every microgrid's journal so the
 /// existing Report panel + setpoints / journal feed reflect the
-/// transition.
+/// transition enterprise-wide.
 pub fn start(
     reg: &SharedScenarios,
     ctx: &SharedMut<TulispContext>,
-    world: &MicrogridSite,
+    microgrids: &SharedMicrogrids,
+    current: &CurrentMicrogrid,
     clock: &Clock,
     name: &str,
     now: DateTime<Utc>,
@@ -203,21 +221,24 @@ pub fn start(
         e.runtime.manual_override = false;
         e.def.stages.get(idx).and_then(|s| s.on.clone())
     };
-    world.scenario_start(name.to_owned(), now);
-    if let Some(lam) = on {
-        funcall_lambda(ctx, &lam)?;
+    for (mg_id, site) in registered_sites(microgrids) {
+        site.scenario_start(name.to_owned(), now);
+        if let Some(ref lam) = on {
+            with_microgrid(current, mg_id, || funcall_lambda(ctx, lam))?;
+        }
     }
     Ok(())
 }
 
 /// Stop the scenario. Clears runtime state and records a
-/// `scenario-stop` event. MicrogridSite state (component setpoints, timers
-/// installed by previous stage lambdas) is NOT rolled back — callers
-/// that need a clean slate follow this with `(reset-state)` or load
-/// a fresh snapshot.
+/// `scenario-stop` event in every microgrid's journal. The
+/// underlying world state (component setpoints, timers installed
+/// by previous stage lambdas) is NOT rolled back — callers that
+/// need a clean slate follow this with `(reset-state)` or load a
+/// fresh snapshot.
 pub fn stop(
     reg: &SharedScenarios,
-    world: &MicrogridSite,
+    microgrids: &SharedMicrogrids,
     name: &str,
     now: DateTime<Utc>,
 ) -> Result<(), String> {
@@ -229,7 +250,9 @@ pub fn stop(
     e.runtime.stage_entered_at = None;
     e.runtime.manual_override = false;
     drop(r);
-    world.scenario_stop(now);
+    for (_, site) in registered_sites(microgrids) {
+        site.scenario_stop(now);
+    }
     Ok(())
 }
 
@@ -239,7 +262,8 @@ pub fn stop(
 pub fn jump(
     reg: &SharedScenarios,
     ctx: &SharedMut<TulispContext>,
-    world: &MicrogridSite,
+    microgrids: &SharedMicrogrids,
+    current: &CurrentMicrogrid,
     name: &str,
     idx: usize,
     now: DateTime<Utc>,
@@ -263,13 +287,12 @@ pub fn jump(
         }
         e.def.stages[idx].on.clone()
     };
-    world.scenario_record(
-        "stage-jump".to_owned(),
-        format!("{name}:{idx}"),
-        now,
-    );
-    if let Some(lam) = on {
-        funcall_lambda(ctx, &lam)?;
+    let payload = format!("{name}:{idx}");
+    for (mg_id, site) in registered_sites(microgrids) {
+        site.scenario_record("stage-jump".to_owned(), payload.clone(), now);
+        if let Some(ref lam) = on {
+            with_microgrid(current, mg_id, || funcall_lambda(ctx, lam))?;
+        }
     }
     Ok(())
 }
@@ -279,7 +302,8 @@ pub fn jump(
 pub fn step(
     reg: &SharedScenarios,
     ctx: &SharedMut<TulispContext>,
-    world: &MicrogridSite,
+    microgrids: &SharedMicrogrids,
+    current: &CurrentMicrogrid,
     name: &str,
     delta: isize,
     now: DateTime<Utc>,
@@ -296,7 +320,7 @@ pub fn step(
         let cur = e.runtime.current_stage.map(|i| i as isize).unwrap_or(-1);
         ((cur + delta).max(0).min(n - 1)) as usize
     };
-    jump(reg, ctx, world, name, target, now)
+    jump(reg, ctx, microgrids, current, name, target, now)
 }
 
 /// One pass of the auto-advance loop: for every running scenario
@@ -304,11 +328,14 @@ pub fn step(
 /// current stage if it differs from the recorded one. Returns the
 /// names that transitioned, mostly so tests can assert without
 /// reaching into the registry. Funcalls happen outside the registry
-/// lock so a long `:on` lambda doesn't block readers.
+/// lock so a long `:on` lambda doesn't block readers, and each
+/// stage transition replays the `:on` lambda once per microgrid
+/// with `current_microgrid` flipped to that microgrid's id.
 pub fn auto_advance_tick(
     reg: &SharedScenarios,
     ctx: &SharedMut<TulispContext>,
-    world: &MicrogridSite,
+    microgrids: &SharedMicrogrids,
+    current: &CurrentMicrogrid,
     clock: &Clock,
     now: DateTime<Utc>,
 ) -> Vec<String> {
@@ -332,16 +359,16 @@ pub fn auto_advance_tick(
             })
             .collect()
     };
+    let sites = registered_sites(microgrids);
     let mut out = Vec::with_capacity(to_run.len());
     for (name, idx, lam) in to_run {
-        world.scenario_record(
-            "stage-advance".to_owned(),
-            format!("{name}:{idx}"),
-            now,
-        );
-        if let Some(l) = lam {
-            if let Err(e) = funcall_lambda(ctx, &l) {
-                log::warn!("scenario {name} stage {idx} :on errored: {e}");
+        let payload = format!("{name}:{idx}");
+        for (mg_id, site) in &sites {
+            site.scenario_record("stage-advance".to_owned(), payload.clone(), now);
+            if let Some(ref l) = lam
+                && let Err(e) = with_microgrid(current, *mg_id, || funcall_lambda(ctx, l))
+            {
+                log::warn!("scenario {name} stage {idx} mg #{mg_id} :on errored: {e}");
             }
         }
         out.push(name);
@@ -357,7 +384,8 @@ pub fn auto_advance_tick(
 pub fn spawn_auto_advance(
     reg: SharedScenarios,
     ctx: SharedMut<TulispContext>,
-    world: MicrogridSite,
+    microgrids: SharedMicrogrids,
+    current: CurrentMicrogrid,
     clock: SharedClock,
 ) {
     tokio::spawn(async move {
@@ -367,7 +395,7 @@ pub fn spawn_auto_advance(
             tick.tick().await;
             let now = Utc::now();
             let c = clock.read().clone();
-            auto_advance_tick(&reg, &ctx, &world, &c, now);
+            auto_advance_tick(&reg, &ctx, &microgrids, &current, &c, now);
         }
     });
 }
@@ -445,7 +473,21 @@ mod tests {
             },
         );
         let ctx = SharedMut::new(TulispContext::new());
-        let world = MicrogridSite::new();
+        let site = MicrogridSite::new();
+        let microgrids = crate::sim::microgrids::new_registry();
+        microgrids.lock().insert(
+            2200,
+            crate::sim::microgrids::MicrogridEntry {
+                def: crate::sim::microgrids::MicrogridDef {
+                    id: 2200,
+                    name: "default".into(),
+                    grpc_port: 8800,
+                    tso: None,
+                },
+                site,
+            },
+        );
+        let current = crate::sim::microgrids::new_current_microgrid();
         let clock = Clock::default();
         // 15:30 local. Wallclock-current stage = 1; we should
         // transition.
@@ -461,14 +503,14 @@ mod tests {
         .single()
         .unwrap()
         .with_timezone(&chrono::Utc);
-        let moved = auto_advance_tick(&reg, &ctx, &world, &clock, now);
+        let moved = auto_advance_tick(&reg, &ctx, &microgrids, &current, &clock, now);
         assert_eq!(moved, vec!["two-stage".to_string()]);
         assert_eq!(reg.lock()["two-stage"].runtime.current_stage, Some(1));
 
         // Flip manual_override on; a second tick should be a no-op
         // even though wallclock still wants stage 1 (and stays at 1).
         reg.lock().get_mut("two-stage").unwrap().runtime.manual_override = true;
-        let moved2 = auto_advance_tick(&reg, &ctx, &world, &clock, now);
+        let moved2 = auto_advance_tick(&reg, &ctx, &microgrids, &current, &clock, now);
         assert!(moved2.is_empty());
     }
 
