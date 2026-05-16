@@ -118,10 +118,7 @@ async fn overrides_endpoint_lists_each_successful_eval() {
     let s = TestServer::start(TINY_TOPOLOGY).await;
     let client = reqwest::Client::new();
 
-    for body in [
-        "(rename-component 2 \"a\")",
-        "(rename-component 2 \"b\")",
-    ] {
+    for body in ["(rename-component 2 \"a\")", "(rename-component 2 \"b\")"] {
         client
             .post(format!("{}/api/eval", s.ui_url))
             .body(body)

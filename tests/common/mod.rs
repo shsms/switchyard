@@ -19,13 +19,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use switchyard::{
-    assets_server::AssetsServer,
-    lisp::Config,
+    assets_server::AssetsServer, lisp::Config,
     proto::assets::platform_assets_server::PlatformAssetsServer as AssetsGrpcServer,
     proto::microgrid::microgrid_server::MicrogridServer as MicrogridGrpcServer,
-    server::MicrogridServer,
-    sim::MicrogridSite,
-    ui,
+    server::MicrogridServer, sim::MicrogridSite, ui,
 };
 use tempfile::TempDir;
 use tokio::net::TcpListener;
@@ -101,9 +98,7 @@ impl TestServer {
         // map. /api/microgrid/* keeps reading the primary slot for
         // backward compat.
         let loopbacks = ui::new_microgrid_loopbacks();
-        loopbacks
-            .write()
-            .insert(0, microgrid.clone());
+        loopbacks.write().insert(0, microgrid.clone());
         handles.push(tokio::spawn(async move {
             let _ = ui::serve_with_listener(
                 ui_listener,
@@ -125,8 +120,7 @@ impl TestServer {
             let r = reg.lock();
             r.keys().copied().next().expect("default microgrid entry")
         };
-        let microgrid_server =
-            MicrogridServer::new(config.clone(), default_mg_id, config.site());
+        let microgrid_server = MicrogridServer::new(config.clone(), default_mg_id, config.site());
         let assets_server = AssetsServer::new(config.clone());
         handles.push(tokio::spawn(async move {
             let _ = Server::builder()

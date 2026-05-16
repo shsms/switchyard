@@ -154,9 +154,8 @@ impl Config {
     pub fn new(filename: &str) -> Result<Self, String> {
         use std::sync::atomic::AtomicU64;
         let mut ctx = TulispContext::new();
-        let enterprise_id_allocator = Arc::new(AtomicU64::new(
-            crate::sim::component::FIRST_AUTO_ID,
-        ));
+        let enterprise_id_allocator =
+            Arc::new(AtomicU64::new(crate::sim::component::FIRST_AUTO_ID));
         let site = MicrogridSite::with_id_allocator(enterprise_id_allocator.clone());
         let metadata = Arc::new(RwLock::new(Metadata::default()));
         let extra_watches = Arc::new(Mutex::new(HashSet::new()));
@@ -248,11 +247,9 @@ impl Config {
         // an empty Microgrids UI; surface that as a hard error
         // instead.
         if microgrids.lock().is_empty() {
-            return Err(
-                "config loaded but no (make-microgrid …) form ran — \
+            return Err("config loaded but no (make-microgrid …) form ran — \
                  every config must register at least one microgrid"
-                    .to_string(),
-            );
+                .to_string());
         }
 
         let initial_status = log_topology_validation(&site, "boot");
@@ -393,11 +390,8 @@ impl Config {
                 // Snapshot the per-mg sites under the lock, then drain
                 // outside the lock so a slow component callback can't
                 // hold registry-wide reads.
-                let sites: Vec<MicrogridSite> = registry
-                    .lock()
-                    .values()
-                    .map(|e| e.site.clone())
-                    .collect();
+                let sites: Vec<MicrogridSite> =
+                    registry.lock().values().map(|e| e.site.clone()).collect();
                 for site in sites {
                     for id in site.drain_expired_timeouts() {
                         log::info!("Request timeout for component {id} — resetting setpoint");
@@ -750,8 +744,8 @@ impl Config {
     /// the snapshotted overrides.
     pub fn load_snapshot(&self, name: &str) -> Result<(), String> {
         let dir = self.snapshots_dir();
-        let src =
-            sanitise_snapshot_path(&dir, name).map_err(|e| format!("invalid snapshot name: {e}"))?;
+        let src = sanitise_snapshot_path(&dir, name)
+            .map_err(|e| format!("invalid snapshot name: {e}"))?;
         if !src.exists() {
             return Err(format!("snapshot {name:?} not found"));
         }
@@ -796,9 +790,7 @@ fn list_snapshots_in(dir: &Path) -> Vec<String> {
             if p.extension().and_then(|x| x.to_str()) != Some("lisp") {
                 return None;
             }
-            p.file_stem()
-                .and_then(|s| s.to_str())
-                .map(|s| s.to_owned())
+            p.file_stem().and_then(|s| s.to_str()).map(|s| s.to_owned())
         })
         .collect();
     out.sort();
@@ -833,11 +825,9 @@ impl Config {
             }
         }
         if self.microgrids.lock().is_empty() {
-            return Err(
-                "reloaded config registered no microgrids — \
+            return Err("reloaded config registered no microgrids — \
                  every config must call (make-microgrid …) at least once"
-                    .to_string(),
-            );
+                .to_string());
         }
         // Tell UI subscribers the MicrogridSite rebuilt. Catches the
         // "removed the only pending entry" case where remove_pending
@@ -1045,10 +1035,7 @@ tulisp::AsPlist! {
     }
 }
 
-fn register_scenarios(
-    ctx: &mut TulispContext,
-    scenarios: crate::sim::scenarios::SharedScenarios,
-) {
+fn register_scenarios(ctx: &mut TulispContext, scenarios: crate::sim::scenarios::SharedScenarios) {
     use crate::sim::scenarios::{ScenarioDef, ScenarioEntry, ScenarioRuntime, Stage};
     use tulisp::Plistable as _;
     ctx.defun(
@@ -1060,10 +1047,9 @@ fn register_scenarios(
             let mut stages = Vec::new();
             for raw in a.stages {
                 let s = StageArgs::from_plist(ctx, &raw.0)?;
-                let on = s
-                    .on
-                    .map(crate::lisp::value::LispValue::into_inner)
-                    .filter(|o| !o.null());
+                let on =
+                    s.on.map(crate::lisp::value::LispValue::into_inner)
+                        .filter(|o| !o.null());
                 stages.push(Stage {
                     name: s.name,
                     hour_from: s.hour_from,
@@ -1073,13 +1059,13 @@ fn register_scenarios(
             }
             let date = match a.date.as_deref() {
                 None => None,
-                Some(s) => Some(chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(
-                    |e| {
+                Some(s) => Some(
+                    chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|e| {
                         tulisp::Error::os_error(format!(
                             "define-scenario: :date must be YYYY-MM-DD; got {s:?} ({e})"
                         ))
-                    },
-                )?),
+                    })?,
+                ),
             };
             let def = ScenarioDef {
                 name: a.name.clone(),
@@ -1145,13 +1131,16 @@ fn register_microgrids(
     {
         let cur = current.clone();
         let reg = registry.clone();
-        ctx.defun("current-microgrid-id", move || -> Result<i64, tulisp::Error> {
-            if let Some(id) = *cur.read() {
-                return Ok(id as i64);
-            }
-            let r = reg.lock();
-            Ok(r.keys().next().copied().unwrap_or(0) as i64)
-        });
+        ctx.defun(
+            "current-microgrid-id",
+            move || -> Result<i64, tulisp::Error> {
+                if let Some(id) = *cur.read() {
+                    return Ok(id as i64);
+                }
+                let r = reg.lock();
+                Ok(r.keys().next().copied().unwrap_or(0) as i64)
+            },
+        );
     }
     {
         let cur = current.clone();
@@ -1169,8 +1158,8 @@ fn register_microgrids(
         );
     }
     use crate::sim::microgrids::{
-        DEFAULT_MICROGRID_ID, DEFAULT_MICROGRID_NAME, MicrogridDef, MicrogridEntry,
-        next_free_id, next_free_port, with_microgrid,
+        DEFAULT_MICROGRID_ID, DEFAULT_MICROGRID_NAME, MicrogridDef, MicrogridEntry, next_free_id,
+        next_free_port, with_microgrid,
     };
     let _ = router;
     ctx.defun(
@@ -1223,9 +1212,13 @@ fn register_microgrids(
             if let Some(hook) = pre_tick.read().clone() {
                 site.set_pre_tick(hook);
             }
-            registry
-                .lock()
-                .insert(id, MicrogridEntry { def, site: site.clone() });
+            registry.lock().insert(
+                id,
+                MicrogridEntry {
+                    def,
+                    site: site.clone(),
+                },
+            );
             // Notify enterprise-wide subscribers (currently the WS
             // event pump) that a new microgrid landed. send() returns
             // Err when there are no live receivers — fine to ignore;
@@ -1290,7 +1283,7 @@ fn register_scenario(ctx: &mut TulispContext, router: SharedSiteRouter) {
 
     let r = router.clone();
     ctx.defun("scenario-stop", move || -> Result<bool, Error> {
-            let w = r.site();
+        let w = r.site();
         w.scenario_stop(Utc::now());
         Ok(true)
     });
@@ -1329,7 +1322,7 @@ fn register_scenario(ctx: &mut TulispContext, router: SharedSiteRouter) {
 
     let r = router.clone();
     ctx.defun("scenario-stop-csv", move || -> Result<i64, Error> {
-            let w = r.site();
+        let w = r.site();
         Ok(w.scenario_close_csv() as i64)
     });
 
@@ -1359,7 +1352,11 @@ fn register_scenario(ctx: &mut TulispContext, router: SharedSiteRouter) {
 /// immediately" escape (used by tests) and bypasses the clamp.
 const MIN_SET_ACTIVE_POWER_LIFETIME_MS: u64 = 150;
 
-fn register_setpoints(ctx: &mut TulispContext, router: SharedSiteRouter, metadata: Arc<RwLock<Metadata>>) {
+fn register_setpoints(
+    ctx: &mut TulispContext,
+    router: SharedSiteRouter,
+    metadata: Arc<RwLock<Metadata>>,
+) {
     let r = router;
     ctx.defun(
         "set-active-power",
@@ -1698,7 +1695,7 @@ fn register_runtime_modes(ctx: &mut TulispContext, router: SharedSiteRouter) {
 
     let r = router.clone();
     ctx.defun("set-component-health", move |id: i64, h: Health| -> bool {
-            let w = r.site();
+        let w = r.site();
         w.set_health(id as u64, h);
         true
     });
@@ -1807,10 +1804,7 @@ tulisp::AsPlist! {
 /// - `(clear-frequency-override)` — drop the override; the
 ///   driver returns to base dynamics from the current value.
 /// - `(current-frequency)` — read the live value.
-fn register_frequency(
-    ctx: &mut TulispContext,
-    state: crate::sim::frequency::SharedFrequency,
-) {
+fn register_frequency(ctx: &mut TulispContext, state: crate::sim::frequency::SharedFrequency) {
     use crate::sim::frequency::FrequencyModel;
     fn apply_overrides(model: &mut FrequencyModel, a: &FrequencyModelArgs) {
         if let Some(v) = a.nominal {
@@ -1957,9 +1951,7 @@ mod tests {
         } else {
             stripped
         };
-        format!(
-            "(make-microgrid :id {mg_id} :grpc-port 8800 :topology (lambda () {inner}))"
-        )
+        format!("(make-microgrid :id {mg_id} :grpc-port 8800 :topology (lambda () {inner}))")
     }
 
     fn strip_set_microgrid_id(body: &str) -> (String, u64) {
@@ -2523,8 +2515,7 @@ mod tests {
         cfg.site()
             .tick_once(now, std::time::Duration::from_millis(100));
         now += ChronoDuration::seconds(5);
-        cfg.site()
-            .tick_once(now, std::time::Duration::from_secs(5));
+        cfg.site().tick_once(now, std::time::Duration::from_secs(5));
         cfg.site().record_history_snapshot(now);
         let r = cfg.site().scenario_report(now);
         // 7200 W * 5 s / 3600 = 10 Wh discharged.

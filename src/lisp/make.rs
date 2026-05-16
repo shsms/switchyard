@@ -16,7 +16,8 @@ use tulisp::{AsPlist, Error, Plist, TulispContext};
 
 use crate::lisp::value::LispValue;
 use crate::sim::{
-    Battery, BatteryInverter, Chp, ComponentHandle, EvCharger, Grid, Meter, SolarInverter, MicrogridSite,
+    Battery, BatteryInverter, Chp, ComponentHandle, EvCharger, Grid, Meter, MicrogridSite,
+    SolarInverter,
     battery::BatteryConfig,
     dynamic_scalar::DynamicScalar,
     ev_charger::EvChargerConfig,
@@ -515,7 +516,11 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
     );
 }
 
-fn connect_successors(site: &MicrogridSite, parent: u64, successors: &Option<Vec<ComponentHandle>>) {
+fn connect_successors(
+    site: &MicrogridSite,
+    parent: u64,
+    successors: &Option<Vec<ComponentHandle>>,
+) {
     if let Some(list) = successors {
         for child in list {
             // Every edge — hidden or not — lands in `MicrogridSite::connections`.
@@ -536,9 +541,7 @@ fn ms_to_duration(ms: Option<i64>, default_ms: u64) -> Duration {
 /// place — each make-* used to inline the same `as u64 / next_id()`
 /// pattern.
 fn id_or_next(site: &MicrogridSite, explicit: Option<i64>) -> u64 {
-    explicit
-        .map(|x| x as u64)
-        .unwrap_or_else(|| site.next_id())
+    explicit.map(|x| x as u64).unwrap_or_else(|| site.next_id())
 }
 
 /// Register a freshly-built component, then apply any initial runtime
@@ -609,9 +612,7 @@ mod tests {
     /// that drive `refresh_inputs` (lambda / symbol `:power` etc.)
     /// after the components have registered.
     fn run_with_ctx(src: &str) -> (MicrogridSite, TulispContext) {
-        use crate::sim::microgrids::{
-            SiteRouter, new_current_microgrid, new_registry,
-        };
+        use crate::sim::microgrids::{SiteRouter, new_current_microgrid, new_registry};
         let site = MicrogridSite::new();
         let mut ctx = TulispContext::new();
         crate::lisp::handle::register(&mut ctx);
@@ -662,10 +663,7 @@ mod tests {
         // From per-component plist:
         assert_eq!(t.capacity_wh, Some(50_000.0));
         // From battery-defaults — :health ok carried through.
-        assert_eq!(
-            site.runtime_of(200).health,
-            crate::sim::runtime::Health::Ok
-        );
+        assert_eq!(site.runtime_of(200).health, crate::sim::runtime::Health::Ok);
     }
 
     #[test]
@@ -684,10 +682,7 @@ mod tests {
         // verify the wrapper-applied default (battery-defaults sets
         // :health ok) lands.
         let site = run("(make-battery :id 102)");
-        assert_eq!(
-            site.runtime_of(102).health,
-            crate::sim::runtime::Health::Ok
-        );
+        assert_eq!(site.runtime_of(102).health, crate::sim::runtime::Health::Ok);
     }
 
     /// `:power N` lands as a constant DynamicScalar — aggregate_power_w

@@ -10,8 +10,7 @@
 
 use crate::lisp::Config;
 use crate::proto::assets::{
-    GetMicrogridRequest, GetMicrogridResponse,
-    ListMicrogridElectricalComponentConnectionsRequest,
+    GetMicrogridRequest, GetMicrogridResponse, ListMicrogridElectricalComponentConnectionsRequest,
     ListMicrogridElectricalComponentConnectionsResponse, ListMicrogridElectricalComponentsRequest,
     ListMicrogridElectricalComponentsResponse, platform_assets_server,
 };
@@ -44,9 +43,7 @@ impl AssetsServer {
         let r = reg.lock();
         r.get(&requested)
             .map(|e| (e.def.clone(), e.site.clone()))
-            .ok_or_else(|| {
-                tonic::Status::not_found(format!("microgrid {requested} not found"))
-            })
+            .ok_or_else(|| tonic::Status::not_found(format!("microgrid {requested} not found")))
     }
 }
 

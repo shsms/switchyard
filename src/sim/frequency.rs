@@ -182,7 +182,11 @@ mod tests {
             s.step(0.2, &mut rng);
         }
         let gap = (s.current_hz - 49.0).abs();
-        assert!(gap < 0.01, "expected to drift to 49.0 ±10 mHz, got {}", s.current_hz);
+        assert!(
+            gap < 0.01,
+            "expected to drift to 49.0 ±10 mHz, got {}",
+            s.current_hz
+        );
     }
 
     /// Clearing the override hands the dynamics back to the base.
@@ -203,7 +207,11 @@ mod tests {
         }
         // Base pulls back to 50.0.
         let gap = (s.current_hz - NOMINAL_HZ).abs();
-        assert!(gap < 0.01, "expected drift back to 50.0, got {}", s.current_hz);
+        assert!(
+            gap < 0.01,
+            "expected drift back to 50.0, got {}",
+            s.current_hz
+        );
     }
 
     /// Box-Muller stays bounded for typical seeds. Sanity check: the

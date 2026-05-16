@@ -38,8 +38,8 @@ use crate::{
     sim::{
         Category,
         history::Metric,
-        setpoints::SetpointEvent,
         microgrid_site::{ScenarioReport, ScenarioSummary},
+        setpoints::SetpointEvent,
     },
 };
 
@@ -315,7 +315,7 @@ async fn debounce_topology_burst(events: &mut tokio::sync::broadcast::Receiver<S
         match tokio::time::timeout_at(deadline, events.recv()).await {
             Ok(Ok(_)) => continue, // keep collecting
             Ok(Err(_)) => return,  // broadcast error; supervisor's main loop deals with it
-            Err(_) => return,       // deadline; we're done
+            Err(_) => return,      // deadline; we're done
         }
     }
 }
@@ -450,9 +450,7 @@ fn spawn_bounds_forwarder(
                     log::warn!("microgrid loopback: battery_pool_bounds lagged {n} samples");
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                    log::info!(
-                        "microgrid loopback: battery_pool_bounds closed; forwarder exiting"
-                    );
+                    log::info!("microgrid loopback: battery_pool_bounds closed; forwarder exiting");
                     return;
                 }
             }
@@ -517,7 +515,12 @@ async fn subscribe_power_forwarder(
     }))
 }
 
-fn publish_power(stream: &'static str, sample: Sample<Power>, site: &MicrogridSite, state: &SharedMicrogrid) {
+fn publish_power(
+    stream: &'static str,
+    sample: Sample<Power>,
+    site: &MicrogridSite,
+    state: &SharedMicrogrid,
+) {
     let value = sample.value().map(|p| p.as_watts());
     let ts_ms = sample.timestamp().timestamp_millis();
     publish_scalar(stream, "Power", "W", value, ts_ms, site, state);
@@ -639,10 +642,22 @@ fn router(
         .route("/api/mg/{mg_id}/topology", get(topology_for_mg))
         .route("/api/mg/{mg_id}/eval", post(eval_for_mg))
         .route("/api/mg/{mg_id}/history", get(history_for_mg))
-        .route("/api/mg/{mg_id}/microgrid/status", get(microgrid_status_for_mg))
-        .route("/api/mg/{mg_id}/microgrid/latest", get(microgrid_latest_for_mg))
-        .route("/api/mg/{mg_id}/microgrid/history", get(microgrid_history_for_mg))
-        .route("/api/mg/{mg_id}/microgrid/formulas", get(microgrid_formulas_for_mg))
+        .route(
+            "/api/mg/{mg_id}/microgrid/status",
+            get(microgrid_status_for_mg),
+        )
+        .route(
+            "/api/mg/{mg_id}/microgrid/latest",
+            get(microgrid_latest_for_mg),
+        )
+        .route(
+            "/api/mg/{mg_id}/microgrid/history",
+            get(microgrid_history_for_mg),
+        )
+        .route(
+            "/api/mg/{mg_id}/microgrid/formulas",
+            get(microgrid_formulas_for_mg),
+        )
         .route("/ws/events", get(events_ws))
         .layer(Extension(microgrid))
         .layer(Extension(loopbacks))
@@ -729,9 +744,7 @@ async fn microgrids_create(
     Extension(spawner): Extension<MicrogridSpawner>,
     Json(body): Json<CreateMicrogridBody>,
 ) -> Result<Json<CreateMicrogridResp>, (StatusCode, String)> {
-    use crate::sim::microgrids::{
-        MicrogridDef, MicrogridEntry, next_free_id, next_free_port,
-    };
+    use crate::sim::microgrids::{MicrogridDef, MicrogridEntry, next_free_id, next_free_port};
     let name = body.name.trim().to_string();
     if name.is_empty() {
         return Err((StatusCode::BAD_REQUEST, "name must be non-empty".into()));
@@ -811,11 +824,13 @@ fn write_microgrid_stub(
     tso: Option<&str>,
 ) -> Result<(), String> {
     let dir = config.microgrids_dir();
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| format!("create {}: {e}", dir.display()))?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     let path = dir.join(format!("config.{id}.lisp"));
     if path.exists() {
-        return Err(format!("stub file {} already exists; refusing to clobber", path.display()));
+        return Err(format!(
+            "stub file {} already exists; refusing to clobber",
+            path.display()
+        ));
     }
     // Escape only " and \ inside the name string. The TSO is one of
     // the four short codes ("TN" / "AM" / "HZ" / "BW") or unset, so
@@ -841,8 +856,7 @@ fn write_microgrid_stub(
         \x20  (load-overrides)))\n",
         name_esc = esc(name),
     );
-    std::fs::write(&path, content)
-        .map_err(|e| format!("write {}: {e}", path.display()))
+    std::fs::write(&path, content).map_err(|e| format!("write {}: {e}", path.display()))
 }
 
 async fn scenarios_list(
@@ -858,9 +872,7 @@ async fn scenarios_list(
 /// helper's error string verbatim.
 async fn run_scenario_op(
     config: Config,
-    op: impl FnOnce(Config, chrono::DateTime<chrono::Utc>) -> Result<(), String>
-        + Send
-        + 'static,
+    op: impl FnOnce(Config, chrono::DateTime<chrono::Utc>) -> Result<(), String> + Send + 'static,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let now = chrono::Utc::now();
     let res = tokio::task::spawn_blocking(move || op(config, now))
@@ -1024,9 +1036,7 @@ async fn microgrid_history(
     Json(microgrid_history_body(&state))
 }
 
-fn microgrid_history_body(
-    state: &SharedMicrogrid,
-) -> HashMap<&'static str, Vec<HistorySample>> {
+fn microgrid_history_body(state: &SharedMicrogrid) -> HashMap<&'static str, Vec<HistorySample>> {
     state
         .history
         .read()
@@ -1296,11 +1306,9 @@ async fn eval_for_mg(
         );
     }
     let result = tokio::task::spawn_blocking(move || {
-        crate::sim::microgrids::with_microgrid(
-            &config.current_microgrid_handle(),
-            mg_id,
-            || config.eval(&body),
-        )
+        crate::sim::microgrids::with_microgrid(&config.current_microgrid_handle(), mg_id, || {
+            config.eval(&body)
+        })
     })
     .await;
     eval_response(result)

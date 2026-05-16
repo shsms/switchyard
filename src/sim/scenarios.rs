@@ -148,11 +148,7 @@ impl From<&Stage> for StageView {
 /// Snapshot the registry into a list of [`ScenarioView`]s, alphabetic
 /// by name. Used by `GET /api/scenarios` and `swctl scenarios list`.
 pub fn snapshot(registry: &SharedScenarios) -> Vec<ScenarioView> {
-    let mut out: Vec<_> = registry
-        .lock()
-        .values()
-        .map(ScenarioView::from)
-        .collect();
+    let mut out: Vec<_> = registry.lock().values().map(ScenarioView::from).collect();
     out.sort_by(|a, b| a.name.cmp(&b.name));
     out
 }
@@ -491,25 +487,22 @@ mod tests {
         let clock = Clock::default();
         // 15:30 local. Wallclock-current stage = 1; we should
         // transition.
-        let now = chrono::TimeZone::with_ymd_and_hms(
-            &chrono_tz::Europe::Berlin,
-            2026,
-            1,
-            15,
-            15,
-            30,
-            0,
-        )
-        .single()
-        .unwrap()
-        .with_timezone(&chrono::Utc);
+        let now =
+            chrono::TimeZone::with_ymd_and_hms(&chrono_tz::Europe::Berlin, 2026, 1, 15, 15, 30, 0)
+                .single()
+                .unwrap()
+                .with_timezone(&chrono::Utc);
         let moved = auto_advance_tick(&reg, &ctx, &microgrids, &current, &clock, now);
         assert_eq!(moved, vec!["two-stage".to_string()]);
         assert_eq!(reg.lock()["two-stage"].runtime.current_stage, Some(1));
 
         // Flip manual_override on; a second tick should be a no-op
         // even though wallclock still wants stage 1 (and stays at 1).
-        reg.lock().get_mut("two-stage").unwrap().runtime.manual_override = true;
+        reg.lock()
+            .get_mut("two-stage")
+            .unwrap()
+            .runtime
+            .manual_override = true;
         let moved2 = auto_advance_tick(&reg, &ctx, &microgrids, &current, &clock, now);
         assert!(moved2.is_empty());
     }

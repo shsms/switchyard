@@ -7,13 +7,10 @@ use simplelog::{
     ColorChoice, CombinedLogger, ConfigBuilder, LevelFilter, TermLogger, TerminalMode,
 };
 use switchyard::{
-    assets_server::AssetsServer,
-    lisp::Config,
+    assets_server::AssetsServer, lisp::Config,
     proto::assets::platform_assets_server::PlatformAssetsServer as AssetsGrpcServer,
     proto::microgrid::microgrid_server::MicrogridServer as MicrogridGrpcServer,
-    server::MicrogridServer,
-    sim::MicrogridSite,
-    ui, ui_log,
+    server::MicrogridServer, sim::MicrogridSite, ui, ui_log,
 };
 use tonic::transport::Server;
 
@@ -79,7 +76,14 @@ async fn main() {
         .microgrids()
         .lock()
         .values()
-        .map(|e| (e.def.id, e.def.name.clone(), e.def.grpc_port, e.site.clone()))
+        .map(|e| {
+            (
+                e.def.id,
+                e.def.name.clone(),
+                e.def.grpc_port,
+                e.site.clone(),
+            )
+        })
         .collect();
     if entries.is_empty() {
         log::error!("Boot produced no microgrids in the registry — config eval bug?");
@@ -141,9 +145,7 @@ async fn main() {
         let addr: std::net::SocketAddr = match addr_str.parse() {
             Ok(a) => a,
             Err(e) => {
-                log::error!(
-                    "Microgrid #{id} {name:?} create: invalid port {port} ({e}); skipping"
-                );
+                log::error!("Microgrid #{id} {name:?} create: invalid port {port} ({e}); skipping");
                 return;
             }
         };
@@ -151,9 +153,7 @@ async fn main() {
         let site_for_server = site.clone();
         let name_owned = name.to_string();
         tokio::spawn(async move {
-            log::info!(
-                "Microgrid #{id} {name_owned:?} runtime-created → gRPC :{port}"
-            );
+            log::info!("Microgrid #{id} {name_owned:?} runtime-created → gRPC :{port}");
             let server = MicrogridServer::new(cfg, id, site_for_server);
             if let Err(e) = Server::builder()
                 .add_service(MicrogridGrpcServer::new(server))

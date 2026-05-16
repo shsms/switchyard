@@ -198,7 +198,9 @@ mod tests {
             &log::Record::builder()
                 .args(format_args!("noisy"))
                 .level(log::Level::Error)
-                .target("frequenz_microgrid::microgrid::telemetry_tracker::component_telemetry_tracker")
+                .target(
+                    "frequenz_microgrid::microgrid::telemetry_tracker::component_telemetry_tracker",
+                )
                 .build(),
         );
         log::Log::log(

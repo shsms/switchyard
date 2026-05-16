@@ -4,7 +4,9 @@ use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
 use tulisp::TulispContext;
 
-use crate::sim::{Category, SimulatedComponent, Telemetry, MicrogridSite, dynamic_scalar::DynamicScalar};
+use crate::sim::{
+    Category, MicrogridSite, SimulatedComponent, Telemetry, dynamic_scalar::DynamicScalar,
+};
 
 /// A power meter sums its successors' active and reactive power, then
 /// voltage-splits the totals across the three phases. If the parent
@@ -53,8 +55,7 @@ impl Meter {
         if let Some(scalar) = self.power_source.read().as_ref() {
             return scalar.get();
         }
-        site
-            .children_of(self.id)
+        site.children_of(self.id)
             .into_iter()
             .filter_map(|id| site.get(id).map(|c| (id, c)))
             .map(|(child_id, child)| {
@@ -77,8 +78,7 @@ impl Meter {
         if self.power_source.read().is_some() {
             return 0.0;
         }
-        site
-            .children_of(self.id)
+        site.children_of(self.id)
             .into_iter()
             .filter_map(|id| site.get(id).map(|c| (id, c)))
             .map(|(child_id, child)| {

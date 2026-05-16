@@ -232,9 +232,7 @@ enum SnapshotCmd {
     },
     /// Replace the current overrides with snapshots/NAME.lisp and
     /// reload.
-    Load {
-        name: String,
-    },
+    Load { name: String },
     /// List existing snapshots, alphabetical.
     List,
 }
@@ -392,10 +390,18 @@ async fn run_scenarios(
             }
             print_scenarios(&resp);
         }
-        ScenariosCmd::Start { name } => post_scenario_action(&http, ui_addr, &name, "start", json).await?,
-        ScenariosCmd::Stop { name }  => post_scenario_action(&http, ui_addr, &name, "stop",  json).await?,
-        ScenariosCmd::Next { name }  => post_scenario_action(&http, ui_addr, &name, "next",  json).await?,
-        ScenariosCmd::Prev { name }  => post_scenario_action(&http, ui_addr, &name, "prev",  json).await?,
+        ScenariosCmd::Start { name } => {
+            post_scenario_action(&http, ui_addr, &name, "start", json).await?
+        }
+        ScenariosCmd::Stop { name } => {
+            post_scenario_action(&http, ui_addr, &name, "stop", json).await?
+        }
+        ScenariosCmd::Next { name } => {
+            post_scenario_action(&http, ui_addr, &name, "next", json).await?
+        }
+        ScenariosCmd::Prev { name } => {
+            post_scenario_action(&http, ui_addr, &name, "prev", json).await?
+        }
         ScenariosCmd::Jump { name, idx } => {
             post_scenario_action(&http, ui_addr, &name, &format!("jump/{idx}"), json).await?
         }
@@ -656,10 +662,7 @@ async fn build_dashboard_line(
     let grid = pick("grid_power");
     let pv = pick("pv_power");
     let bat = pick("battery_pool_power");
-    let loopback = latest
-        .as_object()
-        .map(|m| !m.is_empty())
-        .unwrap_or(false);
+    let loopback = latest.as_object().map(|m| !m.is_empty()).unwrap_or(false);
     let fmt = |watts: Option<f64>| match watts {
         None => "—".to_owned(),
         Some(v) if v.abs() >= 1e6 => format!("{:.2}MW", v / 1e6),
@@ -791,7 +794,10 @@ async fn run_snapshot(
                 .await?
                 .error_for_status()?;
             if json {
-                println!("{{\"ok\":true,\"loaded\":{}}}", serde_json::to_string(&name)?);
+                println!(
+                    "{{\"ok\":true,\"loaded\":{}}}",
+                    serde_json::to_string(&name)?
+                );
             } else {
                 println!("loaded {name}");
             }

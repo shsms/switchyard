@@ -9,7 +9,7 @@ use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
 
 use crate::sim::{
-    Category, SetpointError, SimulatedComponent, Telemetry, MicrogridSite,
+    Category, MicrogridSite, SetpointError, SimulatedComponent, Telemetry,
     bounds::{ComponentBounds, VecBounds},
     decay::{SocProtect, soc_protected_bounds},
     ramp::{CommandDelay, Ramp},
@@ -232,12 +232,7 @@ impl SimulatedComponent for EvCharger {
         Ok(())
     }
 
-    fn augment_active_bounds(
-        &self,
-        ts: DateTime<Utc>,
-        bounds: VecBounds,
-        lifetime: Duration,
-    ) {
+    fn augment_active_bounds(&self, ts: DateTime<Utc>, bounds: VecBounds, lifetime: Duration) {
         self.bounds.lock().add_augmentation(ts, bounds, lifetime);
     }
 

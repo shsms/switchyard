@@ -2,7 +2,7 @@ use std::{fmt, time::Duration};
 
 use chrono::{DateTime, Utc};
 
-use crate::sim::{Category, SimulatedComponent, Telemetry, MicrogridSite};
+use crate::sim::{Category, MicrogridSite, SimulatedComponent, Telemetry};
 
 pub struct Grid {
     id: u64,

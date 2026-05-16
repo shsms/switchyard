@@ -239,7 +239,8 @@ mod tests {
     fn next_free_id_starts_at_default_and_increments() {
         let reg = new_registry();
         assert_eq!(next_free_id(&reg), DEFAULT_MICROGRID_ID);
-        reg.lock().insert(DEFAULT_MICROGRID_ID, entry(DEFAULT_MICROGRID_ID, 8800));
+        reg.lock()
+            .insert(DEFAULT_MICROGRID_ID, entry(DEFAULT_MICROGRID_ID, 8800));
         assert_eq!(next_free_id(&reg), DEFAULT_MICROGRID_ID + 1);
     }
 
@@ -247,9 +248,13 @@ mod tests {
     fn snapshot_is_ascending_by_id() {
         let reg = new_registry();
         for id in [2202u64, 2200, 2201] {
-            reg.lock().insert(id, entry(id, 8800 + (id as u16 - 2200) * 10));
+            reg.lock()
+                .insert(id, entry(id, 8800 + (id as u16 - 2200) * 10));
         }
         let view = snapshot(&reg);
-        assert_eq!(view.iter().map(|v| v.id).collect::<Vec<_>>(), vec![2200, 2201, 2202]);
+        assert_eq!(
+            view.iter().map(|v| v.id).collect::<Vec<_>>(),
+            vec![2200, 2201, 2202]
+        );
     }
 }

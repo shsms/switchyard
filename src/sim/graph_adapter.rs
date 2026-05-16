@@ -278,7 +278,9 @@ mod tests {
     fn missing_grid_fails_validation() {
         let nodes = vec![node(2, ComponentCategory::Meter)];
         let edges: Vec<GraphEdge> = vec![];
-        let err = build_from(nodes, edges).err().expect("no grid should not validate");
+        let err = build_from(nodes, edges)
+            .err()
+            .expect("no grid should not validate");
         assert!(!format!("{err}").is_empty());
     }
 

@@ -11,7 +11,7 @@ use parking_lot::{Mutex, RwLock};
 use tulisp::TulispContext;
 
 use crate::sim::{
-    Category, SetpointError, SimulatedComponent, Telemetry, MicrogridSite,
+    Category, MicrogridSite, SetpointError, SimulatedComponent, Telemetry,
     bounds::ComponentBounds,
     dynamic_scalar::DynamicScalar,
     meter::{per_phase_apparent_current, split_per_phase},

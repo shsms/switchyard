@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
 
 use crate::sim::{
-    Category, SimulatedComponent, Telemetry, MicrogridSite,
+    Category, MicrogridSite, SimulatedComponent, Telemetry,
     bounds::VecBounds,
     decay::{SocProtect, soc_protected_bounds as decay_soc_bounds},
 };

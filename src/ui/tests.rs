@@ -85,9 +85,9 @@ async fn call(config: Config, req: Request<Body>) -> (StatusCode, Vec<u8>) {
         new_microgrid_loopbacks(),
         noop_microgrid_spawner(),
     )
-        .oneshot(req)
-        .await
-        .unwrap();
+    .oneshot(req)
+    .await
+    .unwrap();
     let status = resp.status();
     let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
     (status, bytes.to_vec())
@@ -250,17 +250,9 @@ async fn history_endpoint_returns_empty_for_unknown_component() {
 async fn overrides_endpoint_lists_appended_evals() {
     let cfg = config_with("(set-microgrid-id 7) (%make-grid-connection-point :id 1)").await;
     // Two successful evals + one error. Errors don't append.
-    call(
-        cfg.clone(),
-        post("/api/eval", "(rename-component 1 \"a\")"),
-    )
-    .await;
+    call(cfg.clone(), post("/api/eval", "(rename-component 1 \"a\")")).await;
     call(cfg.clone(), post("/api/eval", "(undefined-fn 1)")).await;
-    call(
-        cfg.clone(),
-        post("/api/eval", "(set-enterprise-id 42)"),
-    )
-    .await;
+    call(cfg.clone(), post("/api/eval", "(set-enterprise-id 42)")).await;
     let (status, body) = call(cfg, get("/api/overrides")).await;
     assert_eq!(status, StatusCode::OK);
     let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
@@ -293,18 +285,12 @@ async fn persisted_remove_drops_form_immediately() {
     // /api/persisted/0 rewrites the file without that form and
     // reloads; the site reflects only the second rename, and
     // the file no longer contains the first.
-    let body = format!("(set-microgrid-id 7) (%make-grid-connection-point :id 1) {LOAD_OVERRIDES_HELPER}",);
+    let body = format!(
+        "(set-microgrid-id 7) (%make-grid-connection-point :id 1) {LOAD_OVERRIDES_HELPER}",
+    );
     let cfg = config_with(&body).await;
-    call(
-        cfg.clone(),
-        post("/api/eval", "(rename-component 1 \"a\")"),
-    )
-    .await;
-    call(
-        cfg.clone(),
-        post("/api/eval", "(rename-component 1 \"b\")"),
-    )
-    .await;
+    call(cfg.clone(), post("/api/eval", "(rename-component 1 \"a\")")).await;
+    call(cfg.clone(), post("/api/eval", "(rename-component 1 \"b\")")).await;
 
     let (_, body) = call(cfg.clone(), get("/api/overrides")).await;
     let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
@@ -346,23 +332,13 @@ async fn persisted_remove_drops_form_immediately() {
 
 #[tokio::test]
 async fn persisted_bulk_remove_drops_indices_in_one_reload() {
-    let body = format!("(set-microgrid-id 7) (%make-grid-connection-point :id 1) {LOAD_OVERRIDES_HELPER}",);
+    let body = format!(
+        "(set-microgrid-id 7) (%make-grid-connection-point :id 1) {LOAD_OVERRIDES_HELPER}",
+    );
     let cfg = config_with(&body).await;
-    call(
-        cfg.clone(),
-        post("/api/eval", "(rename-component 1 \"a\")"),
-    )
-    .await;
-    call(
-        cfg.clone(),
-        post("/api/eval", "(rename-component 1 \"b\")"),
-    )
-    .await;
-    call(
-        cfg.clone(),
-        post("/api/eval", "(rename-component 1 \"c\")"),
-    )
-    .await;
+    call(cfg.clone(), post("/api/eval", "(rename-component 1 \"a\")")).await;
+    call(cfg.clone(), post("/api/eval", "(rename-component 1 \"b\")")).await;
+    call(cfg.clone(), post("/api/eval", "(rename-component 1 \"c\")")).await;
 
     // Drop idx 0 + 2 → only "b" survives, site reflects "b".
     let req = axum::http::Request::builder()
@@ -400,7 +376,11 @@ async fn eval_endpoint_mutates_world() {
     // the load-bearing claim of the "Lisp eval as the unifying
     // mutation API" design.
     let cfg = config_with("").await;
-    let (status, _) = call(cfg.clone(), post("/api/eval", "(%make-grid-connection-point :id 42)")).await;
+    let (status, _) = call(
+        cfg.clone(),
+        post("/api/eval", "(%make-grid-connection-point :id 42)"),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
 
     let (_, body) = call(cfg, get("/api/topology")).await;

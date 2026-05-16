@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
 
 use crate::sim::{
-    Category, SetpointError, SimulatedComponent, Telemetry, MicrogridSite,
+    Category, MicrogridSite, SetpointError, SimulatedComponent, Telemetry,
     bounds::ComponentBounds,
     meter::{per_phase_apparent_current, split_per_phase},
     ramp::{CommandDelay, Ramp},
