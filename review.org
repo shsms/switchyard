@@ -195,7 +195,16 @@ tool is fine as-is. Flagging for visibility.
 Not bugs. Directional suggestions for refactoring as the codebase
 grows.
 
-** TODO A1. ~src/lisp/mod.rs~ is 2621 lines
+** IN-PROGRESS A1. ~src/lisp/mod.rs~ is 2621 lines
+
+Defuns extracted into ~src/lisp/defuns.rs~ as a single module
+(953 lines). mod.rs is down to 1854 lines and now holds only
+Config, Metadata, snapshot helpers, the watch / reload / timeout
+loop, overrides plumbing, and tests. Further splits (boot.rs,
+overrides.rs, defuns/ subdirectory by topic) remain useful but
+are no longer blocking.
+
+Original suggested layout:
 
 Holds: Config + Metadata + PersistedOverride structs, ~Config::new~
 (~170 lines), ~Config::reload~, ~Config::watch~, all ~AsPlist!~
@@ -226,9 +235,19 @@ src/lisp/
 └── tests.rs
 #+end_example
 
-** TODO A2. ~src/ui/mod.rs~ is 1857 lines
+** IN-PROGRESS A2. ~src/ui/mod.rs~ is 1857 lines
 
-Same shape as lisp/mod.rs. Suggested split:
+Loopback supervisor + WS event pump split out:
+
+- ~src/ui/loopback.rs~ (403 lines) — spawn / supervisor / build /
+  forwarders / publish_*.
+- ~src/ui/events_ws.rs~ (200 lines) — events_ws route + event_pump.
+
+mod.rs is down to 1397 lines. The handlers/ subdirectory split
+remains useful (one file per HTTP topic) but isn't urgent now
+that the two big async machines are out.
+
+Original suggested layout:
 
 #+begin_example
 src/ui/
@@ -249,7 +268,16 @@ src/ui/
 └── tests.rs
 #+end_example
 
-** TODO A3. ~ui-assets/app.js~ is 4178 lines
+** IN-PROGRESS A3. ~ui-assets/app.js~ is 4178 lines
+
+First slice extracted as an ES module:
+~ui-assets/repl-syntax.js~ — COMPLETIONS, rainbowHighlight,
+indentForNewline, wordAtCursor (352 lines). app.js already used
+~<script type="module">~ so further extractions just append more
+~import~ lines. app.js is down to 4116 lines. The bigger slices
+(topology, dashboardTiles + batteryPairs/pvRows/evRows/chpRows,
+scenariosPanel, microgridsPanel) are still in app.js but the
+pattern is established.
 
 Single-file JS with no module system. Pieces that obviously want
 their own files: ~topology~ module (~250 lines), ~dashboardTiles~
@@ -268,19 +296,21 @@ Two paths:
 
 Recommend ES modules.
 
-** TODO A4. ~src/sim/microgrid_site.rs~ is 1536 lines
+** DONE A4. ~src/sim/microgrid_site.rs~ is 1536 lines
 
-Container of MicrogridSite with 30+ methods plus runtime modes,
-history sampling, scenario journal, CSV sinks, main-meter slot,
-timeout tracker. Could pull:
+Split into ~src/sim/microgrid_site/~ with:
 
-#+begin_example
-src/sim/microgrid_site/
-├── mod.rs           # Core registry + topology
-├── history.rs       # record_history_snapshot, spawn_history_sampler
-├── scenarios.rs     # scenario_record, scenario_summary, scenario_report
-└── csv.rs           # scenario_csv_* wrappers
-#+end_example
+- ~mod.rs~ (928 lines) — registry, topology, setpoints,
+  bookkeeping
+- ~history.rs~ (281 lines) — spawn_history_sampler,
+  record_history_snapshot, history_window, history_metrics +
+  their two tests.
+- ~scenarios.rs~ (306 lines) — scenario lifecycle + report
+  shape + SoC stats helper + CSV sink open/close.
+
+The CSV sinks ended up co-located with scenarios.rs because
+~scenario_stop~ closes them and the lifecycle is paired; an
+extra ~csv.rs~ file would have been a thinner split.
 
 ** TODO A5. ~Config::new~ has delicate ordering invariants
 
