@@ -15,8 +15,7 @@
       <strong>switchyard</strong>
       <span id="status" class="status">connecting…</span>
       <nav id="mode-toggle" aria-label="view mode">
-        <button class="mode-btn" data-mode="dashboard">Dashboard</button>
-        <button class="mode-btn" data-mode="topology">Topology</button>
+        <button class="mode-btn" data-mode="microgrids">Microgrids</button>
         <button class="mode-btn" data-mode="scenarios">Scenarios</button>
       </nav>
       <span class="spacer"></span>
@@ -52,6 +51,22 @@
       <span class="pulse-clock" id="pulse-clock">--:--:--</span>
     </section>
     <main id="app">
+      <div id="microgrid-list" hidden>
+        <header class="mglist-header">
+          <h2>Microgrids</h2>
+          <p class="hint">Pick a microgrid to drill into its dashboard + topology.</p>
+        </header>
+        <div id="mglist-grid" class="mglist-grid"></div>
+      </div>
+      <header id="mg-header" hidden>
+        <button type="button" id="mg-back" class="hdr-btn" title="Back to microgrid list">← Microgrids</button>
+        <span id="mg-breadcrumb-name" class="mg-name"></span>
+        <span id="mg-breadcrumb-tso" class="muted"></span>
+        <nav id="mg-subtoggle" aria-label="microgrid view">
+          <button class="mode-btn" data-subview="dashboard">Dashboard</button>
+          <button class="mode-btn" data-subview="topology">Topology</button>
+        </nav>
+      </header>
       <div id="topology"></div>
       <div id="scenarios" hidden>
         <header class="scenarios-header">

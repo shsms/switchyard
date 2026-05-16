@@ -3104,6 +3104,113 @@ const gridFrequency = (() => {
   return { applyTopology, applySample, backfill };
 })();
 
+// ─── Microgrids mode (list view + selection) ───────────────────────────────
+//
+// The Microgrids landing page: a card grid backed by
+// /api/microgrids. Clicking a card flips MG_SELECTED_KEY and re-
+// enters applyMode, which then shows the per-mg sub-view
+// (dashboard / topology). A trailing [+ New microgrid] card opens
+// a small create form (D4) — covered in a follow-up.
+const microgridsPanel = (() => {
+  let cached = []; // last /api/microgrids snapshot
+  let pollTimer = null;
+
+  function gridEl() { return document.getElementById("mglist-grid"); }
+  function breadcrumbNameEl() { return document.getElementById("mg-breadcrumb-name"); }
+  function breadcrumbTsoEl() { return document.getElementById("mg-breadcrumb-tso"); }
+
+  function renderList() {
+    const grid = gridEl();
+    if (!grid) return;
+    grid.innerHTML = "";
+    for (const m of cached) {
+      const card = document.createElement("button");
+      card.type = "button";
+      card.className = "mglist-card";
+      card.dataset.id = m.id;
+      const tso = m.tso ? `<span class="mg-tso">${escapeHtml(m.tso)}</span>` : "";
+      card.innerHTML = `
+        <span class="mglist-id">#${m.id}</span>
+        <h3 class="mglist-name">${escapeHtml(m.name || "(unnamed)")}</h3>
+        ${tso}
+        <span class="mglist-meta muted">${m.component_count} components · gRPC :${m.grpc_port}</span>
+      `;
+      card.addEventListener("click", () => selectMicrogrid(m.id));
+      grid.appendChild(card);
+    }
+    // Trailing [+ New microgrid] card. D4 wires the form; for now
+    // it's a placeholder visible from the list to make the create
+    // path discoverable.
+    const newCard = document.createElement("button");
+    newCard.type = "button";
+    newCard.className = "mglist-card mglist-new";
+    newCard.id = "mglist-new-btn";
+    newCard.innerHTML = `<span class="mglist-plus">＋</span><span>New microgrid</span>`;
+    newCard.addEventListener("click", () => {
+      const name = prompt("Name for the new microgrid:");
+      if (!name) return;
+      fetch("/api/microgrids/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      })
+        .then(async (r) => {
+          if (!r.ok) throw new Error(await r.text());
+          return r.json();
+        })
+        .then((m) => selectMicrogrid(m.id))
+        .catch((e) => alert(`Create failed: ${e.message}`));
+    });
+    grid.appendChild(newCard);
+  }
+
+  function renderBreadcrumb() {
+    const id = readSelectedMg();
+    if (id == null) return;
+    const entry = cached.find((m) => m.id === id);
+    if (breadcrumbNameEl()) {
+      breadcrumbNameEl().textContent = entry
+        ? `#${entry.id} ${entry.name || "(unnamed)"}`
+        : `#${id} (unknown)`;
+    }
+    if (breadcrumbTsoEl()) {
+      breadcrumbTsoEl().textContent = entry?.tso ? `· ${entry.tso}` : "";
+    }
+  }
+
+  async function refresh() {
+    try {
+      const res = await fetch("/api/microgrids");
+      if (res.ok) cached = await res.json();
+    } catch (_) {
+      cached = [];
+    }
+    renderList();
+    renderBreadcrumb();
+    schedulePoll();
+  }
+
+  function schedulePoll() {
+    if (pollTimer) clearInterval(pollTimer);
+    if (document.body.dataset.mode !== "microgrids") return;
+    pollTimer = setInterval(async () => {
+      if (document.body.dataset.mode !== "microgrids") {
+        clearInterval(pollTimer);
+        pollTimer = null;
+        return;
+      }
+      try {
+        const res = await fetch("/api/microgrids");
+        if (res.ok) cached = await res.json();
+      } catch (_) {}
+      renderList();
+      renderBreadcrumb();
+    }, 5000);
+  }
+
+  return { refresh };
+})();
+
 // ─── Scenarios mode ─────────────────────────────────────────────────────────
 //
 // Driven by /api/scenarios (snapshot) + the POST endpoints for
@@ -3639,49 +3746,93 @@ function setupDensityToggle() {
 // were. Default = dashboard — the new view is the one we want
 // developers landing on.
 const MODE_KEY = "switchyard-mode";
-const VALID_MODES = new Set(["dashboard", "topology", "scenarios"]);
+const MG_SELECTED_KEY = "switchyard-selected-mg";
+const MG_SUBVIEW_KEY = "switchyard-mg-subview";
+const VALID_MODES = new Set(["microgrids", "scenarios"]);
+const VALID_SUBVIEWS = new Set(["dashboard", "topology"]);
+
+function readSelectedMg() {
+  const raw = localStorage.getItem(MG_SELECTED_KEY);
+  if (raw == null || raw === "" || raw === "null") return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+function readSubview() {
+  const v = localStorage.getItem(MG_SUBVIEW_KEY);
+  return VALID_SUBVIEWS.has(v) ? v : "dashboard";
+}
 
 function applyMode(mode) {
-  if (!VALID_MODES.has(mode)) mode = "dashboard";
+  if (!VALID_MODES.has(mode)) mode = "microgrids";
+  const selected = readSelectedMg();
+  const subview = readSubview();
   document.body.dataset.mode = mode;
-  for (const btn of document.querySelectorAll(".mode-btn")) {
+  document.body.dataset.mgView = selected == null ? "list" : "selected";
+  document.body.dataset.subview = subview;
+  for (const btn of document.querySelectorAll("#mode-toggle .mode-btn")) {
     btn.classList.toggle("active", btn.dataset.mode === mode);
+  }
+  for (const btn of document.querySelectorAll("#mg-subtoggle .mode-btn")) {
+    btn.classList.toggle("active", btn.dataset.subview === subview);
   }
   // vis-network needs a redraw nudge when its container goes from
   // display:none back to visible — the canvas was sized to 0×0 while
   // hidden. Same shape the splitter resize handler uses.
-  if (mode === "topology") refitCharts();
-  if (mode === "dashboard") {
+  if (mode === "microgrids" && selected != null && subview === "topology") refitCharts();
+  if (mode === "microgrids" && selected != null && subview === "dashboard") {
     dashboardTiles.backfill();
     gridFrequency.backfill();
   }
+  if (mode === "microgrids") microgridsPanel.refresh();
   if (mode === "scenarios") scenariosPanel.refresh();
 }
 
+function selectMicrogrid(id) {
+  if (id == null) {
+    localStorage.removeItem(MG_SELECTED_KEY);
+  } else {
+    localStorage.setItem(MG_SELECTED_KEY, String(id));
+  }
+  applyMode(localStorage.getItem(MODE_KEY) || "microgrids");
+}
+
 function setupModeToggle() {
-  for (const btn of document.querySelectorAll(".mode-btn")) {
+  for (const btn of document.querySelectorAll("#mode-toggle .mode-btn")) {
     btn.addEventListener("click", () => {
       const mode = btn.dataset.mode;
       localStorage.setItem(MODE_KEY, mode);
+      // Microgrids button returns the user to the list. Picking a
+      // microgrid (D2 cards) re-enters the selected view.
+      if (mode === "microgrids") localStorage.removeItem(MG_SELECTED_KEY);
       applyMode(mode);
     });
   }
-  applyMode(localStorage.getItem(MODE_KEY) || "dashboard");
-  // Keyboard chord — 1 → Dashboard, 2 → Topology. Skip when a
-  // text input has focus so digits typed into the REPL / search
-  // boxes don't trigger a mode flip.
+  for (const btn of document.querySelectorAll("#mg-subtoggle .mode-btn")) {
+    btn.addEventListener("click", () => {
+      const sv = btn.dataset.subview;
+      if (!VALID_SUBVIEWS.has(sv)) return;
+      localStorage.setItem(MG_SUBVIEW_KEY, sv);
+      applyMode(localStorage.getItem(MODE_KEY) || "microgrids");
+    });
+  }
+  const backBtn = document.getElementById("mg-back");
+  if (backBtn) backBtn.addEventListener("click", () => selectMicrogrid(null));
+  applyMode(localStorage.getItem(MODE_KEY) || "microgrids");
+  // Keyboard chord — 1 → Microgrids list, 2 → Scenarios. Skip
+  // when a text input has focus so digits typed into the REPL /
+  // search boxes don't trigger a mode flip.
   document.addEventListener("keydown", (ev) => {
     if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
     const t = ev.target;
     const tag = t && t.tagName;
     if (tag === "INPUT" || tag === "TEXTAREA" || (t && t.isContentEditable)) return;
     let mode = null;
-    if (ev.key === "1") mode = "dashboard";
-    else if (ev.key === "2") mode = "topology";
-    else if (ev.key === "3") mode = "scenarios";
+    if (ev.key === "1") mode = "microgrids";
+    else if (ev.key === "2") mode = "scenarios";
     if (!mode) return;
     ev.preventDefault();
     localStorage.setItem(MODE_KEY, mode);
+    if (mode === "microgrids") localStorage.removeItem(MG_SELECTED_KEY);
     applyMode(mode);
   });
 }

@@ -365,12 +365,15 @@ dialog#help-dialog header button:hover { color: var(--fg); }
 
 main {
   display: grid;
-  /* topology | splitter | side  (top row, 1fr)
+  /* mg-header spanning all 3 cols (auto height; collapses to 0
+     when the Microgrids mode isn't drilled into a selection)
+     topology | splitter | side  (1fr)
      drawer-splitter spanning all 3 cols (5px)
      repl drawer spanning all 3 cols (JS rewrites this row's size). */
   grid-template-columns: 1fr 5px 420px;
-  grid-template-rows: 1fr 5px 260px;
+  grid-template-rows: auto 1fr 5px 260px;
   grid-template-areas:
+    "mgheader mgheader mgheader"
     "topology splitter side"
     "drawer-splitter drawer-splitter drawer-splitter"
     "repl     repl     repl";
@@ -396,24 +399,147 @@ main {
   min-height: 0;
 }
 
-/* `body[data-mode=...]` is the toggle the JS flips on mode-button
-   click + localStorage restore. Only one main pane shows at a
-   time; the chrome (side panel + REPL) stays put so selection /
-   eval keep working across modes. */
-body[data-mode="topology"]  #dashboard,
-body[data-mode="topology"]  #scenarios,
-body[data-mode="dashboard"] #topology,
-body[data-mode="dashboard"] #scenarios,
-body[data-mode="scenarios"] #topology,
-body[data-mode="scenarios"] #dashboard { display: none; }
+/* Mode → which main pane is visible. Top-level modes are
+   `microgrids` and `scenarios`; the Microgrids mode has a
+   secondary state (`data-mg-view = "list" | "selected"`) for
+   whether the user is browsing the card grid or has drilled
+   into a specific microgrid, plus a `data-subview` flag
+   (dashboard / topology) for the per-mg sub-tab. */
+body[data-mode="scenarios"] #microgrid-list,
+body[data-mode="scenarios"] #mg-header,
+body[data-mode="scenarios"] #dashboard,
+body[data-mode="scenarios"] #topology { display: none; }
 
+body[data-mode="microgrids"] #scenarios { display: none; }
+
+body[data-mode="microgrids"][data-mg-view="list"] #mg-header,
+body[data-mode="microgrids"][data-mg-view="list"] #dashboard,
+body[data-mode="microgrids"][data-mg-view="list"] #topology { display: none; }
+
+body[data-mode="microgrids"][data-mg-view="selected"] #microgrid-list { display: none; }
+
+body[data-mode="microgrids"][data-mg-view="selected"][data-subview="dashboard"] #topology { display: none; }
+body[data-mode="microgrids"][data-mg-view="selected"][data-subview="topology"]  #dashboard { display: none; }
+
+#microgrid-list,
+#mg-header,
 #scenarios {
   /* `display: block` defeats the inline `hidden` attribute's UA
-     `[hidden] { display: none }`. `body[data-mode="..."] #scenarios`
-     re-hides it on the inactive modes. */
+     `[hidden] { display: none }`. The body[data-mode] rules
+     above re-hide whichever pane shouldn't show right now. */
   display: block;
+}
+
+#scenarios {
   padding: 16px 20px;
   overflow: auto;
+}
+
+#microgrid-list {
+  grid-area: topology;
+  background: var(--bg);
+  padding: 16px 20px;
+  overflow: auto;
+}
+
+.mglist-header h2 {
+  font-size: 18px;
+  margin-bottom: 4px;
+}
+
+.mglist-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.mglist-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-start;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 16px;
+  text-align: left;
+  cursor: pointer;
+  color: var(--fg);
+  font: inherit;
+  transition: border-color 120ms;
+}
+.mglist-card:hover { border-color: var(--accent); }
+.mglist-id {
+  font-family: var(--mono, ui-monospace, "Cascadia Mono", monospace);
+  font-size: 11px;
+  color: var(--muted);
+}
+.mglist-name {
+  font-size: 15px;
+  margin: 0;
+}
+.mg-tso {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: rgba(121, 184, 255, 0.18);
+  color: var(--accent);
+}
+.mglist-meta {
+  font-size: 11px;
+  margin-top: 4px;
+}
+.mglist-new {
+  border-style: dashed;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  color: var(--muted);
+}
+.mglist-new:hover { border-style: solid; }
+.mglist-plus {
+  font-size: 22px;
+  color: var(--accent);
+}
+
+#mg-header {
+  grid-area: mgheader;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  padding: 6px 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+
+.mg-name {
+  font-weight: 500;
+}
+
+#mg-subtoggle {
+  display: inline-flex;
+  gap: 2px;
+  margin-left: auto;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px;
+}
+#mg-subtoggle .mode-btn {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font: inherit;
+  padding: 4px 10px;
+  cursor: pointer;
+  border-radius: 4px;
+}
+#mg-subtoggle .mode-btn.active {
+  background: var(--bg-elev);
+  color: var(--fg);
 }
 
 /* Mode toggle in the header. Sits just right of the status pill,
