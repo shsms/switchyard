@@ -1292,6 +1292,78 @@ function setupHelpButton() {
   });
 }
 
+function setupSnapshotsDialog() {
+  const dlg = document.getElementById("snapshots-dialog");
+  const btn = document.getElementById("snapshots-btn");
+  const close = document.getElementById("snapshots-dialog-close");
+  const list = document.getElementById("snapshots-list");
+  const input = document.getElementById("snapshot-name-input");
+  const form = document.getElementById("snapshot-save-form");
+  if (!dlg || !btn) return;
+
+  async function refresh() {
+    list.innerHTML = "";
+    try {
+      const res = await fetch("/api/snapshots");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const names = (await res.json()).snapshots || [];
+      if (names.length === 0) {
+        list.innerHTML = '<li class="hint">No snapshots yet.</li>';
+        return;
+      }
+      for (const name of names) {
+        const li = document.createElement("li");
+        li.className = "snapshot-row";
+        li.innerHTML = `
+          <span class="snapshot-name">${escapeHtml(name)}</span>
+          <button class="hdr-btn snapshot-load" type="button">Load</button>
+        `;
+        li.querySelector(".snapshot-load").addEventListener("click", async () => {
+          if (!confirm(`Load snapshot "${name}"? Current overrides will be replaced.`)) return;
+          const r = await fetch("/api/snapshots/load", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name }),
+          });
+          if (!r.ok) {
+            alert(`Load failed: ${await r.text()}`);
+            return;
+          }
+          dlg.close();
+        });
+        list.appendChild(li);
+      }
+    } catch (err) {
+      list.innerHTML = `<li class="hint">error: ${escapeHtml(err.message)}</li>`;
+    }
+  }
+
+  btn.addEventListener("click", () => {
+    refresh();
+    dlg.showModal();
+  });
+  close.addEventListener("click", () => dlg.close());
+  dlg.addEventListener("click", (e) => {
+    if (e.target === dlg) dlg.close();
+  });
+  form.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const name = input.value.trim();
+    if (!name) return;
+    const r = await fetch("/api/snapshots/save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    if (!r.ok) {
+      alert(`Save failed: ${await r.text()}`);
+      return;
+    }
+    input.value = "";
+    await refresh();
+  });
+}
+
 function setupOverridesDialog() {
   const dlg = document.getElementById("pending-dialog");
   document
@@ -3356,6 +3428,7 @@ async function init() {
   setupSplitter();
   setupDrawerSplitter();
   setupOverridesDialog();
+  setupSnapshotsDialog();
   backfillLogs();
   setupOverridesPill();
   // The topology canvas calls back to showComponent / clearSide on

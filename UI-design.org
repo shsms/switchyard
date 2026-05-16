@@ -685,7 +685,7 @@ Hook to Z3's typed quantities: the envelope renderer takes a
 =Quantity= type, picks units, and renders consistently
 whether the underlying value is Power, Current, or Percentage.
 
-** TODO F4. Formula-debug overlay
+** DONE F4. Formula-debug overlay
 
 Hover any aggregated number on the Dashboard → tooltip shows
 the formula string the graph crate would render for that
@@ -702,10 +702,9 @@ Acceptance: tooltip appears within 200 ms; click navigates to
 the formula tree; clicking a =#N= in the tree selects the
 component on the canvas.
 
-*Stage 1 landed*: tooltip via the .dash-tile title attribute,
-fed by /api/microgrid/formulas (mode-enter + topology refetch).
-Stage 2 (click → side-panel formula tree with linked #N → canvas
-selection) is the remaining part.
+Both stages landed: stage 1 hover tooltip + stage 2 click ->
+side-panel formula tree with each #N linked to the canvas. Status
+DONE.
 
 * Snapshots / save-state
 

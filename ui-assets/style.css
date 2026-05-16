@@ -682,6 +682,42 @@ body.compact .envelope-marker { width: 10px; height: 10px; margin-left: -5px; ma
 .formula-op  { color: var(--warn, #d9c46b); }
 .formula-call { color: var(--good, #6bd97b); }
 
+#snapshots-dialog #snapshot-save-form {
+  display: flex;
+  gap: 8px;
+  align-items: end;
+  margin-bottom: 12px;
+}
+#snapshots-dialog #snapshot-save-form label {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+#snapshots-dialog #snapshot-name-input {
+  background: var(--bg-deep, #1b1f27);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--fg);
+  padding: 6px 8px;
+  font-size: 13px;
+}
+#snapshots-list { list-style: none; padding: 0; margin: 0; }
+.snapshot-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.snapshot-row:last-child { border-bottom: none; }
+.snapshot-name {
+  font-family: var(--mono, ui-monospace, "Cascadia Mono", monospace);
+  font-size: 13px;
+}
+
 .tier5-row {
   display: grid;
   grid-template-columns: minmax(140px, 1.5fr) 90px 80px minmax(160px, 3fr) minmax(100px, 1fr);

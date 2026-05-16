@@ -521,6 +521,9 @@ fn router(config: Config, microgrid: SharedMicrogrid) -> Router {
         .route("/api/microgrid/status", get(microgrid_status))
         .route("/api/microgrid/latest", get(microgrid_latest))
         .route("/api/microgrid/formulas", get(microgrid_formulas))
+        .route("/api/snapshots", get(snapshots_list))
+        .route("/api/snapshots/save", post(snapshots_save))
+        .route("/api/snapshots/load", post(snapshots_load))
         .route("/ws/events", get(events_ws))
         .layer(Extension(microgrid))
         .with_state(config)
@@ -536,6 +539,47 @@ struct MicrogridStatusResp {
     /// confirms switchyard's gRPC server returned what the
     /// graph crate accepted.
     component_count: Option<usize>,
+}
+
+#[derive(Serialize)]
+struct SnapshotsListResp {
+    snapshots: Vec<String>,
+}
+
+async fn snapshots_list(State(config): State<Config>) -> Json<SnapshotsListResp> {
+    Json(SnapshotsListResp {
+        snapshots: config.list_snapshots(),
+    })
+}
+
+#[derive(Deserialize)]
+struct SnapshotsBody {
+    name: String,
+}
+
+async fn snapshots_save(
+    State(config): State<Config>,
+    Json(body): Json<SnapshotsBody>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let path = tokio::task::spawn_blocking(move || config.save_snapshot(&body.name))
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("join: {e}")))?
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok(Json(serde_json::json!({
+        "ok": true,
+        "path": path.display().to_string(),
+    })))
+}
+
+async fn snapshots_load(
+    State(config): State<Config>,
+    Json(body): Json<SnapshotsBody>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    tokio::task::spawn_blocking(move || config.load_snapshot(&body.name))
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("join: {e}")))?
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 async fn microgrid_status(
