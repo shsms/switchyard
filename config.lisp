@@ -45,23 +45,6 @@
          (set-frequency
           (+ 49.99 (/ (random 4) 100.0)))))
 
-;; Consumer-load curve over a 15-minute window, driving meter id 100
-;; (the hidden consumer meter declared in the topology below).
-;; Shape: low first half (1 kW), 7-min ramp 1 → ~16 kW, sudden 16 kW
-;; spike near the end. Replace with (csv-lookup …) for a profile
-;; recorded from real data; the setter doesn't care where the value
-;; comes from.
-(defun consumer-curve (t-window)
-  (cond ((< t-window 450.0) 1000.0)
-        ((> t-window 870.0) 16000.0)
-        (t (+ 1000.0 (* 35.0 (- t-window 450.0))))))
-
-(every
- :milliseconds 200
- :call (lambda ()
-         ;; (set-meter-power 100 (consumer-curve (window-elapsed 900.0)))
-         (set-meter-power 100 0)))
-
 ;; PV cloud-cover schedule over a 10-minute window, driving the solar
 ;; inverter (id 200 below). Sunny first 3 min (80%), 2-min ramp into
 ;; clouds (→ 20%), 2 min cloudy, 2-min ramp back to clear. The
@@ -130,11 +113,18 @@
        (make-meter :power -2000.0 :successors (list (make-chp)))
 
        ;; Hidden consumer meter — invisible in ListComponents / tree but
-       ;; aggregated into the main meter. Driven dynamically by the
-       ;; consumer-curve timer above via id 100. `%make-meter` bypasses
+       ;; aggregated into the main meter. `%make-meter` bypasses
        ;; meter-defaults so the explicit :power isn't combined with a
-       ;; default :stream-jitter-pct on a hidden component.
-       (%make-meter :id 100 :name "consumer" :hidden t :power 1000.0)))))))
+       ;; default :stream-jitter-pct on a hidden component. Power
+       ;; follows a sine wave: peak 30 kW, trough 5 kW, one cycle
+       ;; every 15 min, plus ±500 W jitter. The pre-tick hook
+       ;; re-evaluates the lambda each physics tick.
+       (%make-meter
+        :id 100 :name "consumer" :hidden t
+        :power (lambda ()
+                 (+ 17500.0
+                    (* 12500.0 (sin (* 6.2831853 (/ (window-elapsed 900.0) 900.0))))
+                    (- (random 1000) 500))))))))))
 
 ;; Load the starter scenarios library — seven multi-stage canned
 ;; scenarios appear in the Scenarios mode dropdown on a fresh

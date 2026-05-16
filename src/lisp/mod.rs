@@ -1595,6 +1595,8 @@ fn add_log_functions(ctx: &mut TulispContext) {
         // Math + RNG helpers used by ported microsim configs.
         .defun("ceiling", |n: f64| n.ceil() as i64)
         .defun("floor", |n: f64| n.floor() as i64)
+        .defun("sin", |n: f64| n.sin())
+        .defun("cos", |n: f64| n.cos())
         .defun("random", |limit: Option<i64>| {
             if let Some(limit) = limit {
                 rand::thread_rng().gen_range(0..limit)
