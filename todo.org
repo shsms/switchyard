@@ -242,6 +242,36 @@ Acceptance: Ctrl-Z after a paste removes the pasted subgraph;
 Ctrl-Z after a rename restores the previous name; Ctrl-Shift-Z
 re-applies the undone step.
 
+*** TODO H3. Topology canvas: keep the graph centered
+
+Switching into the Topology subview often shows only half the
+graph — the user has to pan to see the full diagram. Small
+unrelated UI mutations (a side-panel open, a header chip update)
+sometimes shift the centering further. Likely a vis-network
+`fit()` issue: the fit is only called at first paint, not on
+resize / focus / panel toggle.
+
+Acceptance: switching into Topology always lands with the graph
+visible end-to-end; no follow-on action moves it off center
+unless the user pans / zooms themselves.
+
+*** TODO H4. Bottom splitter wedges the layout
+
+Dragging the bottom splitter (REPL drawer vs. main pane) past a
+threshold appears to take up the whole vertical space and the
+canvas + side panel become invisible. The side (vertical)
+splitter behaves normally.
+
+Reproduce via headless Firefox (selenium): start the binary,
+flip to Topology subview, drag the bottom splitter to ~0 px
+from the top, screenshot. Then investigate the CSS / JS — likely
+the splitter's min-height clamp is missing or the grid template
+collapses.
+
+Acceptance: dragging the splitter to either extreme leaves both
+panes visible (or at least recoverable via the splitter); a
+selenium regression test pins the behaviour.
+
 * Bugs / open design questions
 
 ** d1. Rethink ~file-exists-p~ resolving against the config's load dir
