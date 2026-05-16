@@ -148,6 +148,15 @@ enum Cmd {
     #[command(subcommand)]
     Snapshot(SnapshotCmd),
 
+    /// Read the loopback BatteryPool / PvPool aggregates. Output
+    /// matches the `Sample<Q>` shape frequenz-microgrid's pool
+    /// streams yield, so the output is paste-into-a-bug-report
+    /// compatible with what a downstream control app sees.
+    Pool {
+        #[command(subcommand)]
+        cmd: PoolCmd,
+    },
+
     /// Terminal-resident pulse bar — one line per second showing
     /// component health, the grid / PV / battery readouts, and the
     /// loopback Microgrid status. Useful in a tmux pane next to
@@ -160,6 +169,22 @@ enum Cmd {
         /// Polling cadence in seconds (only with --tail).
         #[arg(long, default_value_t = 1.0)]
         interval: f64,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum PoolCmd {
+    /// Battery pool — power + active-power envelope.
+    Battery {
+        /// Stream forever; otherwise prints one snapshot and exits.
+        #[arg(long)]
+        stream: bool,
+    },
+    /// PV pool — current aggregate active power. (frequenz-microgrid
+    /// 0.4.1 has no PvPool envelope, so this is just `pv_power`.)
+    Pv {
+        #[arg(long)]
+        stream: bool,
     },
 }
 
@@ -272,6 +297,9 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     if let Cmd::Dashboard { tail, interval } = cli.cmd {
         return run_dashboard(&cli.ui_addr, tail, interval).await;
     }
+    if let Cmd::Pool { cmd } = cli.cmd {
+        return run_pool(cmd, &cli.ui_addr, cli.json).await;
+    }
     let mut client = MicrogridClient::connect(cli.addr.clone()).await?;
     match cli.cmd {
         Cmd::Info => cmd_info(&mut client, cli.json).await,
@@ -295,9 +323,94 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             upper,
             lifetime,
         } => cmd_augment(&mut client, id, lower, upper, lifetime).await,
-        // Scenario, Snapshot, Dashboard handled before the gRPC
-        // connect above.
-        Cmd::Scenario(_) | Cmd::Snapshot(_) | Cmd::Dashboard { .. } => unreachable!(),
+        // Scenario, Snapshot, Dashboard, Pool handled before the
+        // gRPC connect above.
+        Cmd::Scenario(_)
+        | Cmd::Snapshot(_)
+        | Cmd::Dashboard { .. }
+        | Cmd::Pool { .. } => unreachable!(),
+    }
+}
+
+async fn run_pool(
+    cmd: PoolCmd,
+    ui_addr: &str,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let http = reqwest::Client::new();
+    let (kind, stream) = match cmd {
+        PoolCmd::Battery { stream } => ("battery", stream),
+        PoolCmd::Pv { stream } => ("pv", stream),
+    };
+    loop {
+        let line = build_pool_line(&http, ui_addr, kind, json).await?;
+        println!("{line}");
+        if !stream {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+}
+
+async fn build_pool_line(
+    http: &reqwest::Client,
+    ui_addr: &str,
+    kind: &str,
+    json: bool,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let latest: serde_json::Value = http
+        .get(format!("{ui_addr}/api/microgrid/latest"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let stream_for = |s: &str| latest.get(s).cloned();
+    if json {
+        let mut out = serde_json::Map::new();
+        match kind {
+            "battery" => {
+                if let Some(v) = stream_for("battery_pool_power") {
+                    out.insert("power".into(), v);
+                }
+                if let Some(v) = stream_for("battery_pool_bounds_lower") {
+                    out.insert("bounds_lower".into(), v);
+                }
+                if let Some(v) = stream_for("battery_pool_bounds_upper") {
+                    out.insert("bounds_upper".into(), v);
+                }
+            }
+            "pv" => {
+                if let Some(v) = stream_for("pv_power") {
+                    out.insert("power".into(), v);
+                }
+            }
+            _ => {}
+        }
+        return Ok(serde_json::to_string(&serde_json::Value::Object(out))?);
+    }
+    let now = chrono::Local::now().format("%H:%M:%S");
+    let read = |s: &str| -> Option<f64> {
+        latest
+            .get(s)
+            .and_then(|v| v.get("value"))
+            .and_then(|v| v.as_f64())
+    };
+    let fmt = |w: Option<f64>| match w {
+        None => "—".to_owned(),
+        Some(v) if v.abs() >= 1e6 => format!("{:+.2} MW", v / 1e6),
+        Some(v) if v.abs() >= 1e3 => format!("{:+.2} kW", v / 1e3),
+        Some(v) => format!("{:+.1} W", v),
+    };
+    match kind {
+        "battery" => Ok(format!(
+            "{now}  power={}  envelope=[{} → {}]",
+            fmt(read("battery_pool_power")),
+            fmt(read("battery_pool_bounds_lower")),
+            fmt(read("battery_pool_bounds_upper")),
+        )),
+        "pv" => Ok(format!("{now}  power={}", fmt(read("pv_power")))),
+        _ => Ok(String::new()),
     }
 }
 
