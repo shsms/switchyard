@@ -24,13 +24,15 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use chrono::{DateTime, NaiveDate, Utc};
 use parking_lot::Mutex;
 use serde::Serialize;
-use tulisp::TulispObject;
+use tulisp::{SharedMut, TulispContext, TulispObject};
 
-use crate::sim::clock::Clock;
+use crate::sim::World;
+use crate::sim::clock::{Clock, SharedClock};
 
 #[derive(Clone, Debug)]
 pub struct Stage {
@@ -161,6 +163,215 @@ pub fn local_hour(clock: &Clock, now: DateTime<Utc>) -> f64 {
     clock.local_hour(now)
 }
 
+/// Funcall a tulisp lambda with no arguments. Holds the interpreter
+/// write lock for the duration of the call so the pre-tick hook
+/// blocks until the lambda completes — mirrors `Config::eval`'s
+/// lock discipline.
+fn funcall_lambda(ctx: &SharedMut<TulispContext>, lam: &TulispObject) -> Result<(), String> {
+    let mut c = ctx.borrow_mut();
+    c.funcall(lam, &TulispObject::nil())
+        .map(|_| ())
+        .map_err(|e| e.format(&c))
+}
+
+/// Start a scenario at the wallclock-current stage. Clears any
+/// manual override and runs the entered stage's `:on` lambda.
+/// Records a `'scenario-start` event in the world's journal so the
+/// existing Report panel + setpoints / journal feed reflect the
+/// transition.
+pub fn start(
+    reg: &SharedScenarios,
+    ctx: &SharedMut<TulispContext>,
+    world: &World,
+    clock: &Clock,
+    name: &str,
+    now: DateTime<Utc>,
+) -> Result<(), String> {
+    let hour = clock.local_hour(now);
+    let on = {
+        let mut r = reg.lock();
+        let e = r
+            .get_mut(name)
+            .ok_or_else(|| format!("no scenario named {name:?}"))?;
+        let idx = wallclock_stage(&e.def, hour).unwrap_or(0);
+        if e.def.stages.is_empty() {
+            return Err(format!("scenario {name:?} has no stages"));
+        }
+        e.runtime.current_stage = Some(idx);
+        e.runtime.started_at = Some(now);
+        e.runtime.stage_entered_at = Some(now);
+        e.runtime.manual_override = false;
+        e.def.stages.get(idx).and_then(|s| s.on.clone())
+    };
+    world.scenario_start(name.to_owned(), now);
+    if let Some(lam) = on {
+        funcall_lambda(ctx, &lam)?;
+    }
+    Ok(())
+}
+
+/// Stop the scenario. Clears runtime state and records a
+/// `scenario-stop` event. World state (component setpoints, timers
+/// installed by previous stage lambdas) is NOT rolled back — callers
+/// that need a clean slate follow this with `(reset-state)` or load
+/// a fresh snapshot.
+pub fn stop(
+    reg: &SharedScenarios,
+    world: &World,
+    name: &str,
+    now: DateTime<Utc>,
+) -> Result<(), String> {
+    let mut r = reg.lock();
+    let e = r
+        .get_mut(name)
+        .ok_or_else(|| format!("no scenario named {name:?}"))?;
+    e.runtime.current_stage = None;
+    e.runtime.stage_entered_at = None;
+    e.runtime.manual_override = false;
+    drop(r);
+    world.scenario_stop(now);
+    Ok(())
+}
+
+/// Jump to stage `idx`, setting `manual_override = true` so the
+/// auto-advance task leaves the scenario alone until the operator
+/// either restarts it or the wallclock catches up to that stage.
+pub fn jump(
+    reg: &SharedScenarios,
+    ctx: &SharedMut<TulispContext>,
+    world: &World,
+    name: &str,
+    idx: usize,
+    now: DateTime<Utc>,
+) -> Result<(), String> {
+    let on = {
+        let mut r = reg.lock();
+        let e = r
+            .get_mut(name)
+            .ok_or_else(|| format!("no scenario named {name:?}"))?;
+        if idx >= e.def.stages.len() {
+            return Err(format!(
+                "stage index {idx} out of range (0..{})",
+                e.def.stages.len()
+            ));
+        }
+        e.runtime.current_stage = Some(idx);
+        e.runtime.stage_entered_at = Some(now);
+        e.runtime.manual_override = true;
+        if e.runtime.started_at.is_none() {
+            e.runtime.started_at = Some(now);
+        }
+        e.def.stages[idx].on.clone()
+    };
+    world.scenario_record(
+        "stage-jump".to_owned(),
+        format!("{name}:{idx}"),
+        now,
+    );
+    if let Some(lam) = on {
+        funcall_lambda(ctx, &lam)?;
+    }
+    Ok(())
+}
+
+/// `prev` and `next` are jumps by ±1 relative to the current stage.
+/// `None` for `current_stage` resolves as "start at 0".
+pub fn step(
+    reg: &SharedScenarios,
+    ctx: &SharedMut<TulispContext>,
+    world: &World,
+    name: &str,
+    delta: isize,
+    now: DateTime<Utc>,
+) -> Result<(), String> {
+    let target = {
+        let r = reg.lock();
+        let e = r
+            .get(name)
+            .ok_or_else(|| format!("no scenario named {name:?}"))?;
+        let n = e.def.stages.len() as isize;
+        if n == 0 {
+            return Err(format!("scenario {name:?} has no stages"));
+        }
+        let cur = e.runtime.current_stage.map(|i| i as isize).unwrap_or(-1);
+        ((cur + delta).max(0).min(n - 1)) as usize
+    };
+    jump(reg, ctx, world, name, target, now)
+}
+
+/// One pass of the auto-advance loop: for every running scenario
+/// whose `manual_override` is false, transition to the wallclock-
+/// current stage if it differs from the recorded one. Returns the
+/// names that transitioned, mostly so tests can assert without
+/// reaching into the registry. Funcalls happen outside the registry
+/// lock so a long `:on` lambda doesn't block readers.
+pub fn auto_advance_tick(
+    reg: &SharedScenarios,
+    ctx: &SharedMut<TulispContext>,
+    world: &World,
+    clock: &Clock,
+    now: DateTime<Utc>,
+) -> Vec<String> {
+    let hour = clock.local_hour(now);
+    let to_run: Vec<(String, usize, Option<TulispObject>)> = {
+        let mut r = reg.lock();
+        r.iter_mut()
+            .filter_map(|(name, e)| {
+                if e.runtime.manual_override {
+                    return None;
+                }
+                let cur = e.runtime.current_stage?;
+                let want = wallclock_stage(&e.def, hour)?;
+                if want == cur {
+                    return None;
+                }
+                e.runtime.current_stage = Some(want);
+                e.runtime.stage_entered_at = Some(now);
+                let lam = e.def.stages.get(want).and_then(|s| s.on.clone());
+                Some((name.clone(), want, lam))
+            })
+            .collect()
+    };
+    let mut out = Vec::with_capacity(to_run.len());
+    for (name, idx, lam) in to_run {
+        world.scenario_record(
+            "stage-advance".to_owned(),
+            format!("{name}:{idx}"),
+            now,
+        );
+        if let Some(l) = lam {
+            if let Err(e) = funcall_lambda(ctx, &l) {
+                log::warn!("scenario {name} stage {idx} :on errored: {e}");
+            }
+        }
+        out.push(name);
+    }
+    out
+}
+
+/// Spawn the auto-advance loop. Polls at 2 s — fast enough to catch
+/// minute-level stage boundaries promptly without saturating the
+/// interpreter lock the physics tick depends on. Lifetime of the
+/// task is the process; there's no cancel handle since the
+/// registry + world live forever.
+pub fn spawn_auto_advance(
+    reg: SharedScenarios,
+    ctx: SharedMut<TulispContext>,
+    world: World,
+    clock: SharedClock,
+) {
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(2));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            tick.tick().await;
+            let now = Utc::now();
+            let c = clock.read().clone();
+            auto_advance_tick(&reg, &ctx, &world, &c, now);
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,6 +408,68 @@ mod tests {
         assert_eq!(wallclock_stage(&d, 8.0), None);
         assert_eq!(wallclock_stage(&d, 17.5), Some(0));
         assert_eq!(wallclock_stage(&d, 21.0), None);
+    }
+
+    #[test]
+    fn auto_advance_skips_non_running_and_manual_overrides() {
+        // Build a scenario manually (no lisp lambda needed for this
+        // test — auto_advance_tick still moves the current_stage
+        // pointer on the runtime side).
+        let reg = new_registry();
+        reg.lock().insert(
+            "two-stage".into(),
+            ScenarioEntry {
+                def: ScenarioDef {
+                    name: "two-stage".into(),
+                    description: String::new(),
+                    date: None,
+                    stages: vec![
+                        Stage {
+                            name: "morning".into(),
+                            hour_from: 6.0,
+                            hour_to: 12.0,
+                            on: None,
+                        },
+                        Stage {
+                            name: "afternoon".into(),
+                            hour_from: 12.0,
+                            hour_to: 18.0,
+                            on: None,
+                        },
+                    ],
+                },
+                runtime: ScenarioRuntime {
+                    current_stage: Some(0),
+                    ..Default::default()
+                },
+            },
+        );
+        let ctx = SharedMut::new(TulispContext::new());
+        let world = World::new();
+        let clock = Clock::default();
+        // 15:30 local. Wallclock-current stage = 1; we should
+        // transition.
+        let now = chrono::TimeZone::with_ymd_and_hms(
+            &chrono_tz::Europe::Berlin,
+            2026,
+            1,
+            15,
+            15,
+            30,
+            0,
+        )
+        .single()
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+        let moved = auto_advance_tick(&reg, &ctx, &world, &clock, now);
+        assert_eq!(moved, vec!["two-stage".to_string()]);
+        assert_eq!(reg.lock()["two-stage"].runtime.current_stage, Some(1));
+
+        // Flip manual_override on; a second tick should be a no-op
+        // even though wallclock still wants stage 1 (and stays at 1).
+        reg.lock().get_mut("two-stage").unwrap().runtime.manual_override = true;
+        let moved2 = auto_advance_tick(&reg, &ctx, &world, &clock, now);
+        assert!(moved2.is_empty());
     }
 
     #[test]
