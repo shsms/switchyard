@@ -354,11 +354,33 @@ const topology = (() => {
     if (!network) {
       nodesDS = new vis.DataSet(nodes);
       edgesDS = new vis.DataSet(edges);
+      const container = document.getElementById("topology");
       network = new vis.Network(
-        document.getElementById("topology"),
+        container,
         { nodes: nodesDS, edges: edgesDS },
         visOptions,
       );
+      // Re-frame whenever the container resizes — switching subviews
+      // (display:none → display:block) and dragging the drawer or
+      // side splitter all fall through here. Without this, vis-
+      // network's camera sticks to whatever extent was captured on
+      // first paint and a graph that was wider than the canvas at
+      // construction shows only half of itself afterwards.
+      if (typeof ResizeObserver !== "undefined") {
+        const ro = new ResizeObserver(() => {
+          if (network && container.offsetWidth > 0 && container.offsetHeight > 0) {
+            network.fit({ animation: false });
+          }
+        });
+        ro.observe(container);
+      }
+      // vis-network's first auto-fit happens on stabilization, but
+      // we ship with `physics.enabled = false` so stabilization
+      // doesn't actually fire — call fit explicitly once
+      // construction is done so the camera lands on the layout
+      // extent rather than whatever default zoom vis-network
+      // initialised with.
+      network.once("afterDrawing", () => network.fit({ animation: false }));
       network.on("click", (params) => {
         const shiftKey = params.event?.srcEvent?.shiftKey;
         if (params.nodes.length) {
@@ -634,6 +656,21 @@ const topology = (() => {
     allIds: () => Array.from(componentById.keys()),
     select(ids) {
       if (network) network.selectNodes(ids);
+    },
+    /// Re-frame the canvas so every visible node fits. vis-network's
+    /// auto-fit only fires on stabilization (we have physics off so
+    /// it never runs again after the first paint), and the first
+    /// paint may have happened while the topology subview was
+    /// `display:none` and the canvas measured 0 × 0. Call this on
+    /// subview enter and after container resizes.
+    fit() {
+      if (!network) return;
+      network.fit({
+        animation: false,
+        // Snug padding — the default leaves big margins that make a
+        // small graph (3-4 components) look stranded in the canvas.
+        nodes: undefined,
+      });
     },
     /// Array of [from, to] edges as rendered. Source-of-truth is the
     /// vis DataSet so this reflects whatever the canvas is actually
@@ -3983,8 +4020,13 @@ function applyMode(mode) {
   }
   // vis-network needs a redraw nudge when its container goes from
   // display:none back to visible — the canvas was sized to 0×0 while
-  // hidden. Same shape the splitter resize handler uses.
-  if (mode === "microgrids" && selected != null && subview === "topology") refitCharts();
+  // hidden. Same shape the splitter resize handler uses. Defer the
+  // fit one animation-frame so the just-flipped `data-subview` has
+  // settled the CSS visibility before vis-network measures.
+  if (mode === "microgrids" && selected != null && subview === "topology") {
+    refitCharts();
+    requestAnimationFrame(() => topology.fit());
+  }
   if (mode === "microgrids" && selected != null && subview === "dashboard") {
     dashboardTiles.backfill();
     gridFrequency.backfill();
