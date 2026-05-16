@@ -742,6 +742,15 @@ async fn microgrids_create(
     // gRPC server + loopback) via the binary-supplied spawner.
     // Tests pass a no-op spawner.
     spawner(id, &name, grpc_port, site);
+    // Persist a stub microgrids/config.<id>.lisp so the new
+    // microgrid (and any UI edits the user makes against it that
+    // land in microgrids/config.<id>.overrides.lisp) survive a
+    // process restart. Best-effort: a write failure surfaces as a
+    // 500 — the registry entry is already live, but without the
+    // stub the next boot would orphan the overrides file.
+    if let Err(e) = write_microgrid_stub(&config, id, &name, grpc_port, body.tso.as_deref()) {
+        return Err((StatusCode::INTERNAL_SERVER_ERROR, e));
+    }
     // Notify enterprise-wide subscribers (the WS event pump) so live
     // UI sessions start receiving topology_changed / sample events
     // from the new microgrid without a page reload.
@@ -753,6 +762,56 @@ async fn microgrids_create(
         grpc_port,
         tso: def_clone.tso,
     }))
+}
+
+/// Write `microgrids/config.<id>.lisp` for a runtime-created entry.
+/// The stub carries a `(make-microgrid …)` form pinned to this id /
+/// port / tso, plus an empty `:topology` lambda that just
+/// `(load-overrides)`s — the UI populates the topology over time by
+/// appending to the per-mg overrides file next to this stub. Errors
+/// out instead of clobbering an existing file (concurrent creates
+/// shouldn't fight over the same path, but the registry already
+/// dedups by id so this is just paranoia).
+fn write_microgrid_stub(
+    config: &Config,
+    id: u64,
+    name: &str,
+    grpc_port: u16,
+    tso: Option<&str>,
+) -> Result<(), String> {
+    let dir = config.microgrids_dir();
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("create {}: {e}", dir.display()))?;
+    let path = dir.join(format!("config.{id}.lisp"));
+    if path.exists() {
+        return Err(format!("stub file {} already exists; refusing to clobber", path.display()));
+    }
+    // Escape only " and \ inside the name string. The TSO is one of
+    // the four short codes ("TN" / "AM" / "HZ" / "BW") or unset, so
+    // the same escape rule covers it.
+    fn esc(s: &str) -> String {
+        s.replace('\\', "\\\\").replace('"', "\\\"")
+    }
+    let tso_form = match tso {
+        Some(t) if !t.is_empty() => format!(" :tso \"{}\"", esc(t)),
+        _ => String::new(),
+    };
+    let content = format!(
+        ";; Runtime-created microgrid (id {id}). Edit by hand or via\n\
+         ;; the UI — UI edits land in config.{id}.overrides.lisp next\n\
+         ;; to this file.\n\
+         \n\
+         (make-microgrid\n\
+        \x20:id {id}\n\
+        \x20:name \"{name_esc}\"\n\
+        \x20:grpc-port {grpc_port}{tso_form}\n\
+        \x20:topology\n\
+        \x20(lambda ()\n\
+        \x20  (load-overrides)))\n",
+        name_esc = esc(name),
+    );
+    std::fs::write(&path, content)
+        .map_err(|e| format!("write {}: {e}", path.display()))
 }
 
 async fn scenarios_list(

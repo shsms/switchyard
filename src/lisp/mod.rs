@@ -682,6 +682,19 @@ impl Config {
             .join(format!("config.{mg_id}.overrides.lisp"))
     }
 
+    /// Directory holding per-microgrid `config.<id>.lisp` +
+    /// `config.<id>.overrides.lisp` files, next to the entry config.
+    /// The HTTP create endpoint writes runtime-created microgrid
+    /// stubs here so they survive process restarts.
+    pub fn microgrids_dir(&self) -> PathBuf {
+        let load_dir = Path::new(&self.filename)
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."));
+        load_dir.join("microgrids")
+    }
+
     /// Directory snapshots are stored in: a `snapshots/` subdirectory
     /// next to the loaded config file. Lazily created on the first
     /// `save_snapshot` call.
