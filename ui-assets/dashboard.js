@@ -5,7 +5,8 @@
 // innerHTML — no virtual DOM; the grid is small and the writes are
 // batched per render() call.
 
-import { jumpToTopology, loadFormulas, mgPath } from "./app.js";
+import { jumpToTopology, mgPath } from "./app.js";
+import { loadFormulas } from "./formulas.js";
 
 export const dashboardTiles = (() => {
   // 900 samples × 1 Hz cadence = 15 min sparkline window. Backfilled
