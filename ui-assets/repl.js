@@ -17,8 +17,9 @@ import {
   rainbowHighlight,
   wordAtCursor,
 } from "./repl-syntax.js";
-import { readSelectedMg, readSubview } from "./routing.js";
-import { dispatchesPanel, escapeHtml, liveCharts, mgPath, setStatus } from "./app.js";
+import { mgPath, readSelectedMg, readSubview } from "./routing.js";
+import { liveCharts } from "./inspect.js";
+import { dispatchesPanel, escapeHtml, setStatus } from "./app.js";
 
 
 // Log panel above the REPL. /api/logs gives the load-time backfill

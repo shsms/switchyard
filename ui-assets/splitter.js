@@ -2,7 +2,7 @@
 // bottom drawer. Goes through `makeSplitter` so the
 // mousedown / mousemove / mouseup handshake stays in one place.
 
-import { refitCharts } from "./app.js";
+import { refitCharts } from "./inspect.js";
 
 /// Generic drag-to-resize handler. The drawer splitter (between the
 /// topology row and the bottom drawer) uses it: capture the

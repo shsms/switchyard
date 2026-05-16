@@ -15,13 +15,8 @@ import {
 import { gridFrequency, pulseBar } from "./chrome.js";
 import { microgridsPanel, scenariosPanel } from "./panels.js";
 import { topology } from "./topology.js";
-import {
-  clearSide,
-  dispatchesPanel,
-  refitCharts,
-  setStatus,
-  showComponent,
-} from "./app.js";
+import { clearSide, refitCharts, showComponent } from "./inspect.js";
+import { dispatchesPanel, setStatus } from "./app.js";
 
 // ─── Per-mg URL helper ─────────────────────────────────────────────────────
 // Prefixes /api/mg/{selected_id}/ when a microgrid is selected,
@@ -112,7 +107,7 @@ function parseHash(hash) {
   if (hash === "#scenarios") {
     return { mode: "scenarios", selectedMg: null, subview: "dashboard" };
   }
-  const m = /^#microgrids\/(\d+)(?:\/(dashboard|topology))?$/.exec(hash);
+  const m = /^#microgrids\/(\d+)(?:\/(dashboard|topology|dispatches))?$/.exec(hash);
   if (m) {
     return {
       mode: "microgrids",
