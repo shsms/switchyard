@@ -95,16 +95,14 @@ pub fn snapshot(registry: &SharedMicrogrids) -> Vec<MicrogridView> {
 /// starting at `DEFAULT_GRPC_PORT`. Used by the create-microgrid
 /// HTTP endpoint when the caller didn't pin a port explicitly.
 pub fn next_free_port(registry: &SharedMicrogrids) -> u16 {
-    next_free_port_in(&*registry.lock())
+    next_free_port_in(&registry.lock())
 }
 
 /// Like [`next_free_port`] but operates on an already-locked map.
 /// Lets the create-microgrid handler pick id + port + insert under
 /// one critical section so two concurrent creates can't both pick
 /// the same port.
-pub fn next_free_port_in(
-    entries: &BTreeMap<u64, MicrogridEntry>,
-) -> u16 {
+pub fn next_free_port_in(entries: &BTreeMap<u64, MicrogridEntry>) -> u16 {
     let mut ports: Vec<u16> = entries.values().map(|e| e.def.grpc_port).collect();
     ports.sort_unstable();
     let mut candidate = DEFAULT_GRPC_PORT;
@@ -199,7 +197,7 @@ pub fn with_microgrid<R>(current: &CurrentMicrogrid, id: u64, f: impl FnOnce() -
 /// Smallest microgrid id not currently registered, starting at
 /// `DEFAULT_MICROGRID_ID`. Mirrors `next_free_port`'s shape.
 pub fn next_free_id(registry: &SharedMicrogrids) -> u64 {
-    next_free_id_in(&*registry.lock())
+    next_free_id_in(&registry.lock())
 }
 
 /// Like [`next_free_id`] but operates on an already-locked map.

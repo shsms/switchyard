@@ -387,8 +387,23 @@ impl Config {
 
     fn start_timeout_loop(registry: crate::sim::microgrids::SharedMicrogrids) {
         tokio::spawn(async move {
+            // `interval` + `Skip` keeps the cadence on the nominal
+            // 100 ms grid even when one iteration overruns (a Lisp
+            // reset_setpoint that grabs the interpreter lock against
+            // a long /api/eval can take real time). The previous
+            // `sleep(100ms)` drifted upward under load — each
+            // iteration's clock started AFTER the work finished.
+            //
+            // `interval_at` rather than `interval` so the *first*
+            // tick lands at +100 ms instead of immediately. Tests
+            // that arm a deadline + check `drain_expired_timeouts`
+            // synchronously rely on the BG task not racing them at
+            // t=0.
+            let start = tokio::time::Instant::now() + Duration::from_millis(100);
+            let mut tick = tokio::time::interval_at(start, Duration::from_millis(100));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
-                tokio::time::sleep(Duration::from_millis(100)).await;
+                tick.tick().await;
                 // Snapshot the per-mg sites under the lock, then drain
                 // outside the lock so a slow component callback can't
                 // hold registry-wide reads.
@@ -778,9 +793,9 @@ impl Config {
         if !src.exists() {
             return Err(format!("snapshot {name:?} not found"));
         }
-        let dest = self.overrides_path().ok_or_else(|| {
-            "no resolvable microgrid scope; can't pick a destination".to_string()
-        })?;
+        let dest = self
+            .overrides_path()
+            .ok_or_else(|| "no resolvable microgrid scope; can't pick a destination".to_string())?;
         fs::copy(&src, &dest).map_err(|e| format!("copy snapshot failed: {e}"))?;
         self.reload()
     }
