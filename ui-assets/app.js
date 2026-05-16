@@ -332,6 +332,16 @@ const topology = (() => {
       `${visibleCount} components, ${data.connections.length} connections`,
       "connected",
     );
+    // Flip the body's mg-empty flag so the topology canvas's
+    // empty-hint overlay (D5) shows/hides without a separate JS
+    // pass. A microgrid with zero visible components is treated
+    // as empty for hint purposes — hidden meters by themselves
+    // don't disqualify the overlay.
+    if (visibleCount === 0) {
+      document.body.dataset.mgEmpty = "1";
+    } else {
+      delete document.body.dataset.mgEmpty;
+    }
     const { nodes, edges } = buildVisData(data);
     if (!network) {
       nodesDS = new vis.DataSet(nodes);
@@ -3818,6 +3828,12 @@ function selectMicrogrid(id) {
   }
   applyMode(localStorage.getItem(MODE_KEY) || "microgrids");
   renderReplMgChip();
+  // Refetch the per-mg topology so the canvas + the empty-hint
+  // overlay (D5) reflect the newly-selected microgrid. Without
+  // this the canvas keeps showing the previous microgrid's
+  // components until a WS topology_changed event arrives — which
+  // never happens just because the selection changed client-side.
+  if (id != null) refreshTopology();
 }
 
 // REPL chip — surfaces which microgrid the REPL form's POSTs

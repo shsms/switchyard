@@ -68,6 +68,16 @@
         </nav>
       </header>
       <div id="topology"></div>
+      <div id="topology-empty-hint" hidden>
+        <h3>Empty microgrid</h3>
+        <p>This microgrid has no components yet. Add a grid connection point first:</p>
+        <ol>
+          <li>Pick <strong>grid</strong> from the side panel's <em>Add component</em> dropdown and click <em>Create</em>, or</li>
+          <li>Eval <code>(make-grid-connection-point :id 1)</code> in the REPL, or</li>
+          <li>Paste a structure copied from another microgrid (Ctrl/Cmd+V).</li>
+        </ol>
+        <p class="hint">Wire it up via Ctrl/Cmd+drag once it's on the canvas.</p>
+      </div>
       <div id="scenarios" hidden>
         <header class="scenarios-header">
           <label class="scenarios-picker">

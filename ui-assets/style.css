@@ -557,6 +557,35 @@ body[data-mode="microgrids"][data-mg-view="selected"][data-subview="topology"]  
 .repl-mg-chip:hover { border-color: var(--accent); }
 .repl-mg-chip.muted { color: var(--muted); }
 
+#topology-empty-hint {
+  display: none;
+  grid-area: topology;
+  align-self: start;
+  justify-self: center;
+  margin-top: 18vh;
+  max-width: 480px;
+  background: var(--panel);
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  padding: 20px 26px;
+  font-size: 13px;
+  z-index: 1;
+}
+body[data-mg-empty="1"][data-mg-view="selected"][data-subview="topology"] #topology-empty-hint {
+  display: block;
+}
+#topology-empty-hint h3 {
+  font-size: 15px;
+  margin: 0 0 6px;
+}
+#topology-empty-hint ol { padding-left: 20px; margin: 6px 0; }
+#topology-empty-hint li { margin: 4px 0; }
+#topology-empty-hint code {
+  background: var(--bg-deep, #1b1f27);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
 /* Mode toggle in the header. Sits just right of the status pill,
    left of everything else, so it reads as the "what am I looking
    at" affordance. */
