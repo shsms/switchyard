@@ -134,8 +134,7 @@ async fn main() {
     // One Microgrid gRPC server per registry entry. tonic Server's
     // `serve` future drives a single listener — we spawn one task
     // per microgrid so the binary's main future is the join of all
-    // listeners. AssetsServer mounts on the first microgrid's port
-    // for now; B3 splits it onto its own port (9900).
+    // listeners.
     let mut tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
     for (id, name, port, site) in entries {
         let addr: std::net::SocketAddr = format!("[::1]:{port}")
@@ -143,21 +142,35 @@ async fn main() {
             .unwrap_or_else(|e| panic!("invalid grpc port for microgrid {id}: {e}"));
         log::info!("Microgrid #{id} {name:?} gRPC listening on {addr}");
         let cfg_for_server = config.clone();
-        let is_primary = id == first_id;
-        let cfg_for_assets = config.clone();
         tasks.push(tokio::spawn(async move {
             let mg_server = MicrogridServer::new(cfg_for_server, id, site);
-            let mut builder =
-                Server::builder().add_service(MicrogridGrpcServer::new(mg_server));
-            if is_primary {
-                builder = builder
-                    .add_service(AssetsGrpcServer::new(AssetsServer::new(cfg_for_assets)));
-            }
-            if let Err(e) = builder.serve(addr).await {
+            if let Err(e) = Server::builder()
+                .add_service(MicrogridGrpcServer::new(mg_server))
+                .serve(addr)
+                .await
+            {
                 log::error!("Microgrid #{id} gRPC server exited: {e}");
             }
         }));
     }
+    // PlatformAssets sits on its own listener so it's reachable
+    // regardless of which microgrid the client picks. Defaults to
+    // [::1]:9900; overridable via (set-assets-socket-addr "…").
+    let assets_addr_str = config.assets_socket_addr();
+    let assets_addr: std::net::SocketAddr = assets_addr_str
+        .parse()
+        .unwrap_or_else(|e| panic!("invalid assets socket addr {assets_addr_str:?}: {e}"));
+    log::info!("PlatformAssets gRPC listening on {assets_addr}");
+    let cfg_for_assets = config.clone();
+    tasks.push(tokio::spawn(async move {
+        if let Err(e) = Server::builder()
+            .add_service(AssetsGrpcServer::new(AssetsServer::new(cfg_for_assets)))
+            .serve(assets_addr)
+            .await
+        {
+            log::error!("PlatformAssets gRPC server exited: {e}");
+        }
+    }));
     for h in tasks {
         let _ = h.await;
     }

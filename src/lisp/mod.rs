@@ -37,6 +37,12 @@ pub struct Metadata {
     pub enterprise_id: u64,
     pub name: String,
     pub socket_addr: String,
+    /// Address the PlatformAssets gRPC service binds to.
+    /// Independent of any microgrid's `grpc_port` so a sibling
+    /// service (assets / reporting / future API surfaces) doesn't
+    /// fight a microgrid for its socket. Overridable from lisp
+    /// via `(set-assets-socket-addr "[::1]:9900")`.
+    pub assets_socket_addr: String,
     /// Fallback request lifetime when a `SetElectricalComponentPower`
     /// caller doesn't supply `request_lifetime`. Mirrors microsim's
     /// `retain-requests-duration-ms`. Tunable via
@@ -56,6 +62,7 @@ impl Default for Metadata {
             enterprise_id: 0,
             name: String::new(),
             socket_addr: "[::1]:8800".to_string(),
+            assets_socket_addr: "[::1]:9900".to_string(),
             default_request_lifetime: Duration::from_secs(60),
         }
     }
@@ -365,6 +372,10 @@ impl Config {
 
     pub fn socket_addr(&self) -> String {
         self.metadata.read().socket_addr.clone()
+    }
+
+    pub fn assets_socket_addr(&self) -> String {
+        self.metadata.read().assets_socket_addr.clone()
     }
 
     pub fn site(&self) -> MicrogridSite {
@@ -1530,6 +1541,14 @@ fn register_metadata(ctx: &mut TulispContext, metadata: Arc<RwLock<Metadata>>) {
         "set-socket-addr",
         move |addr: String| -> Result<bool, Error> {
             m.write().socket_addr = addr;
+            Ok(true)
+        },
+    );
+    let m = metadata.clone();
+    ctx.defun(
+        "set-assets-socket-addr",
+        move |addr: String| -> Result<bool, Error> {
+            m.write().assets_socket_addr = addr;
             Ok(true)
         },
     );
