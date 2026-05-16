@@ -2312,6 +2312,7 @@ function openWebSocket(onTopologyChanged) {
         batteryRows.applySample(ev);
         inverterRows.applySample(ev);
         tier5Rows.applySample(ev);
+        gridFrequency.applySample(ev);
       } else if (ev.kind === "microgrid_sample") {
         dashboardTiles.applySample(ev);
       } else if (ev.kind === "topology_changed") {
@@ -3051,6 +3052,58 @@ async function openFormulaPanel(stream) {
   }
 }
 
+// ─── Grid frequency bridge ──────────────────────────────────────────────────
+//
+// frequenz-microgrid 0.4.1's LogicalMeterActor can't carry a
+// Sample<Frequency> formula (see /vagrant/upstream-frequency-
+// formula.md), so the loopback can't drive a grid_frequency
+// microgrid_sample stream. Until upstream lands the fix, we read
+// the main meter's per-component frequency_hz history instead:
+// fetch the most recent sample on dashboard entry, then forward
+// every matching `kind: "sample"` WS frame as a synthetic
+// microgrid_sample so the existing dashboardTiles paint path
+// (with sparkline) handles it without a parallel renderer.
+const gridFrequency = (() => {
+  let mainId = null;
+  function setMainId(id) {
+    mainId = id;
+  }
+  function applyTopology(topo) {
+    if (typeof topo?.main_meter_id === "number") setMainId(topo.main_meter_id);
+    else mainId = null;
+  }
+  async function backfill() {
+    if (mainId == null) return;
+    try {
+      const r = await fetch(
+        `/api/history?id=${mainId}&metric=frequency_hz&window_s=60`,
+      );
+      if (!r.ok) return;
+      const j = await r.json();
+      for (const [ts_ms, value] of j.samples || []) {
+        dashboardTiles.applySample({
+          stream: "grid_frequency",
+          quantity: j.quantity,
+          unit: j.unit,
+          ts_ms,
+          value,
+        });
+      }
+    } catch (_) {}
+  }
+  function applySample(ev) {
+    if (mainId == null || ev.id !== mainId || ev.metric !== "frequency_hz") return;
+    dashboardTiles.applySample({
+      stream: "grid_frequency",
+      quantity: "Frequency",
+      unit: "Hz",
+      ts_ms: ev.ts_ms,
+      value: ev.value,
+    });
+  }
+  return { applyTopology, applySample, backfill };
+})();
+
 // ─── Scenarios mode ─────────────────────────────────────────────────────────
 //
 // Driven by /api/scenarios (snapshot) + the POST endpoints for
@@ -3598,7 +3651,10 @@ function applyMode(mode) {
   // display:none back to visible — the canvas was sized to 0×0 while
   // hidden. Same shape the splitter resize handler uses.
   if (mode === "topology") refitCharts();
-  if (mode === "dashboard") dashboardTiles.backfill();
+  if (mode === "dashboard") {
+    dashboardTiles.backfill();
+    gridFrequency.backfill();
+  }
   if (mode === "scenarios") scenariosPanel.refresh();
 }
 
@@ -3644,6 +3700,7 @@ async function refreshTopology() {
     batteryRows.refresh(data.components || []);
     inverterRows.refresh(data.components || []);
     tier5Rows.refresh(data.components || []);
+    gridFrequency.applyTopology(data);
   } catch (err) {
     setStatus(`error: ${err.message}`, "error");
   }

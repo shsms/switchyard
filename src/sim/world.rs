@@ -314,6 +314,17 @@ impl World {
         count
     }
 
+    /// Id of the meter currently flagged as the microgrid's main /
+    /// point-of-common-coupling meter (via `:main t` on `make-meter`).
+    /// `None` if no meter has the flag — pure-PV / pure-battery
+    /// topologies are valid. The UI's frequency tile reads this to
+    /// pick which meter's history to sample for grid frequency,
+    /// since frequenz-microgrid 0.4.1's LogicalMeter can't carry a
+    /// `Sample<Frequency>` formula through its actor.
+    pub fn main_meter_id(&self) -> Option<u64> {
+        *self.inner.main_meter_id.read()
+    }
+
     /// Mark `id` as the main meter. Returns `Err` if a different
     /// meter already holds the flag — the make-path treats that
     /// as a config error and surfaces it as a Lisp error.
