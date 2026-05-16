@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 
 use simplelog::{
-    ColorChoice, CombinedLogger, Config as LogConfig, LevelFilter, TermLogger, TerminalMode,
+    ColorChoice, CombinedLogger, ConfigBuilder, LevelFilter, TermLogger, TerminalMode,
 };
 use switchyard::{
     lisp::Config, proto::microgrid::microgrid_server::MicrogridServer as MicrogridGrpcServer,
@@ -23,10 +23,24 @@ async fn main() {
     ui_log::LOG_TAP
         .set(log_tap.clone())
         .unwrap_or_else(|_| panic!("LOG_TAP already initialised"));
+    // Suppress per-tick "channel closed" spam from frequenz-microgrid
+    // 0.4.1's ComponentTelemetryTracker. When a `BatteryPool` drops
+    // (which happens on every topology rebuild) the tracker tasks it
+    // spawned keep ticking on a timer and log at error level when
+    // they fail to send into the closed mpsc — see
+    // /vagrant/upstream-component-tracker-leak.md. The trackers are
+    // otherwise harmless (orphaned, no measurable CPU), but the log
+    // spam scales linearly with rebuilds. Drop the noisy module here
+    // until upstream lands a fix.
+    let log_config = ConfigBuilder::new()
+        .add_filter_ignore_str(
+            "frequenz_microgrid::microgrid::telemetry_tracker::component_telemetry_tracker",
+        )
+        .build();
     CombinedLogger::init(vec![
         TermLogger::new(
             LevelFilter::Info,
-            LogConfig::default(),
+            log_config,
             TerminalMode::Mixed,
             ColorChoice::Auto,
         ),

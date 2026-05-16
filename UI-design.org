@@ -1,5 +1,5 @@
 #+TITLE: Switchyard — UI redesign proposal
-#+TODO: TODO IN-PROGRESS | DONE CANCELLED
+#+TODO: TODO IN-PROGRESS WAIT | DONE CANCELLED
 
 Notes + proposed work items to shift the SPA from "topology canvas
 that incidentally shows data" toward "live dashboard that
@@ -278,7 +278,7 @@ Acceptance:
   batteries have reported their first sample, because the pool
   stream =COALESCE='s missing values.
 
-** WAITING Z5. Import topology from frequenz-microgrid's
+** WAIT Z5. Import topology from frequenz-microgrid's
    ComponentGraphConfig format
    - Upstream ~ComponentGraphConfig~ is construction-time flags
      only; no on-disk topology format. Holding Z5 until a concrete
