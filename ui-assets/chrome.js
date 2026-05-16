@@ -2,7 +2,7 @@
 // configurable-zone clock, and the always-on pulse bar.
 
 import { dashboardTiles } from "./dashboard.js";
-import { mgPath } from "./app.js";
+import { mgPath, setupDensityToggle } from "./routing.js";
 
 //
 // frequenz-microgrid 0.4.1's LogicalMeterActor can't carry a

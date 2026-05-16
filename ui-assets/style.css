@@ -752,6 +752,23 @@ body.compact .dash-envelope { font-size: 11px; margin-top: 2px; }
   border-left: 2px solid var(--accent);
   padding-left: 6px;
 }
+/* Per-component tier sections span the full dashboard width so
+   their tier rows line up across sections — the health pill in
+   column 3 of every row ends up at the same x regardless of
+   which section it lives in. (Top-level dashboard tiles still
+   wrap via the parent auto-fit grid.) */
+.dash-section {
+  grid-column: 1 / -1;
+}
+/* Standalone (non-paired) tier rows pick up an equivalent left
+   offset so their column origin matches the rows inside
+   .bat-pair, which are indented by the 2px border + 6px padding
+   above. */
+.dash-pv .tier-rows > .tier3-row,
+.dash-ev .tier-rows > .tier5-row,
+.dash-chp .tier-rows > .tier5-row {
+  margin-left: 8px;
+}
 .bat-pair-inv {
   font-size: 13px;
   opacity: 0.92;
