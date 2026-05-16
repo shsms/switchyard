@@ -193,9 +193,12 @@ const liveCharts = (() => {
       const ts = new Date(ev.ts_ms).toLocaleTimeString();
       // The WS event carries the setpoint kind on `setpoint_kind`
       // to dodge collision with the SiteEvent discriminator (also
-      // called `kind`).
-      const tag = ev.setpoint_kind.replace("_", " ");
-      const head = `<span class="sp-ts">${ts}</span> <span class="sp-tag">${tag}</span> <span class="sp-val">${ev.value}</span>`;
+      // called `kind`). Escape every interpolation — the server
+      // currently only emits fixed-shape strings and a numeric
+      // `value`, but defense-in-depth (anything that lands in
+      // `innerHTML` goes through `escapeHtml` first).
+      const tag = escapeHtml(String(ev.setpoint_kind ?? "").replace("_", " "));
+      const head = `<span class="sp-ts">${escapeHtml(ts)}</span> <span class="sp-tag">${tag}</span> <span class="sp-val">${escapeHtml(String(ev.value))}</span>`;
       const body = ev.accepted
         ? '<span class="sp-ok">✓ accepted</span>'
         : `<span class="sp-bad">✕ ${escapeHtml(ev.reason || "")}</span>`;
@@ -956,8 +959,9 @@ async function renderSetpoints(id, container) {
       const accepted = e.outcome.kind === "accepted";
       li.className = `sp-event ${accepted ? "accepted" : "rejected"}`;
       const ts = new Date(e.ts).toLocaleTimeString();
-      const tag = e.kind.replace("_", " ");
-      const head = `<span class="sp-ts">${ts}</span> <span class="sp-tag">${tag}</span> <span class="sp-val">${e.value}</span>`;
+      // Same escape discipline as the live-WS counterpart above.
+      const tag = escapeHtml(String(e.kind ?? "").replace("_", " "));
+      const head = `<span class="sp-ts">${escapeHtml(ts)}</span> <span class="sp-tag">${tag}</span> <span class="sp-val">${escapeHtml(String(e.value))}</span>`;
       const body = accepted
         ? '<span class="sp-ok">✓ accepted</span>'
         : `<span class="sp-bad">✕ ${escapeHtml(e.outcome.reason)}</span>`;
