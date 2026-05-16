@@ -13,7 +13,7 @@ use serde_json::Value;
 
 const TOPOLOGY: &str = r#"
 (set-microgrid-id 9)
-(%make-grid :id 1
+(%make-grid-connection-point :id 1
             :successors
             (list (%make-meter
                    :id 2

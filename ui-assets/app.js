@@ -1007,7 +1007,7 @@ function makeFnFor(c) {
     return c.subtype === "solar" ? "make-solar-inverter" : "make-battery-inverter";
   }
   return {
-    grid: "make-grid",
+    grid: "make-grid-connection-point",
     meter: "make-meter",
     battery: "make-battery",
     "ev-charger": "make-ev-charger",
@@ -1663,7 +1663,7 @@ const COMPLETIONS = [
   "world-rename-component",
   "world-reset",
   // Make-* primitives
-  "%make-grid",
+  "%make-grid-connection-point",
   "%make-meter",
   "%make-battery",
   "%make-battery-inverter",
@@ -1671,7 +1671,7 @@ const COMPLETIONS = [
   "%make-ev-charger",
   "%make-chp",
   // Make-* lisp wrappers
-  "make-grid",
+  "make-grid-connection-point",
   "make-meter",
   "make-battery",
   "make-battery-inverter",

@@ -101,7 +101,7 @@
 ;; component, call the `%make-*` primitive directly.
 ;; -----------------------------------------------------------------------------
 
-(make-grid
+(make-grid-connection-point
  :id 1
  :rated-lower -90000.0
  :rated-upper  100000.0

@@ -1458,7 +1458,7 @@ mod tests {
     /// override file is the source of truth, not an in-memory log).
     #[test]
     fn eval_appends_each_successful_form_to_override_file() {
-        let (cfg, dir) = config_with("(set-microgrid-id 9) (%make-grid :id 1)");
+        let (cfg, dir) = config_with("(set-microgrid-id 9) (%make-grid-connection-point :id 1)");
         cfg.eval("(world-rename-component 1 \"a\")").unwrap();
         cfg.eval("(world-rename-component 1 \"b\")").unwrap();
         let path = dir.join("config.ui-overrides.9.lisp");

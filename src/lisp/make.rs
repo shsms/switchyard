@@ -1,9 +1,10 @@
-//! `(%make-grid)`, `(%make-meter)`, `(%make-battery)`, … — the
-//! Rust-side constructor primitives the lisp DSL dispatches to. Each
-//! takes its arguments as a typed plist via tulisp's `AsPlist!` macro
-//! and returns a `ComponentHandle` (an opaque `Shared<dyn TulispAny>`
-//! on the lisp side). The user-facing names (`(make-grid)`,
-//! `(make-meter)`, …) are `defun` wrappers in `sim/defaults.lisp`
+//! `(%make-grid-connection-point)`, `(%make-meter)`, `(%make-battery)`,
+//! … — the Rust-side constructor primitives the lisp DSL dispatches
+//! to. Each takes its arguments as a typed plist via tulisp's
+//! `AsPlist!` macro and returns a `ComponentHandle` (an opaque
+//! `Shared<dyn TulispAny>` on the lisp side). The user-facing names
+//! (`(make-grid-connection-point)`, `(make-meter)`, …) are `defun`
+//! wrappers in `sim/defaults.lisp`
 //! that prepend a category-default plist to the caller's args
 //! before invoking these primitives; AsPlist's last-occurrence-wins
 //! key resolution lets per-component values override defaults
@@ -25,7 +26,7 @@ use crate::sim::{
 };
 
 // -----------------------------------------------------------------------------
-// make-grid
+// make-grid-connection-point
 // -----------------------------------------------------------------------------
 
 AsPlist! {
@@ -205,7 +206,7 @@ AsPlist! {
 pub fn register(ctx: &mut TulispContext, world: MicrogridSite) {
     let w = world.clone();
     ctx.defun(
-        "%make-grid",
+        "%make-grid-connection-point",
         move |_ctx: &mut TulispContext, args: Plist<GridArgs>| {
             let a = args.into_inner();
             let id = id_or_next(&w, a.id);

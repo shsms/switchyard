@@ -9,8 +9,9 @@
 ;;      value here to retune every component of that category in one
 ;;      place. Per-component plist args still win on each call.
 ;;
-;;   2. `make-*` wrappers (`make-grid`, `make-meter`, `make-battery`,
-;;      …) are thin `defuns` that call the matching `%make-*` Rust
+;;   2. `make-*` wrappers (`make-grid-connection-point`,
+;;      `make-meter`, `make-battery`, …) are thin `defuns` that call
+;;      the matching `%make-*` Rust
 ;;      primitive with the defaults plist appended *before* the
 ;;      caller's args. AsPlist's last-wins resolution makes the
 ;;      per-component plist override category defaults; the `%make-*`
@@ -64,7 +65,8 @@
 ;;
 ;;   (%make-battery :id 100)                       ; no defaults
 
-(defun make-grid             (&rest p) (apply '%make-grid             (append grid-defaults             p)))
+(defun make-grid-connection-point
+                             (&rest p) (apply '%make-grid-connection-point (append grid-defaults             p)))
 (defun make-meter            (&rest p) (apply '%make-meter            (append meter-defaults            p)))
 (defun make-battery          (&rest p) (apply '%make-battery          (append battery-defaults          p)))
 (defun make-battery-inverter (&rest p) (apply '%make-battery-inverter (append battery-inverter-defaults p)))

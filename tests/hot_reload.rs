@@ -13,7 +13,7 @@ use switchyard::lisp::Config;
 #[tokio::test(flavor = "multi_thread")]
 async fn editing_config_lisp_rebuilds_the_world() {
     // Initial topology: just a grid.
-    let initial = "(set-microgrid-id 9)\n(%make-grid :id 1)\n";
+    let initial = "(set-microgrid-id 9)\n(%make-grid-connection-point :id 1)\n";
     let s = TestServer::start(initial).await;
     // Spawn the watcher — production path is `tokio::spawn(config.clone().watch())`.
     tokio::spawn(Config::clone(&s.config).watch());
@@ -28,7 +28,7 @@ async fn editing_config_lisp_rebuilds_the_world() {
     // notify watcher fires on close-after-write (inotify) and the
     // reload path resets the world and re-evals.
     let updated = "(set-microgrid-id 9)\n\
-                   (%make-grid :id 1\n\
+                   (%make-grid-connection-point :id 1\n\
                     :successors (list (%make-meter :id 2)))\n";
     std::fs::write(&path, updated).expect("rewrite config");
 

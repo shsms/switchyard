@@ -98,7 +98,7 @@ async fn asset_route_404s_unknown_path() {
 #[tokio::test]
 async fn topology_endpoint_emits_components_and_connections() {
     let cfg = config_with(
-        r#"(%make-grid :id 1
+        r#"(%make-grid-connection-point :id 1
              :successors
              (list (%make-meter :id 2
                      :successors
@@ -202,7 +202,7 @@ async fn history_endpoint_returns_empty_for_unknown_component() {
 
 #[tokio::test]
 async fn overrides_endpoint_lists_appended_evals() {
-    let cfg = config_with("(set-microgrid-id 7) (%make-grid :id 1)").await;
+    let cfg = config_with("(set-microgrid-id 7) (%make-grid-connection-point :id 1)").await;
     // Two successful evals + one error. Errors don't append.
     call(
         cfg.clone(),
@@ -247,7 +247,7 @@ async fn persisted_remove_drops_form_immediately() {
     // /api/persisted/0 rewrites the file without that form and
     // reloads; the world reflects only the second rename, and
     // the file no longer contains the first.
-    let body = format!("(set-microgrid-id 7) (%make-grid :id 1) {LOAD_OVERRIDES_HELPER}",);
+    let body = format!("(set-microgrid-id 7) (%make-grid-connection-point :id 1) {LOAD_OVERRIDES_HELPER}",);
     let cfg = config_with(&body).await;
     call(
         cfg.clone(),
@@ -300,7 +300,7 @@ async fn persisted_remove_drops_form_immediately() {
 
 #[tokio::test]
 async fn persisted_bulk_remove_drops_indices_in_one_reload() {
-    let body = format!("(set-microgrid-id 7) (%make-grid :id 1) {LOAD_OVERRIDES_HELPER}",);
+    let body = format!("(set-microgrid-id 7) (%make-grid-connection-point :id 1) {LOAD_OVERRIDES_HELPER}",);
     let cfg = config_with(&body).await;
     call(
         cfg.clone(),
@@ -354,7 +354,7 @@ async fn eval_endpoint_mutates_world() {
     // the load-bearing claim of the "Lisp eval as the unifying
     // mutation API" design.
     let cfg = config_with("").await;
-    let (status, _) = call(cfg.clone(), post("/api/eval", "(%make-grid :id 42)")).await;
+    let (status, _) = call(cfg.clone(), post("/api/eval", "(%make-grid-connection-point :id 42)")).await;
     assert_eq!(status, StatusCode::OK);
 
     let (_, body) = call(cfg, get("/api/topology")).await;
