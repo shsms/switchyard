@@ -288,6 +288,15 @@ impl Config {
         self.microgrids.clone()
     }
 
+    /// Shared process-wide id allocator backing every microgrid
+    /// in the registry. The /api/microgrids/create endpoint
+    /// clones this into a fresh `MicrogridSite::with_id_allocator`
+    /// so runtime-created microgrids participate in the same
+    /// globally-unique component-id space as boot-time ones.
+    pub fn enterprise_id_allocator(&self) -> std::sync::Arc<std::sync::atomic::AtomicU64> {
+        self.enterprise_id_allocator.clone()
+    }
+
     /// Configured display-zone clock handle. The scenarios HTTP
     /// layer calls this to derive `local_hour(now)` so `start` /
     /// `auto_advance` agree on which stage wallclock-NOW maps to.

@@ -125,8 +125,51 @@ async fn main() {
         log::info!("Microgrid #{id} {name:?} loopback client spawned");
     }
     let microgrid = primary_slot.expect("primary loopback slot");
+
+    // Runtime-create callback: when POST /api/microgrids/create
+    // inserts a new entry into the registry, this closure spawns
+    // its physics tick + history sampler + Microgrid gRPC server
+    // (on the assigned port) + loopback client. Cloning Arcs
+    // captures the runtime state we need; the closure itself is
+    // Send + Sync so it can ride through an axum Extension.
+    let spawner_config = config.clone();
+    let spawner_loopbacks = loopbacks.clone();
+    let spawner: ui::MicrogridSpawner = std::sync::Arc::new(move |id, name, port, site| {
+        site.clone().spawn_physics();
+        site.clone().spawn_history_sampler();
+        let addr_str = format!("[::1]:{port}");
+        let addr: std::net::SocketAddr = match addr_str.parse() {
+            Ok(a) => a,
+            Err(e) => {
+                log::error!(
+                    "Microgrid #{id} {name:?} create: invalid port {port} ({e}); skipping"
+                );
+                return;
+            }
+        };
+        let cfg = spawner_config.clone();
+        let site_for_server = site.clone();
+        let name_owned = name.to_string();
+        tokio::spawn(async move {
+            log::info!(
+                "Microgrid #{id} {name_owned:?} runtime-created → gRPC :{port}"
+            );
+            let server = MicrogridServer::new(cfg, id, site_for_server);
+            if let Err(e) = Server::builder()
+                .add_service(MicrogridGrpcServer::new(server))
+                .serve(addr)
+                .await
+            {
+                log::error!("Microgrid #{id} gRPC server exited: {e}");
+            }
+        });
+        let slot = ui::new_microgrid_slot();
+        ui::spawn_microgrid_loopback(format!("http://[::1]:{port}"), slot.clone(), site);
+        spawner_loopbacks.write().insert(id, slot);
+    });
+
     tokio::spawn(async move {
-        if let Err(e) = ui::serve(ui_addr, ui_config, microgrid, loopbacks).await {
+        if let Err(e) = ui::serve(ui_addr, ui_config, microgrid, loopbacks, spawner).await {
             log::error!("UI server exited: {e}");
         }
     });

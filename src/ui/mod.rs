@@ -141,6 +141,27 @@ pub fn new_microgrid_loopbacks() -> MicrogridLoopbacks {
     std::sync::Arc::new(parking_lot::RwLock::new(std::collections::BTreeMap::new()))
 }
 
+/// Callback the create-microgrid HTTP endpoint invokes once the
+/// registry insertion is complete: spawn the physics tick +
+/// history sampler + Microgrid gRPC server + loopback client for
+/// the freshly-added microgrid. Concrete implementations live in
+/// `src/bin/switchyard.rs` (production boot) and the integration
+/// tests (a no-op closure when the test fixture doesn't drive
+/// runtime microgrid creation).
+///
+/// Args: `(id, name, grpc_port, site)`. Implementations decide
+/// how to react — e.g. test fixtures may want to skip the gRPC
+/// listener spawn.
+pub type MicrogridSpawner =
+    std::sync::Arc<dyn Fn(u64, &str, u16, crate::sim::MicrogridSite) + Send + Sync>;
+
+/// No-op spawner. Used in integration-test fixtures + the
+/// snapshot-only tests that don't exercise the runtime create
+/// path.
+pub fn noop_microgrid_spawner() -> MicrogridSpawner {
+    std::sync::Arc::new(|_id, _name, _port, _site| {})
+}
+
 /// Spawn a tokio task that constructs a [`Microgrid`] pointed at
 /// `grpc_url`, kicks off forwarders for the aggregated streams the
 /// Dashboard cares about, and stores the handle in `slot` once the
@@ -524,8 +545,9 @@ pub async fn serve(
     config: Config,
     microgrid: SharedMicrogrid,
     loopbacks: MicrogridLoopbacks,
+    spawner: MicrogridSpawner,
 ) -> Result<(), std::io::Error> {
-    let app = router(config, microgrid, loopbacks);
+    let app = router(config, microgrid, loopbacks, spawner);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     log::info!("Switchyard UI listening on http://{addr}");
     axum::serve(listener, app).await
@@ -539,11 +561,17 @@ pub async fn serve_with_listener(
     config: Config,
     microgrid: SharedMicrogrid,
     loopbacks: MicrogridLoopbacks,
+    spawner: MicrogridSpawner,
 ) -> Result<(), std::io::Error> {
-    axum::serve(listener, router(config, microgrid, loopbacks)).await
+    axum::serve(listener, router(config, microgrid, loopbacks, spawner)).await
 }
 
-fn router(config: Config, microgrid: SharedMicrogrid, loopbacks: MicrogridLoopbacks) -> Router {
+fn router(
+    config: Config,
+    microgrid: SharedMicrogrid,
+    loopbacks: MicrogridLoopbacks,
+    spawner: MicrogridSpawner,
+) -> Router {
     Router::new()
         .route("/", get(index))
         .route("/assets/{*path}", get(asset))
@@ -577,9 +605,11 @@ fn router(config: Config, microgrid: SharedMicrogrid, loopbacks: MicrogridLoopba
         .route("/api/scenarios/{name}/prev", post(scenarios_prev))
         .route("/api/scenarios/{name}/jump/{idx}", post(scenarios_jump))
         .route("/api/microgrids", get(microgrids_list))
+        .route("/api/microgrids/create", post(microgrids_create))
         .route("/ws/events", get(events_ws))
         .layer(Extension(microgrid))
         .layer(Extension(loopbacks))
+        .layer(Extension(spawner))
         .with_state(config)
 }
 
@@ -599,6 +629,88 @@ async fn microgrids_list(
     State(config): State<Config>,
 ) -> Json<Vec<crate::sim::microgrids::MicrogridView>> {
     Json(crate::sim::microgrids::snapshot(&config.microgrids()))
+}
+
+#[derive(Deserialize)]
+struct CreateMicrogridBody {
+    name: String,
+    #[serde(default)]
+    tso: Option<String>,
+}
+
+#[derive(Serialize)]
+struct CreateMicrogridResp {
+    id: u64,
+    name: String,
+    grpc_port: u16,
+    tso: Option<String>,
+}
+
+/// POST /api/microgrids/create — auto-allocates id + grpc_port,
+/// inserts a fresh entry in the registry, and invokes the
+/// configured `MicrogridSpawner` so the new microgrid actually
+/// boots its physics + history + Microgrid gRPC server +
+/// loopback client without a process restart.
+///
+/// Empty-name requests are rejected. The new microgrid's site is
+/// constructed with the shared enterprise id allocator so its
+/// auto-allocated component ids stay globally unique.
+async fn microgrids_create(
+    State(config): State<Config>,
+    Extension(spawner): Extension<MicrogridSpawner>,
+    Json(body): Json<CreateMicrogridBody>,
+) -> Result<Json<CreateMicrogridResp>, (StatusCode, String)> {
+    use crate::sim::microgrids::{
+        MicrogridDef, MicrogridEntry, next_free_id, next_free_port,
+    };
+    let name = body.name.trim().to_string();
+    if name.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "name must be non-empty".into()));
+    }
+    let registry = config.microgrids();
+    // next_free_id / next_free_port both lock the registry
+    // internally, so they have to run *outside* the insert-lock
+    // critical section to avoid a reentrant deadlock
+    // (parking_lot::Mutex is non-reentrant). Concurrent creates
+    // can in principle race on the allocator return values; the
+    // duplicate-key insert below picks a sliding window starting
+    // at the probed id to back off if we lost the race.
+    let id = next_free_id(&registry);
+    let grpc_port = next_free_port(&registry);
+    let def = MicrogridDef {
+        id,
+        name: name.clone(),
+        grpc_port,
+        tso: body.tso.clone(),
+    };
+    let site = crate::sim::MicrogridSite::with_id_allocator(config.enterprise_id_allocator());
+    {
+        let mut r = registry.lock();
+        if r.contains_key(&id) {
+            return Err((
+                StatusCode::CONFLICT,
+                format!("microgrid id {id} unexpectedly taken; retry"),
+            ));
+        }
+        r.insert(
+            id,
+            MicrogridEntry {
+                def: def.clone(),
+                site: site.clone(),
+            },
+        );
+    }
+    // Boot the new microgrid's runtime (physics + history +
+    // gRPC server + loopback) via the binary-supplied spawner.
+    // Tests pass a no-op spawner.
+    spawner(id, &name, grpc_port, site);
+    let def_clone = def;
+    Ok(Json(CreateMicrogridResp {
+        id,
+        name: def_clone.name,
+        grpc_port,
+        tso: def_clone.tso,
+    }))
 }
 
 async fn scenarios_list(
