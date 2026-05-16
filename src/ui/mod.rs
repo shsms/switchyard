@@ -744,36 +744,30 @@ async fn microgrids_create(
     Extension(spawner): Extension<MicrogridSpawner>,
     Json(body): Json<CreateMicrogridBody>,
 ) -> Result<Json<CreateMicrogridResp>, (StatusCode, String)> {
-    use crate::sim::microgrids::{MicrogridDef, MicrogridEntry, next_free_id, next_free_port};
+    use crate::sim::microgrids::{
+        MicrogridDef, MicrogridEntry, next_free_id_in, next_free_port_in,
+    };
     let name = body.name.trim().to_string();
     if name.is_empty() {
         return Err((StatusCode::BAD_REQUEST, "name must be non-empty".into()));
     }
     let registry = config.microgrids();
-    // next_free_id / next_free_port both lock the registry
-    // internally, so they have to run *outside* the insert-lock
-    // critical section to avoid a reentrant deadlock
-    // (parking_lot::Mutex is non-reentrant). Concurrent creates
-    // can in principle race on the allocator return values; the
-    // duplicate-key insert below picks a sliding window starting
-    // at the probed id to back off if we lost the race.
-    let id = next_free_id(&registry);
-    let grpc_port = next_free_port(&registry);
-    let def = MicrogridDef {
-        id,
-        name: name.clone(),
-        grpc_port,
-        tso: body.tso.clone(),
-    };
     let site = crate::sim::MicrogridSite::with_id_allocator(config.enterprise_id_allocator());
-    {
+    // Allocate id + port AND insert the entry under one lock so
+    // concurrent creates can't pick the same port (the earlier
+    // shape probed both before locking; two simultaneous calls
+    // could land on the same grpc_port and the second tonic
+    // listener would fail to bind silently inside its tokio task).
+    let (id, grpc_port, def) = {
         let mut r = registry.lock();
-        if r.contains_key(&id) {
-            return Err((
-                StatusCode::CONFLICT,
-                format!("microgrid id {id} unexpectedly taken; retry"),
-            ));
-        }
+        let id = next_free_id_in(&r);
+        let grpc_port = next_free_port_in(&r);
+        let def = MicrogridDef {
+            id,
+            name: name.clone(),
+            grpc_port,
+            tso: body.tso.clone(),
+        };
         r.insert(
             id,
             MicrogridEntry {
@@ -781,30 +775,31 @@ async fn microgrids_create(
                 site: site.clone(),
             },
         );
+        (id, grpc_port, def)
+    };
+    // Persist the per-mg config stub BEFORE spawning the runtime.
+    // If the write fails the next boot would orphan the live tasks
+    // (gRPC server, loopback, physics, history sampler) since the
+    // stub is what re-creates the microgrid at load-time. Rolling
+    // back the registry insert + bailing out keeps the failure
+    // mode clean: nothing started, nothing leaked.
+    if let Err(e) = write_microgrid_stub(&config, id, &name, grpc_port, body.tso.as_deref()) {
+        registry.lock().remove(&id);
+        return Err((StatusCode::INTERNAL_SERVER_ERROR, e));
     }
     // Boot the new microgrid's runtime (physics + history +
     // gRPC server + loopback) via the binary-supplied spawner.
     // Tests pass a no-op spawner.
     spawner(id, &name, grpc_port, site);
-    // Persist a stub microgrids/config.<id>.lisp so the new
-    // microgrid (and any UI edits the user makes against it that
-    // land in microgrids/config.<id>.overrides.lisp) survive a
-    // process restart. Best-effort: a write failure surfaces as a
-    // 500 — the registry entry is already live, but without the
-    // stub the next boot would orphan the overrides file.
-    if let Err(e) = write_microgrid_stub(&config, id, &name, grpc_port, body.tso.as_deref()) {
-        return Err((StatusCode::INTERNAL_SERVER_ERROR, e));
-    }
     // Notify enterprise-wide subscribers (the WS event pump) so live
     // UI sessions start receiving topology_changed / sample events
     // from the new microgrid without a page reload.
     config.notify_microgrid_registered(id);
-    let def_clone = def;
     Ok(Json(CreateMicrogridResp {
         id,
-        name: def_clone.name,
+        name: def.name,
         grpc_port,
-        tso: def_clone.tso,
+        tso: def.tso,
     }))
 }
 
