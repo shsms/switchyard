@@ -11,8 +11,8 @@ import {
   notify,
   openInspector,
   reflowAfterPanel,
-  undoMgr,
 } from "./app.js";
+import { undoMgr } from "./editor.js";
 import { mgPath } from "./routing.js";
 import { topology } from "./topology.js";
 

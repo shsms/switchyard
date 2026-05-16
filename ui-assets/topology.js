@@ -8,7 +8,9 @@
 // - topology.mainMeterId()       — the meter flagged :main t (if any)
 // - topology.setSelectionHandler — wire showComponent / clearSide to the canvas
 
-import { mgPath, notify, setStatus, undoMgr } from "./app.js";
+import { notify, setStatus } from "./app.js";
+import { showContextMenu, undoMgr } from "./editor.js";
+import { mgPath } from "./routing.js";
 
 function getCss(name) {
   return getComputedStyle(document.documentElement)
