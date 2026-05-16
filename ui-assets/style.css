@@ -386,7 +386,8 @@ main {
 }
 
 #topology,
-#dashboard {
+#dashboard,
+#scenarios {
   grid-area: topology;
   background: var(--bg);
   position: relative;
@@ -396,11 +397,24 @@ main {
 }
 
 /* `body[data-mode=...]` is the toggle the JS flips on mode-button
-   click + localStorage restore. Only one of the two main panes is
-   visible at a time; the chrome (side panel + REPL) stays put so
-   selection / eval keep working across modes. */
-body[data-mode="topology"] #dashboard,
-body[data-mode="dashboard"] #topology { display: none; }
+   click + localStorage restore. Only one main pane shows at a
+   time; the chrome (side panel + REPL) stays put so selection /
+   eval keep working across modes. */
+body[data-mode="topology"]  #dashboard,
+body[data-mode="topology"]  #scenarios,
+body[data-mode="dashboard"] #topology,
+body[data-mode="dashboard"] #scenarios,
+body[data-mode="scenarios"] #topology,
+body[data-mode="scenarios"] #dashboard { display: none; }
+
+#scenarios {
+  /* `display: block` defeats the inline `hidden` attribute's UA
+     `[hidden] { display: none }`. `body[data-mode="..."] #scenarios`
+     re-hides it on the inactive modes. */
+  display: block;
+  padding: 16px 20px;
+  overflow: auto;
+}
 
 /* Mode toggle in the header. Sits just right of the status pill,
    left of everything else, so it reads as the "what am I looking
@@ -716,6 +730,128 @@ body.compact .envelope-marker { width: 10px; height: 10px; margin-left: -5px; ma
 .snapshot-name {
   font-family: var(--mono, ui-monospace, "Cascadia Mono", monospace);
   font-size: 13px;
+}
+
+.scenarios-header {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.scenarios-picker {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 12px;
+}
+.scenarios-picker select {
+  background: var(--bg-deep, #1b1f27);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--fg);
+  padding: 4px 8px;
+  font-size: 13px;
+}
+.scenarios-controls {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.sc-badge {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: rgba(217, 196, 107, 0.18);
+  color: var(--warn, #d9c46b);
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+.sc-description {
+  font-size: 12px;
+  margin-bottom: 16px;
+}
+.sc-timeline {
+  margin-bottom: 16px;
+}
+.sc-timeline-track {
+  position: relative;
+  height: 56px;
+  background: var(--bg-deep, #1b1f27);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.sc-timeline-block {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  background: rgba(121, 184, 255, 0.15);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  color: var(--fg);
+  font-size: 12px;
+  padding: 2px 6px;
+  cursor: pointer;
+  text-align: left;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.sc-timeline-block:hover {
+  background: rgba(121, 184, 255, 0.3);
+}
+.sc-timeline-block.active {
+  background: rgba(121, 184, 255, 0.45);
+  border-color: var(--accent);
+  font-weight: 500;
+}
+.sc-timeline-now {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--warn, #d9c46b);
+  pointer-events: none;
+  box-shadow: 0 0 6px var(--warn, #d9c46b);
+}
+.sc-timeline-axis {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  padding: 0 4px;
+}
+.sc-stage-list {
+  display: grid;
+  gap: 4px;
+}
+.sc-stage-row {
+  display: grid;
+  grid-template-columns: 50px 1fr 180px 80px;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+}
+.sc-stage-row:hover { border-color: var(--accent); }
+.sc-stage-row.active {
+  border-color: var(--accent);
+  background: rgba(121, 184, 255, 0.06);
+}
+.sc-stage-idx {
+  color: var(--muted);
+  font-family: var(--mono, ui-monospace, "Cascadia Mono", monospace);
+}
+.sc-stage-name { font-weight: 500; }
+.sc-stage-window {
+  color: var(--muted);
+  font-family: var(--mono, ui-monospace, "Cascadia Mono", monospace);
 }
 
 .tier5-row {
