@@ -132,6 +132,32 @@ export const scenariosPanel = (() => {
     return cached.find((s) => s.name === selectedName) || null;
   }
 
+  // A scenario is "running" once `(scenario-start)` has fired and
+  // until the matching `(scenario-stop)`. `current_stage` is the
+  // distinguishing field: start sets it (always to some valid index,
+  // even if wallclock is outside the stage windows), stop clears it.
+  // `started_at` survives a stop as a historical marker, so it can't
+  // be used here.
+  function isRunning(sc) {
+    return !!(sc && sc.runtime && sc.runtime.current_stage != null);
+  }
+
+  // Reflect the running state in the header controls: Start is
+  // active only while stopped; Stop / Next / Prev are active only
+  // while running. Jump (clicking timeline blocks or stage rows)
+  // mirrors Stop / Next / Prev — it's a no-op when nothing's
+  // started.
+  function renderButtons() {
+    const sc = selected();
+    const running = isRunning(sc);
+    const startBtn = document.getElementById("sc-start");
+    if (startBtn) startBtn.disabled = !sc || running;
+    for (const id of ["sc-stop", "sc-next", "sc-prev"]) {
+      const b = document.getElementById(id);
+      if (b) b.disabled = !running;
+    }
+  }
+
   function fmtHour(h) {
     const hh = Math.floor(h);
     const mm = Math.round((h - hh) * 60);
@@ -193,6 +219,7 @@ export const scenariosPanel = (() => {
     track.innerHTML = "";
     const sc = selected();
     if (!sc) return;
+    const running = isRunning(sc);
     const total = 24;
     for (let i = 0; i < sc.stages.length; i++) {
       const st = sc.stages[i];
@@ -206,6 +233,8 @@ export const scenariosPanel = (() => {
       if (sc.runtime.current_stage === i) block.classList.add("active");
       block.textContent = st.name;
       block.title = `${st.name}: ${fmtHour(st.hour_from)} → ${fmtHour(st.hour_to)}`;
+      // jump-to-stage is meaningful only when the scenario is running.
+      block.disabled = !running;
       block.addEventListener("click", () => jumpTo(i));
       track.appendChild(block);
     }
@@ -224,18 +253,20 @@ export const scenariosPanel = (() => {
     list.innerHTML = "";
     const sc = selected();
     if (!sc) return;
+    const running = isRunning(sc);
     for (let i = 0; i < sc.stages.length; i++) {
       const st = sc.stages[i];
       const row = document.createElement("div");
       row.className = "sc-stage-row";
       if (sc.runtime.current_stage === i) row.classList.add("active");
+      if (!running) row.classList.add("disabled");
       row.innerHTML = `
         <span class="sc-stage-idx">${i}</span>
         <span class="sc-stage-name">${escapeHtml(st.name)}</span>
         <span class="sc-stage-window">${fmtHour(st.hour_from)} → ${fmtHour(st.hour_to)}</span>
         <span class="sc-stage-action">${st.has_on ? "<code>on</code>" : "—"}</span>
       `;
-      row.addEventListener("click", () => jumpTo(i));
+      if (running) row.addEventListener("click", () => jumpTo(i));
       list.appendChild(row);
     }
     const badge = manualBadgeEl();
@@ -258,6 +289,11 @@ export const scenariosPanel = (() => {
   function repaint() {
     const sc = selected();
     const sig = sc ? `${JSON.stringify(sc.runtime)}|${sc.stages.length}` : "";
+    // Buttons reflect runtime state every time — cheap toggle, and
+    // the fast-path below skips re-rendering DOM that hasn't
+    // changed, which would otherwise leave the buttons stuck on
+    // their initial HTML state when no transition has happened.
+    renderButtons();
     if (sig === lastSig) {
       // Cheap path: still nudge the now marker so it tracks time
       // even when no transition happened.
