@@ -12,6 +12,7 @@ pub mod grid;
 pub mod history;
 pub mod inverter;
 pub mod meter;
+pub mod microgrids;
 pub mod ramp;
 pub mod reactive;
 pub mod runtime;

@@ -89,6 +89,13 @@ pub struct Config {
     /// writes to and what the UI's Scenarios mode + /api/scenarios
     /// read from. See `crate::sim::scenarios` for the data model.
     pub(crate) scenarios: crate::sim::scenarios::SharedScenarios,
+    /// Enterprise-scoped microgrid registry — what
+    /// `(make-microgrid …)` writes to and what the Microgrids UI
+    /// mode + /api/microgrids read from. Seeded with a default
+    /// entry on boot so single-microgrid configs (the legacy
+    /// shape that only calls `(set-microgrid-id N)`) keep working
+    /// unchanged. See `crate::sim::microgrids` for the data model.
+    pub(crate) microgrids: crate::sim::microgrids::SharedMicrogrids,
 }
 
 /// One top-level form found in the per-microgrid override file. The
@@ -118,6 +125,7 @@ impl Config {
         let graph_status: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));
         let clock = crate::sim::clock::new_clock();
         let scenarios = crate::sim::scenarios::new_registry();
+        let microgrids = crate::sim::microgrids::new_registry();
 
         // `Path::parent()` returns `Some("")` for bare filenames like
         // "config.lisp" — tulisp rejects empty paths, so fall back to
@@ -134,6 +142,7 @@ impl Config {
         register_clock(&mut ctx, clock.clone());
         register_watches(&mut ctx, load_dir.clone(), extra_watches.clone());
         register_scenarios(&mut ctx, scenarios.clone());
+        register_microgrids(&mut ctx, microgrids.clone(), world.clone(), metadata.clone());
 
         // tulisp-async gives the config DSL access to run-with-timer,
         // cancel-timer, sleep-for and friends, used to drive
@@ -161,6 +170,14 @@ impl Config {
             log::error!("Tulisp error:\n{formatted}");
             return Err(formatted);
         }
+
+        // If the loaded config never called `(make-microgrid …)`,
+        // seed a default entry from the legacy `(set-microgrid-id N)`
+        // / `(set-microgrid-name S)` metadata so single-microgrid
+        // configs land in the registry too. Multi-microgrid configs
+        // populate the registry explicitly via `(make-microgrid …)`
+        // and skip this branch.
+        ensure_default_microgrid_entry(&microgrids, &metadata.read(), &world);
 
         let initial_status = log_topology_validation(&world, "boot");
         *graph_status.write() = initial_status;
@@ -208,6 +225,7 @@ impl Config {
             graph_status,
             clock,
             scenarios,
+            microgrids,
         })
     }
 
@@ -216,6 +234,15 @@ impl Config {
     /// the auto-advance task mutates the per-entry runtime state.
     pub fn scenarios(&self) -> crate::sim::scenarios::SharedScenarios {
         self.scenarios.clone()
+    }
+
+    /// Shared enterprise microgrid registry — `(make-microgrid …)`
+    /// writes here, the UI Microgrids landing page + /api/microgrids
+    /// read here. Always carries at least one entry once
+    /// `Config::new` has returned (the default microgrid, seeded
+    /// from `Metadata` if no `(make-microgrid)` form ran).
+    pub fn microgrids(&self) -> crate::sim::microgrids::SharedMicrogrids {
+        self.microgrids.clone()
     }
 
     /// Configured display-zone clock handle. The scenarios HTTP
@@ -605,6 +632,11 @@ impl Config {
     pub fn reload(&self) -> Result<(), String> {
         let start = std::time::Instant::now();
         self.site.reset();
+        // Drop the registry so make-microgrid forms re-evaluating
+        // during the reload start from a clean slate; the default-
+        // entry seed below re-creates the single-microgrid case
+        // when no make-microgrid form survived the reload.
+        self.microgrids.lock().clear();
         {
             let mut ctx = self.ctx.borrow_mut();
             if let Err(e) = ctx.eval_file(&self.filename) {
@@ -613,6 +645,7 @@ impl Config {
                 return Err(formatted);
             }
         }
+        ensure_default_microgrid_entry(&self.microgrids, &self.metadata.read(), &self.site);
         // Tell UI subscribers the MicrogridSite rebuilt. Catches the
         // "removed the only pending entry" case where remove_pending
         // reloads but has no surviving entries to bump-version
@@ -864,6 +897,143 @@ fn register_scenarios(
                 },
             );
             Ok(a.name)
+        },
+    );
+}
+
+tulisp::AsPlist! {
+    pub struct MakeMicrogridArgs {
+        name: Option<String> {= None},
+        id: Option<i64> {= None},
+        grpc_port<":grpc-port">: Option<i64> {= None},
+        /// Optional TSO zone label (informational; see
+        /// `crate::sim::microgrids::MicrogridDef::tso`).
+        tso: Option<String> {= None},
+        /// The grid-connection-point form whose evaluation
+        /// registers the microgrid's components into the current
+        /// site. Evaluated *before* make-microgrid sees it (regular
+        /// argument-evaluation order), so by the time the body
+        /// runs the nested topology already exists; we only stash
+        /// the handle here for forward-compat (multi-site dispatch
+        /// will use it to know which component is the microgrid's
+        /// grid root). Optional so a config can register an empty
+        /// microgrid that the UI fills in component-by-component.
+        grid: Option<crate::lisp::value::LispValue> {= None},
+    }
+}
+
+/// Seed a default microgrid entry if the registry is empty after
+/// config eval. Pulled from the legacy `Metadata` so single-
+/// microgrid sample configs that only call `(set-microgrid-id N)`
+/// land in the registry alongside multi-microgrid configs.
+fn ensure_default_microgrid_entry(
+    registry: &crate::sim::microgrids::SharedMicrogrids,
+    metadata: &Metadata,
+    site: &MicrogridSite,
+) {
+    use crate::sim::microgrids::{
+        DEFAULT_GRPC_PORT, DEFAULT_MICROGRID_ID, DEFAULT_MICROGRID_NAME, MicrogridDef,
+        MicrogridEntry,
+    };
+    let mut r = registry.lock();
+    if !r.is_empty() {
+        return;
+    }
+    let id = if metadata.microgrid_id == 0 {
+        DEFAULT_MICROGRID_ID
+    } else {
+        metadata.microgrid_id
+    };
+    let name = if metadata.name.is_empty() {
+        DEFAULT_MICROGRID_NAME.to_string()
+    } else {
+        metadata.name.clone()
+    };
+    r.insert(
+        id,
+        MicrogridEntry {
+            def: MicrogridDef {
+                id,
+                name,
+                grpc_port: DEFAULT_GRPC_PORT,
+                tso: None,
+            },
+            site: site.clone(),
+        },
+    );
+}
+
+/// Register `(make-microgrid …)`. Upserts a microgrid entry in
+/// the registry; the entry's site is the binary's single
+/// `MicrogridSite` (multi-site dispatch lands in a follow-up
+/// commit). Also syncs `metadata.microgrid_id` / `metadata.name`
+/// so the legacy gRPC `MicrogridInfo` path keeps working.
+fn register_microgrids(
+    ctx: &mut TulispContext,
+    registry: crate::sim::microgrids::SharedMicrogrids,
+    site: MicrogridSite,
+    metadata: Arc<RwLock<Metadata>>,
+) {
+    use crate::sim::microgrids::{
+        DEFAULT_MICROGRID_ID, DEFAULT_MICROGRID_NAME, MicrogridDef, MicrogridEntry,
+        next_free_id, next_free_port,
+    };
+    ctx.defun(
+        "make-microgrid",
+        move |args: tulisp::Plist<MakeMicrogridArgs>| -> Result<i64, tulisp::Error> {
+            let a = args.into_inner();
+            let id = match a.id {
+                Some(v) if v > 0 => v as u64,
+                _ => {
+                    let probed = next_free_id(&registry);
+                    if probed == DEFAULT_MICROGRID_ID
+                        && registry.lock().contains_key(&DEFAULT_MICROGRID_ID)
+                    {
+                        DEFAULT_MICROGRID_ID + 1
+                    } else {
+                        probed
+                    }
+                }
+            };
+            let grpc_port = match a.grpc_port {
+                Some(p) if p > 0 => p as u16,
+                _ => next_free_port(&registry),
+            };
+            let name = a
+                .name
+                .clone()
+                .unwrap_or_else(|| DEFAULT_MICROGRID_NAME.to_string());
+            let def = MicrogridDef {
+                id,
+                name: name.clone(),
+                grpc_port,
+                tso: a.tso.clone(),
+            };
+            registry.lock().insert(
+                id,
+                MicrogridEntry {
+                    def,
+                    site: site.clone(),
+                },
+            );
+            // Sync legacy metadata to the *first* registered
+            // microgrid so the existing MicrogridInfo gRPC path
+            // (which reads from Metadata) keeps producing
+            // single-microgrid-shaped responses on the default
+            // gRPC port. Subsequent make-microgrid forms don't
+            // re-rewrite metadata; the new per-microgrid gRPC
+            // servers (B1) will source their MicrogridInfo from
+            // the registry directly.
+            {
+                let mut m = metadata.write();
+                if m.microgrid_id == 0 {
+                    m.microgrid_id = id;
+                }
+                if m.name.is_empty() {
+                    m.name = name;
+                }
+            }
+            Ok(id as i64)
         },
     );
 }
@@ -1714,6 +1884,80 @@ mod tests {
         assert!(e.def.stages[1].on.is_some());
         // Third stage has no :on -> Stage::on stays None.
         assert!(e.def.stages[2].on.is_none());
+    }
+
+    /// Boot seeds the default microgrid entry from `Metadata`
+    /// when no `(make-microgrid …)` form ran during config eval.
+    /// Single-microgrid sample configs (the legacy shape) land in
+    /// the registry without rewriting their lisp.
+    #[test]
+    fn boot_seeds_default_microgrid_from_metadata() {
+        let (cfg, _dir) = config_with("(set-microgrid-id 4242)");
+        let reg = cfg.microgrids();
+        let r = reg.lock();
+        assert_eq!(r.len(), 1);
+        let e = r.get(&4242).expect("seeded under metadata id");
+        assert_eq!(e.def.name, "default");
+        assert_eq!(e.def.grpc_port, 8800);
+    }
+
+    /// `(make-microgrid …)` upserts a registry entry with the
+    /// given metadata. The :grid argument's nested topology
+    /// registers into the (single) site as a side-effect of
+    /// pre-evaluation; the form itself just stamps metadata.
+    #[test]
+    fn make_microgrid_registers_entry_and_topology() {
+        let (cfg, _dir) = config_with("(set-microgrid-id 0)");
+        cfg.eval(
+            r#"
+            (make-microgrid
+              :name "south yard"
+              :id 7777
+              :grpc-port 8810
+              :tso "TN"
+              :grid (%make-grid-connection-point :id 1))
+            "#,
+        )
+        .unwrap();
+        let reg = cfg.microgrids();
+        let r = reg.lock();
+        let e = r.get(&7777).expect("registered");
+        assert_eq!(e.def.name, "south yard");
+        assert_eq!(e.def.grpc_port, 8810);
+        assert_eq!(e.def.tso.as_deref(), Some("TN"));
+        // The :grid expression ran -> the grid component lives on
+        // the site.
+        assert!(
+            cfg.site().get(1).is_some(),
+            "grid-connection-point id=1 should be registered",
+        );
+    }
+
+    /// When :id / :grpc-port are omitted, make-microgrid hands out
+    /// the next free values starting at the registry's known
+    /// floors.
+    #[test]
+    fn make_microgrid_auto_allocates_id_and_port() {
+        let (cfg, _dir) = config_with("(set-microgrid-id 0)");
+        let first: i64 = cfg
+            .eval("(make-microgrid :name \"alpha\")")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let second: i64 = cfg
+            .eval("(make-microgrid :name \"beta\")")
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(
+            second > first,
+            "auto-allocated ids must be strictly increasing"
+        );
+        let r = cfg.microgrids();
+        let g = r.lock();
+        let a = g.get(&(first as u64)).unwrap();
+        let b = g.get(&(second as u64)).unwrap();
+        assert_ne!(a.def.grpc_port, b.def.grpc_port);
     }
 
     /// Battery DC power integrates into the journal's per-battery
