@@ -188,6 +188,28 @@
         <button id="help-dialog-close" type="button">×</button>
       </header>
       <div id="help-dialog-content">
+        <h4>Modes</h4>
+        <ul class="help-list">
+          <li>The chrome's <em>Dashboard</em> / <em>Topology</em> buttons swap the main pane. The REPL drawer + side panel stay visible in both. Press <kbd>1</kbd> for Dashboard, <kbd>2</kbd> for Topology.</li>
+          <li>Mode preference persists in <code>localStorage</code>; refresh restores the last-picked mode.</li>
+        </ul>
+        <h4>Dashboard</h4>
+        <ul class="help-list">
+          <li><strong>Pool tiles</strong> (top row) — grid, battery pool, PV, consumer, producer. Each tile renders a 60-second sparkline + the formula tree on click.</li>
+          <li><strong>Battery pool envelope</strong> — lower → upper bounds line under the pool reading, derived from <code>BatteryPool::power_bounds</code>.</li>
+          <li><strong>Tier-2 rows</strong> (Batteries) — name + health pill + SoC bar + DC W. Rows sort SoC ascending. Click a row to flip to Topology with the node selected.</li>
+          <li><strong>Tier-3 rows</strong> (Inverters) — name + subtype + health + envelope visual (lower / measured / upper). Rows pinned at either bound float to the top.</li>
+          <li><strong>Tier-5 rows</strong> (EV / CHP) — name + health + SoC (EV only) + power readout.</li>
+        </ul>
+        <h4>Aggregations</h4>
+        <ul class="help-list">
+          <li>Pool tiles read from the same <code>frequenz-microgrid</code> client a production control app would use. Click any tile to open the formula tree in the side panel — each <code>#N</code> is a link back to the topology canvas.</li>
+          <li>Pulse-bar pills — <em>graph</em> (✓ / ⚠) summarises validation warnings from <code>frequenz-microgrid-component-graph</code>; <em>loopback</em> is the Microgrid client status; <em>density</em> + <em>TZ</em> toggle visual options.</li>
+        </ul>
+        <h4>Snapshots</h4>
+        <ul class="help-list">
+          <li><strong>Snapshots</strong> button (top right) — saves the current overrides file under <code>snapshots/&lt;name&gt;.lisp</code>; load to replay that state. Headless: <code>swctl snapshot save / load / list</code>.</li>
+        </ul>
         <h4>Topology canvas</h4>
         <ul class="help-list">
           <li><kbd>Click</kbd> a node — inspect it (charts + overrides + knobs in the side panel).</li>

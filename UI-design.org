@@ -759,7 +759,7 @@ A terminal-resident pulse bar: prints one line per second
 showing setpoint rate, health buckets, scenario stage, and a
 crude ASCII SoC histogram. Useful in tmux next to the editor.
 
-** TODO J5. swctl pool
+** DONE J5. swctl pool
 
   swctl pool battery
   swctl pool battery --stream
