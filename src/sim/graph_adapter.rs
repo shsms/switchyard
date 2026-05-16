@@ -112,8 +112,8 @@ fn lift_category(category: Category, subtype: Option<&str>) -> ComponentCategory
 /// `ComponentGraph::try_new` consumes. Hidden components are
 /// excluded so the validation graph mirrors what
 /// `MicrogridSite::connections()` (the gRPC + UI surface) shows.
-pub fn snapshot(world: &MicrogridSite) -> (Vec<GraphNode>, Vec<GraphEdge>) {
-    let nodes = world
+pub fn snapshot(site: &MicrogridSite) -> (Vec<GraphNode>, Vec<GraphEdge>) {
+    let nodes = site
         .components()
         .iter()
         .filter(|c| !c.is_hidden())
@@ -122,7 +122,7 @@ pub fn snapshot(world: &MicrogridSite) -> (Vec<GraphNode>, Vec<GraphEdge>) {
             category: lift_category(c.category(), c.subtype()),
         })
         .collect();
-    let edges = world
+    let edges = site
         .connections()
         .into_iter()
         .map(|(source, destination)| GraphEdge {
@@ -138,9 +138,9 @@ pub fn snapshot(world: &MicrogridSite) -> (Vec<GraphNode>, Vec<GraphEdge>) {
 /// connectivity check fails. The caller decides how to surface the
 /// failure (log + keep running for a hot-reload; abort for boot).
 pub fn build(
-    world: &MicrogridSite,
+    site: &MicrogridSite,
 ) -> Result<ComponentGraph<GraphNode, GraphEdge>, frequenz_microgrid_component_graph::Error> {
-    let (nodes, edges) = snapshot(world);
+    let (nodes, edges) = snapshot(site);
     build_from(nodes, edges)
 }
 

@@ -62,7 +62,7 @@ pub enum SiteEvent {
         target: String,
         message: String,
     },
-    /// Reload (or the initial load) raised a lisp error. The world
+    /// Reload (or the initial load) raised a lisp error. The site
     /// has been reset to its post-reset (empty) state by `reload`
     /// before this fires, so a UI subscriber knows to show a
     /// banner "config invalid since `ts_ms` — fix and save to

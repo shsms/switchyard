@@ -101,8 +101,8 @@ impl MicrogridServer {
         tonic::Response<<Self as microgrid_server::Microgrid>::SetElectricalComponentPowerStream>,
         tonic::Status,
     > {
-        let world = self.site.clone();
-        let component = world.get(req.electrical_component_id).ok_or_else(|| {
+        let site = self.site.clone();
+        let component = site.get(req.electrical_component_id).ok_or_else(|| {
             tonic::Status::not_found(format!(
                 "component {} not found",
                 req.electrical_component_id
@@ -113,7 +113,7 @@ impl MicrogridServer {
         // checked before any physics. Order matters — `Timeout` /
         // `Error` are wire-level faults, `Health` is application-level
         // refusal.
-        let runtime = world.runtime_of(req.electrical_component_id);
+        let runtime = site.runtime_of(req.electrical_component_id);
         match runtime.command {
             CommandMode::Timeout => {
                 std::future::pending::<()>().await;
@@ -141,7 +141,7 @@ impl MicrogridServer {
         // code sees the production behaviour even though the inverter
         // and battery don't share a data link in our model.
         if matches!(power_type, PowerType::Active)
-            && let Some(child_env) = world.aggregate_child_bounds(req.electrical_component_id)
+            && let Some(child_env) = site.aggregate_child_bounds(req.electrical_component_id)
         {
             let own = component.effective_active_bounds().unwrap_or_default();
             let envelope = own.intersect(&child_env);
@@ -167,7 +167,7 @@ impl MicrogridServer {
             req.request_lifetime,
             self.config.metadata().default_request_lifetime,
         )?;
-        world.add_timeout(req.electrical_component_id, duration);
+        site.add_timeout(req.electrical_component_id, duration);
 
         let (tx, rx) = tokio::sync::mpsc::channel(1);
         tokio::spawn(async move {
@@ -307,7 +307,7 @@ impl microgrid_server::Microgrid for MicrogridServer {
             PowerType::Reactive => SetpointKind::ReactivePower,
             PowerType::Unspecified => unreachable!("rejected above"),
         };
-        let world = self.site.clone();
+        let site = self.site.clone();
         let response = self.do_set_power(req, power_type).await;
 
         let outcome = match &response {
@@ -318,7 +318,7 @@ impl microgrid_server::Microgrid for MicrogridServer {
                 reason: s.message().to_string(),
             },
         };
-        world.log_setpoint(
+        site.log_setpoint(
             id,
             SetpointEvent {
                 ts: chrono::Utc::now(),
@@ -337,9 +337,9 @@ impl microgrid_server::Microgrid for MicrogridServer {
     {
         let req = request.into_inner();
         let id = req.electrical_component_id;
-        let world = self.site.clone();
+        let site = self.site.clone();
 
-        let component = world
+        let component = site
             .get(id)
             .ok_or_else(|| tonic::Status::not_found(format!("component {id} not found")))?;
         let interval = component.stream_interval();
@@ -375,7 +375,7 @@ impl microgrid_server::Microgrid for MicrogridServer {
                 // Re-read the telemetry mode each iteration so a
                 // mid-stream `(set-component-telemetry-mode)` flip
                 // takes effect on the next sample boundary.
-                match world.runtime_of(id).telemetry {
+                match site.runtime_of(id).telemetry {
                     TelemetryMode::Closed => {
                         log::debug!("stream({id}): closed by runtime mode");
                         break;
@@ -386,12 +386,12 @@ impl microgrid_server::Microgrid for MicrogridServer {
                         // the mode at the next interval.
                     }
                     TelemetryMode::Normal => {
-                        let mut snapshot = component.telemetry(&world);
+                        let mut snapshot = component.telemetry(&site);
                         // Health override: a degraded device reports
                         // ERROR/STANDBY in its state code, regardless
                         // of what the physics layer thinks the
                         // component is doing this tick.
-                        if let Some(label) = world.runtime_of(id).health.state_label() {
+                        if let Some(label) = site.runtime_of(id).health.state_label() {
                             snapshot.component_state = Some(label);
                         }
                         let msg = telemetry_to_proto(
@@ -456,8 +456,8 @@ impl microgrid_server::Microgrid for MicrogridServer {
         let now = chrono::Utc::now();
         let id = req.electrical_component_id;
 
-        let world = self.site.clone();
-        let response = match world.get(id) {
+        let site = self.site.clone();
+        let response = match site.get(id) {
             Some(component) => {
                 component.augment_active_bounds(now, VecBounds::new(req.bounds), lifetime);
                 let expiry = now + chrono::Duration::seconds(lifetime_s);
@@ -483,7 +483,7 @@ impl microgrid_server::Microgrid for MicrogridServer {
                 reason: s.message().to_string(),
             },
         };
-        world.log_setpoint(
+        site.log_setpoint(
             id,
             SetpointEvent {
                 ts: now,

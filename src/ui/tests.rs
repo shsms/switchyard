@@ -209,14 +209,14 @@ async fn format_endpoint_returns_400_on_parse_error() {
 
 #[tokio::test]
 async fn history_endpoint_returns_recent_samples() {
-    // Build a world with a battery, then drive the sampler twice
+    // Build a site with a battery, then drive the sampler twice
     // synchronously so the rings have content to query. Battery
     // publishes soc_pct in its telemetry; that's what we query.
     let cfg = config_with("(%make-battery :id 1000)").await;
-    let world = cfg.site();
+    let site = cfg.site();
     let now = chrono::Utc::now();
-    world.record_history_snapshot(now - chrono::Duration::seconds(2));
-    world.record_history_snapshot(now - chrono::Duration::seconds(1));
+    site.record_history_snapshot(now - chrono::Duration::seconds(2));
+    site.record_history_snapshot(now - chrono::Duration::seconds(1));
 
     let (status, body) = call(cfg, get("/api/history?id=1000&metric=soc_pct&window_s=10")).await;
     assert_eq!(status, StatusCode::OK);
@@ -291,7 +291,7 @@ const LOAD_OVERRIDES_HELPER: &str = "(defun load-overrides ()
 async fn persisted_remove_drops_form_immediately() {
     // Two evals append two forms to the override file. DELETE
     // /api/persisted/0 rewrites the file without that form and
-    // reloads; the world reflects only the second rename, and
+    // reloads; the site reflects only the second rename, and
     // the file no longer contains the first.
     let body = format!("(set-microgrid-id 7) (%make-grid-connection-point :id 1) {LOAD_OVERRIDES_HELPER}",);
     let cfg = config_with(&body).await;
@@ -364,7 +364,7 @@ async fn persisted_bulk_remove_drops_indices_in_one_reload() {
     )
     .await;
 
-    // Drop idx 0 + 2 → only "b" survives, world reflects "b".
+    // Drop idx 0 + 2 → only "b" survives, site reflects "b".
     let req = axum::http::Request::builder()
         .method(axum::http::Method::POST)
         .uri("/api/persisted/delete")

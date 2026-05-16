@@ -169,14 +169,14 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
     /// Advance internal state by `dt`. Called once per physics tick
     /// from `MicrogridSite::tick_once` in registration order (children before
     /// parents). Components that aggregate from successors read them
-    /// here via `world.get(child_id)`. Must not call back into the
+    /// here via `site.get(child_id)`. Must not call back into the
     /// Lisp interpreter — see [`Self::refresh_inputs`] for that.
-    fn tick(&self, world: &MicrogridSite, now: DateTime<Utc>, dt: Duration);
+    fn tick(&self, site: &MicrogridSite, now: DateTime<Utc>, dt: Duration);
 
     /// Snapshot the component's observable state for streaming. Pure
-    /// — should not mutate. `world` is for components that read AC
+    /// — should not mutate. `site` is for components that read AC
     /// environment (per-phase voltage, frequency) at sample time.
-    fn telemetry(&self, world: &MicrogridSite) -> Telemetry;
+    fn telemetry(&self, site: &MicrogridSite) -> Telemetry;
 
     // ── setpoints (control surface) ──────────────────────────────────
 
@@ -267,7 +267,7 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
     // ── aggregation (parent reads from child) ────────────────────────
 
     /// Total real power flowing at this component. Parents (meters,
-    /// inverters) sum this across their successors. `world` lets
+    /// inverters) sum this across their successors. `site` lets
     /// nesting components recurse — a nested meter calls into its
     /// inverter, which reads from its batteries.
     fn aggregate_power_w(&self, _world: &MicrogridSite) -> f32 {

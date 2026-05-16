@@ -9,7 +9,8 @@ is wiring the topology + animating the environment.
 - `src/lib.rs` — module roots
 - `src/sim/` — components + scheduler
   - `component.rs` — `SimulatedComponent` trait, `ComponentHandle`, `Telemetry`
-  - `world.rs` — registry, physics tick, grid state, topology
+  - `microgrid_site.rs` — per-microgrid registry, physics tick, grid state, topology
+  - `microgrids.rs` — enterprise registry + per-mg routing
   - `bounds.rs` — `VecBounds`, `ComponentBounds` (rated + TTL augmentations)
   - `ramp.rs` — `CommandDelay` + `Ramp`
   - `decay.rs` — `bounded_exp_decay` + `soc_protected_bounds`
@@ -39,7 +40,7 @@ is wiring the topology + animating the environment.
   own SoC-derated bounds; the inverter publishes the measured aggregate it
   actually delivered. The API gateway (server.rs) intersects bounds for
   setpoint validation — components never read each other's bounds.
-- **Single physics tick, registration order = tick order.** `World::spawn_physics`
+- **Single physics tick, registration order = tick order.** `MicrogridSite::spawn_physics`
   runs one `tokio::time::interval` at `physics_tick_ms` and calls `tick()` on
   every component in registration order. Children register first because Lisp
   evaluates `:successors` before the surrounding `make-*`.
@@ -86,7 +87,7 @@ in config.lisp). swctl points there by default; override with `--addr`.
 1. New file under `src/sim/` implementing `SimulatedComponent`.
 2. Add to `src/sim/mod.rs` re-exports.
 3. Add a `%make-foo` defun in `src/lisp/make.rs` with `AsPlist!`-derived
-   args, calling `world.register(...)`. Note the leading `%` —
+   args, calling `site.register(...)`. Note the leading `%` —
    user-facing topology code calls `make-foo`, which dispatches here.
 4. Add a `foo-defaults` plist + `(defun make-foo …)` wrapper to
    `sim/defaults.lisp`. The wrapper `apply`s `%make-foo` to the
@@ -139,12 +140,12 @@ config.lisp does.
   `(run-with-timer 0.05 …)` waits up to 100 ms before firing; a
   zero-delay one fires on the next tick, not immediately after the
   eval. Tests that need a fire without spinning the physics loop
-  can call `world.tick_once(…)` directly.
+  can call `site.tick_once(…)` directly.
 
 ## Adding a runtime knob
 
 1. Field on the component config struct + plist arg in `src/lisp/make.rs`.
-2. (If runtime-mutable) trait method override + `World` setter + Lisp defun
+2. (If runtime-mutable) trait method override + `MicrogridSite` setter + Lisp defun
    in `src/lisp/mod.rs`. Use `(every …)` or `(run-with-timer …)` from the
    config to script behaviour over time.
 3. Demonstrate via a new line in `config.lisp` and verify via swctl.

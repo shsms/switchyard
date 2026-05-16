@@ -49,14 +49,14 @@ impl Meter {
         }
     }
 
-    fn aggregate_active(&self, world: &MicrogridSite) -> f32 {
+    fn aggregate_active(&self, site: &MicrogridSite) -> f32 {
         if let Some(scalar) = self.power_source.read().as_ref() {
             return scalar.get();
         }
-        world
+        site
             .children_of(self.id)
             .into_iter()
-            .filter_map(|id| world.get(id).map(|c| (id, c)))
+            .filter_map(|id| site.get(id).map(|c| (id, c)))
             .map(|(child_id, child)| {
                 // Parallel-paths share: a child with N parents in the
                 // connection graph contributes 1/N to each parent. So
@@ -64,26 +64,26 @@ impl Meter {
                 // half of its flow under each — the top meter sums
                 // them and lands on the inverter's actual power.
                 // Single-parent children clamp via `.max(1)`.
-                let share = world.parent_count(child_id).max(1) as f32;
-                child.aggregate_power_w(world) / share
+                let share = site.parent_count(child_id).max(1) as f32;
+                child.aggregate_power_w(site) / share
             })
             .sum()
     }
 
-    fn aggregate_reactive(&self, world: &MicrogridSite) -> f32 {
+    fn aggregate_reactive(&self, site: &MicrogridSite) -> f32 {
         // No reactive override on power-driven meters — those model
         // pure-real loads (consumer kW, CHP). If we ever need a
         // synthetic reactive load, add a `reactive_source` knob.
         if self.power_source.read().is_some() {
             return 0.0;
         }
-        world
+        site
             .children_of(self.id)
             .into_iter()
-            .filter_map(|id| world.get(id).map(|c| (id, c)))
+            .filter_map(|id| site.get(id).map(|c| (id, c)))
             .map(|(child_id, child)| {
-                let share = world.parent_count(child_id).max(1) as f32;
-                child.aggregate_reactive_var(world) / share
+                let share = site.parent_count(child_id).max(1) as f32;
+                child.aggregate_reactive_var(site) / share
             })
             .sum()
     }
@@ -126,10 +126,10 @@ impl SimulatedComponent for Meter {
     }
     fn tick(&self, _world: &MicrogridSite, _now: DateTime<Utc>, _dt: Duration) {}
 
-    fn telemetry(&self, world: &MicrogridSite) -> Telemetry {
-        let grid = world.grid_state();
-        let total_p = self.aggregate_active(world);
-        let total_q = self.aggregate_reactive(world);
+    fn telemetry(&self, site: &MicrogridSite) -> Telemetry {
+        let grid = site.grid_state();
+        let total_p = self.aggregate_active(site);
+        let total_q = self.aggregate_reactive(site);
 
         let pp = split_per_phase(total_p, grid.voltage_per_phase);
         let qq = split_per_phase(total_q, grid.voltage_per_phase);
@@ -150,12 +150,12 @@ impl SimulatedComponent for Meter {
         }
     }
 
-    fn aggregate_power_w(&self, world: &MicrogridSite) -> f32 {
-        self.aggregate_active(world)
+    fn aggregate_power_w(&self, site: &MicrogridSite) -> f32 {
+        self.aggregate_active(site)
     }
 
-    fn aggregate_reactive_var(&self, world: &MicrogridSite) -> f32 {
-        self.aggregate_reactive(world)
+    fn aggregate_reactive_var(&self, site: &MicrogridSite) -> f32 {
+        self.aggregate_reactive(site)
     }
 
     fn set_active_power_override(&self, p: f32) {
@@ -296,7 +296,7 @@ mod tests {
     /// children that were wired at make-time. Pre-fix the meter
     /// cached its full successor list and ignored disconnects.
     #[test]
-    fn world_disconnect_after_make_drops_child() {
+    fn disconnect_after_make_drops_child() {
         let w = MicrogridSite::new();
         let inverter = std::sync::Arc::new(FixedFlow {
             id: 100,
@@ -320,7 +320,7 @@ mod tests {
     /// the UI's copy / paste flow) must aggregate too — the meter's
     /// internal successor list isn't the only source of truth.
     #[test]
-    fn world_connect_after_make_aggregates() {
+    fn connect_after_make_aggregates() {
         let w = MicrogridSite::new();
 
         // Inverter publishes 2 kW; meter starts with no successors.

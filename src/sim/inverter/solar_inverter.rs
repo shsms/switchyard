@@ -164,8 +164,8 @@ impl SimulatedComponent for SolarInverter {
         self.reactive.step(p, now, dt);
     }
 
-    fn telemetry(&self, world: &MicrogridSite) -> Telemetry {
-        let grid = world.grid_state();
+    fn telemetry(&self, site: &MicrogridSite) -> Telemetry {
+        let grid = site.grid_state();
         let p = self.ramp.actual();
         let pp = split_per_phase(p, grid.voltage_per_phase);
         let rp = self.reactive.published();

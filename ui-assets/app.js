@@ -192,7 +192,7 @@ const liveCharts = (() => {
       li.className = `sp-event ${ev.accepted ? "accepted" : "rejected"}`;
       const ts = new Date(ev.ts_ms).toLocaleTimeString();
       // The WS event carries the setpoint kind on `setpoint_kind`
-      // to dodge collision with the WorldEvent discriminator (also
+      // to dodge collision with the SiteEvent discriminator (also
       // called `kind`).
       const tag = ev.setpoint_kind.replace("_", " ");
       const head = `<span class="sp-ts">${ts}</span> <span class="sp-tag">${tag}</span> <span class="sp-val">${ev.value}</span>`;

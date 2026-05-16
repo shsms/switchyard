@@ -82,7 +82,7 @@ pub struct Config {
     extra_watches: Arc<Mutex<HashSet<PathBuf>>>,
     /// Latest topology-validation outcome from the graph crate.
     /// `None` = healthy; `Some(message)` = the validator rejected the
-    /// current world. `log_topology_validation` updates this on every
+    /// current site. `log_topology_validation` updates this on every
     /// boot + reload; `/api/topology` exposes it so the pulse-bar
     /// graph pill (see UI-design.org §Z6) can flip between ✓ and ⚠
     /// without polling a separate endpoint.
@@ -148,7 +148,7 @@ impl Config {
     /// Build a config from `filename`. Returns the formatted lisp
     /// error on parse / eval failure — caller decides whether to
     /// panic (binary boot) or surface in the UI (hot reload). On
-    /// error the world is left empty (no components registered)
+    /// error the site is left empty (no components registered)
     /// rather than partially built; the caller is expected to retry
     /// or abort.
     pub fn new(filename: &str) -> Result<Self, String> {
@@ -157,7 +157,7 @@ impl Config {
         let enterprise_id_allocator = Arc::new(AtomicU64::new(
             crate::sim::component::FIRST_AUTO_ID,
         ));
-        let world = MicrogridSite::with_id_allocator(enterprise_id_allocator.clone());
+        let site = MicrogridSite::with_id_allocator(enterprise_id_allocator.clone());
         let metadata = Arc::new(RwLock::new(Metadata::default()));
         let extra_watches = Arc::new(Mutex::new(HashSet::new()));
         let graph_status: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));
@@ -165,7 +165,7 @@ impl Config {
         let scenarios = crate::sim::scenarios::new_registry();
         let microgrids = crate::sim::microgrids::new_registry();
         let current_microgrid = crate::sim::microgrids::new_current_microgrid();
-        let router = SiteRouter::new(microgrids.clone(), current_microgrid.clone(), world.clone());
+        let router = SiteRouter::new(microgrids.clone(), current_microgrid.clone(), site.clone());
         // Capacity = 64 because new-microgrid bursts are tiny (config
         // eval emits a few in quick succession, runtime creates are
         // one-at-a-time). Lagged receivers can only miss notifications
@@ -207,7 +207,7 @@ impl Config {
         // cancel-timer, sleep-for and friends, used to drive
         // *environment* animation (per-tick voltage / frequency
         // perturbations, scheduled events). Component logic stays in
-        // Rust; lisp's only job is wiring + scripting the world
+        // Rust; lisp's only job is wiring + scripting the site
         // around it. Must be called inside a tokio runtime —
         // TokioExecutor::new captures Handle::current().
         //
@@ -245,7 +245,7 @@ impl Config {
             );
         }
 
-        let initial_status = log_topology_validation(&world, "boot");
+        let initial_status = log_topology_validation(&site, "boot");
         *graph_status.write() = initial_status;
 
         let ctx = SharedMut::new(ctx);
@@ -270,7 +270,7 @@ impl Config {
                 }
                 timer_handle.tick(&mut guard);
             });
-        world.set_pre_tick(pre_tick_hook.clone());
+        site.set_pre_tick(pre_tick_hook.clone());
         // Microgrid sites that were already registered while the
         // config was evaluating (before this hook existed) need the
         // hook installed retroactively so their `(every …)` callbacks
@@ -299,7 +299,7 @@ impl Config {
         Ok(Self {
             filename: filename.to_string(),
             ctx,
-            site: world,
+            site: site,
             metadata,
             extra_watches,
             graph_status,
@@ -421,14 +421,14 @@ impl Config {
     /// would.
     pub fn tags_table(roots: &[&str]) -> Result<String, Error> {
         let mut ctx = TulispContext::new();
-        let world = MicrogridSite::new();
+        let site = MicrogridSite::new();
         let metadata = Arc::new(RwLock::new(Metadata::default()));
         // Throwaway router for the TAGS pass — no microgrids
         // registered, so SiteRouter::site falls through to the
         // bootstrap site and every defun captures that one.
         let microgrids = crate::sim::microgrids::new_registry();
         let current = crate::sim::microgrids::new_current_microgrid();
-        let router = SiteRouter::new(microgrids, current, world.clone());
+        let router = SiteRouter::new(microgrids, current, site.clone());
 
         let load_dir: PathBuf = roots
             .first()
@@ -463,7 +463,7 @@ impl Config {
 
     /// Latest graph-validator outcome. `None` = the graph crate
     /// accepted the topology at the last config-load / reload (or
-    /// the world is empty); `Some(msg)` = it rejected, with the
+    /// the site is empty); `Some(msg)` = it rejected, with the
     /// human-readable error. `/api/topology` serialises this so
     /// the pulse-bar graph pill flips to ⚠ + opens-on-click with
     /// the message (see UI-design.org §Z6).
@@ -528,7 +528,7 @@ impl Config {
     }
 
     /// Read-only eval — same machinery as `eval` but the result is
-    /// NOT appended to the override file and the world version does
+    /// NOT appended to the override file and the site version does
     /// NOT bump. For UI introspection (e.g. "what's the current
     /// value of battery-defaults?") that shouldn't surface as a
     /// persisted edit.
@@ -600,7 +600,7 @@ impl Config {
     ///
     /// Returns the count of forms actually dropped — out-of-range
     /// indices are silently ignored. An IO error during rewrite
-    /// leaves the world state untouched (the file was renamed
+    /// leaves the site state untouched (the file was renamed
     /// atomically only on success).
     ///
     /// Bulk shape so the UI's checkbox-toolbar can prune N entries
@@ -644,7 +644,7 @@ impl Config {
         }
         fs::rename(&tmp, &path)?;
         // A reload error after a successful rewrite leaves the file
-        // on disk and the world reset to empty — the next save
+        // on disk and the site reset to empty — the next save
         // (or a manual `reload`) is the recovery path. Surface the
         // error as IO so the HTTP handler can return 5xx; the
         // user's already lost the broken forms either way.
@@ -714,7 +714,7 @@ impl Config {
     /// without re-running the manual click stream. Live physics state
     /// (ramps, mid-flight setpoints, current SoC, etc.) is NOT
     /// captured here — those derive from the snapshotted topology
-    /// once the world re-spins from baseline.
+    /// once the site re-spins from baseline.
     ///
     /// Returns the absolute path of the snapshot file on success.
     /// Errors if the name resolves to anything outside `snapshots/`
@@ -736,7 +736,7 @@ impl Config {
     }
 
     /// Replace the current overrides file with `snapshots/<name>.lisp`
-    /// and reload, so the world derives from base config.lisp +
+    /// and reload, so the site derives from base config.lisp +
     /// the snapshotted overrides.
     pub fn load_snapshot(&self, name: &str) -> Result<(), String> {
         let dir = self.snapshots_dir();
@@ -797,7 +797,7 @@ fn list_snapshots_in(dir: &Path) -> Vec<String> {
 
 impl Config {
     /// Re-evaluate the config file, resetting MicrogridSite state first.
-    /// Returns the formatted lisp error on failure — the world is
+    /// Returns the formatted lisp error on failure — the site is
     /// left in its post-reset (empty) state in that case so the
     /// next reload starts from a known baseline.
     pub fn reload(&self) -> Result<(), String> {
@@ -897,7 +897,7 @@ impl Config {
             // arrive within DEBOUNCE; each additional event restarts
             // the window. Once the window goes quiet, fire one reload.
             // Reload errors are logged by `reload()` and surfaced on
-            // the world event bus so the UI can show a banner; the
+            // the site event bus so the UI can show a banner; the
             // loop intentionally keeps going so a typo doesn't kill
             // the live-edit feedback path.
             loop {
@@ -933,14 +933,14 @@ impl Config {
 /// On success the log line includes a one-line summary so a dev
 /// reading the log can confirm switchyard parsed the topology the
 /// same way `frequenz-microgrid` would.
-/// Run the graph crate's validator on the post-eval world, log
+/// Run the graph crate's validator on the post-eval site, log
 /// the outcome (info on success / warn on failure), and return a
 /// status string the caller stores in [`Config::graph_status`].
-/// `None` = the graph crate accepted the topology (or the world is
+/// `None` = the graph crate accepted the topology (or the site is
 /// empty / hidden-only); `Some(msg)` = the human-readable error
 /// the validator produced.
-fn log_topology_validation(world: &MicrogridSite, phase: &str) -> Option<String> {
-    let (nodes, edges) = crate::sim::graph_adapter::snapshot(world);
+fn log_topology_validation(site: &MicrogridSite, phase: &str) -> Option<String> {
+    let (nodes, edges) = crate::sim::graph_adapter::snapshot(site);
     let visible_count = nodes.len();
     if visible_count == 0 {
         log::debug!("graph: {phase} skipped (no visible components)");

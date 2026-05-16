@@ -536,10 +536,10 @@ impl MicrogridSite {
         self.inner.events.subscribe()
     }
 
-    /// Broadcast a `ConfigError` on the world event bus. Used by the
+    /// Broadcast a `ConfigError` on the site event bus. Used by the
     /// watcher's reload-failure path so UI subscribers can render a
     /// "config invalid" banner instead of seeing the post-reset
-    /// empty world without explanation. Fire-and-forget — a send
+    /// empty site without explanation. Fire-and-forget — a send
     /// error means there are no live subscribers, which is fine.
     pub fn broadcast_config_error(&self, message: String) {
         let _ = self.inner.events.send(SiteEvent::ConfigError {
@@ -1046,7 +1046,7 @@ impl MicrogridSite {
     // on the event bus for live UI updates.
 
     /// Append a setpoint event to the per-component log + broadcast
-    /// it on the world event bus so live UI inspectors update without
+    /// it on the site event bus so live UI inspectors update without
     /// a refetch. Auto-creates the ring on first push; bounded to
     /// `SETPOINT_LOG_CAPACITY` entries (oldest evict).
     pub fn log_setpoint(&self, id: u64, event: SetpointEvent) {

@@ -195,8 +195,8 @@ impl SimulatedComponent for EvCharger {
         }
     }
 
-    fn telemetry(&self, world: &MicrogridSite) -> Telemetry {
-        let grid = world.grid_state();
+    fn telemetry(&self, site: &MicrogridSite) -> Telemetry {
+        let grid = site.grid_state();
         let p = self.ramp.actual();
         let s = self.state.lock().clone();
         Telemetry {

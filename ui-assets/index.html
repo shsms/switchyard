@@ -22,7 +22,7 @@
       <button id="help-btn" class="hdr-btn" title="Keyboard + mouse shortcuts">?</button>
       <button id="scenario-report-btn" class="hdr-btn">Report</button>
       <button id="defaults-btn" class="hdr-btn">Defaults</button>
-      <button id="snapshots-btn" class="hdr-btn" title="Save / load the world's persisted edits">Snapshots</button>
+      <button id="snapshots-btn" class="hdr-btn" title="Save / load the microgrid's persisted edits">Snapshots</button>
       <span id="pending-pill" class="pending-pill" hidden>
         <span id="pending-count">0</span> overrides
       </span>
@@ -234,7 +234,7 @@
           Saving copies the current persisted-overrides file to
           <code>snapshots/&lt;name&gt;.lisp</code>. Loading replaces
           the overrides file with that snapshot and reloads the
-          world (live ramp / SoC state is not captured).
+          microgrid (live ramp / SoC state is not captured).
         </p>
       </div>
     </dialog>
@@ -287,7 +287,7 @@
         <ul class="help-list">
           <li><strong>Add component</strong> (lower side panel) — pick a category, click <em>Create</em>; an auto-id'd component appears. Wire it via <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+drag.</li>
           <li><strong>Defaults</strong> — per-category defaults (Lisp values); edits write to the override file.</li>
-          <li><strong>Overrides pill</strong> — count of forms in <code>config.ui-overrides.&lt;microgrid-id&gt;.lisp</code>. Every successful canvas / REPL edit appends to that file immediately. Click the pill to open the dialog: tick the rows you want gone, hit <em>Delete selected</em>; the file rewrites and the world reloads in one round trip.</li>
+          <li><strong>Overrides pill</strong> — count of forms in <code>microgrids/config.config.ui-overrides.&lt;microgrid-id&gt;.lisplt;microgrid-idconfig.ui-overrides.&lt;microgrid-id&gt;.lispgt;.overrides.lisp</code>. Every successful canvas / REPL edit appends to that file immediately. Click the pill to open the dialog: tick the rows you want gone, hit <em>Delete selected</em>; the file rewrites and the microgrid reloads in one round trip.</li>
         </ul>
         <h4>REPL</h4>
         <ul class="help-list">

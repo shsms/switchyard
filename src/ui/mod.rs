@@ -171,22 +171,22 @@ pub fn noop_microgrid_spawner() -> MicrogridSpawner {
 /// startup proceeds, and dashboard endpoints return 503 until the
 /// slot fills.
 ///
-/// `world` is the sink the forwarders publish to via
+/// `site` is the sink the forwarders publish to via
 /// [`MicrogridSite::broadcast_microgrid_sample`]; the existing `/ws/events`
 /// stream then carries the samples to the SPA without any extra
 /// wiring — they ride the same `SiteEvent` discriminator the
 /// per-component samples already use.
-pub fn spawn_microgrid_loopback(grpc_url: String, slot: SharedMicrogrid, world: MicrogridSite) {
+pub fn spawn_microgrid_loopback(grpc_url: String, slot: SharedMicrogrid, site: MicrogridSite) {
     tokio::spawn(async move {
-        if !build_microgrid(&grpc_url, &slot, &world).await {
+        if !build_microgrid(&grpc_url, &slot, &site).await {
             return;
         }
         log::info!("microgrid loopback: connected + graph built + forwarders running");
         // Watch for topology mutations and rebuild on each. The
         // graph crate's ComponentGraph is snapshotted at try_new
-        // time so formulas + subscriptions go stale once the world
+        // time so formulas + subscriptions go stale once the site
         // mutates; rebuilding picks up the new shape.
-        run_supervisor(grpc_url, slot, world).await;
+        run_supervisor(grpc_url, slot, site).await;
     });
 }
 
@@ -213,7 +213,7 @@ pub fn spawn_microgrid_loopback(grpc_url: String, slot: SharedMicrogrid, world: 
 /// Returns false if the gRPC connect or graph build fails outright
 /// (which the crate normally retries through; a hard failure means
 /// something like a malformed URL).
-async fn build_microgrid(grpc_url: &str, slot: &SharedMicrogrid, world: &MicrogridSite) -> bool {
+async fn build_microgrid(grpc_url: &str, slot: &SharedMicrogrid, site: &MicrogridSite) -> bool {
     // Lazy client init. `MicrogridClientHandle::try_new` doesn't
     // contact the server — the connection is established lazily on
     // the first RPC — so this is cheap to call. It does validate
@@ -243,7 +243,7 @@ async fn build_microgrid(grpc_url: &str, slot: &SharedMicrogrid, world: &Microgr
         }
     };
     let mut mg = Microgrid::new_from_handles(client, lm);
-    let handles = subscribe_power_forwarders(&mut mg, world, slot.clone()).await;
+    let handles = subscribe_power_forwarders(&mut mg, site, slot.clone()).await;
     // Atomic swap. Aborting the old forwarders + dropping the old
     // Microgrid happens AFTER the new LM has subscribed to every
     // component it cares about (above), so the shared client's
@@ -262,13 +262,13 @@ async fn build_microgrid(grpc_url: &str, slot: &SharedMicrogrid, world: &Microgr
 /// every TopologyChanged. Lagged-receiver and dropped-sender
 /// events also trigger a rebuild (defensive — a missed event
 /// might have been a topology change).
-async fn run_supervisor(grpc_url: String, slot: SharedMicrogrid, world: MicrogridSite) {
-    let mut events = world.subscribe_events();
+async fn run_supervisor(grpc_url: String, slot: SharedMicrogrid, site: MicrogridSite) {
+    let mut events = site.subscribe_events();
     loop {
         match events.recv().await {
             Ok(SiteEvent::TopologyChanged { .. }) => {
                 debounce_topology_burst(&mut events).await;
-                rebuild(&grpc_url, &slot, &world).await;
+                rebuild(&grpc_url, &slot, &site).await;
             }
             Ok(_) => continue,
             Err(RecvError::Lagged(n)) => {
@@ -276,10 +276,10 @@ async fn run_supervisor(grpc_url: String, slot: SharedMicrogrid, world: Microgri
                     "microgrid loopback supervisor: lagged {n} events, rebuilding defensively"
                 );
                 debounce_topology_burst(&mut events).await;
-                rebuild(&grpc_url, &slot, &world).await;
+                rebuild(&grpc_url, &slot, &site).await;
             }
             Err(RecvError::Closed) => {
-                log::info!("microgrid loopback supervisor: world events closed, exiting");
+                log::info!("microgrid loopback supervisor: site events closed, exiting");
                 return;
             }
         }
@@ -312,9 +312,9 @@ async fn debounce_topology_burst(events: &mut tokio::sync::broadcast::Receiver<S
 /// Only the `LogicalMeterHandle` inside the new Microgrid is
 /// rebuilt; the `MicrogridClientHandle` cached in `slot.client` is
 /// reused. See the field doc for why the client is long-lived.
-async fn rebuild(grpc_url: &str, slot: &SharedMicrogrid, world: &MicrogridSite) {
+async fn rebuild(grpc_url: &str, slot: &SharedMicrogrid, site: &MicrogridSite) {
     log::info!("microgrid loopback: topology changed — rebuilding handle");
-    build_microgrid(grpc_url, slot, world).await;
+    build_microgrid(grpc_url, slot, site).await;
 }
 
 /// Build subscriptions for the active-power streams the Dashboard
@@ -336,7 +336,7 @@ async fn rebuild(grpc_url: &str, slot: &SharedMicrogrid, world: &MicrogridSite) 
 /// unavailable" until that category appears.
 async fn subscribe_power_forwarders(
     microgrid: &mut Microgrid,
-    world: &MicrogridSite,
+    site: &MicrogridSite,
     state: SharedMicrogrid,
 ) -> Vec<JoinHandle<()>> {
     let mut handles = Vec::new();
@@ -348,7 +348,7 @@ async fn subscribe_power_forwarders(
         ("pv_power", lm.pv::<metric::AcPowerActive>(None)),
     ];
     for (stream, formula) in metered {
-        if let Some(h) = subscribe_power_forwarder(stream, formula, world, state.clone()).await {
+        if let Some(h) = subscribe_power_forwarder(stream, formula, site, state.clone()).await {
             handles.push(h);
         }
     }
@@ -368,7 +368,7 @@ async fn subscribe_power_forwarders(
     match microgrid.battery_pool(None) {
         Ok(mut pool) => {
             if let Some(h) =
-                subscribe_power_forwarder("battery_pool_power", pool.power(), world, state.clone())
+                subscribe_power_forwarder("battery_pool_power", pool.power(), site, state.clone())
                     .await
             {
                 handles.push(h);
@@ -378,7 +378,7 @@ async fn subscribe_power_forwarders(
             // separate streams so the existing point-sample
             // infrastructure (cache + sparkline) renders both
             // halves without an envelope-shaped payload variant.
-            handles.push(spawn_bounds_forwarder(pool.power_bounds(), world, state));
+            handles.push(spawn_bounds_forwarder(pool.power_bounds(), site, state));
         }
         Err(e) => log::info!("microgrid loopback: battery pool absent — skipping: {e}"),
     }
@@ -398,10 +398,10 @@ async fn subscribe_power_forwarders(
 /// developer-facing dashboard isn't designed around.
 fn spawn_bounds_forwarder(
     mut rx: tokio::sync::broadcast::Receiver<Vec<frequenz_microgrid::Bounds<Power>>>,
-    world: &MicrogridSite,
+    site: &MicrogridSite,
     state: SharedMicrogrid,
 ) -> JoinHandle<()> {
-    let world = world.clone();
+    let site = site.clone();
     tokio::spawn(async move {
         loop {
             match rx.recv().await {
@@ -415,7 +415,7 @@ fn spawn_bounds_forwarder(
                         "W",
                         lower,
                         ts_ms,
-                        &world,
+                        &site,
                         &state,
                     );
                     publish_scalar(
@@ -424,7 +424,7 @@ fn spawn_bounds_forwarder(
                         "W",
                         upper,
                         ts_ms,
-                        &world,
+                        &site,
                         &state,
                     );
                 }
@@ -465,7 +465,7 @@ fn outer_bound(
 async fn subscribe_power_forwarder(
     stream: &'static str,
     formula: Result<frequenz_microgrid::Formula<Power>, frequenz_microgrid::Error>,
-    world: &MicrogridSite,
+    site: &MicrogridSite,
     state: SharedMicrogrid,
 ) -> Option<JoinHandle<()>> {
     let formula = match formula {
@@ -482,11 +482,11 @@ async fn subscribe_power_forwarder(
             return None;
         }
     };
-    let world = world.clone();
+    let site = site.clone();
     Some(tokio::spawn(async move {
         loop {
             match rx.recv().await {
-                Ok(sample) => publish_power(stream, sample, &world, &state),
+                Ok(sample) => publish_power(stream, sample, &site, &state),
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                     log::warn!("microgrid loopback: {stream} lagged {n} samples");
                 }
@@ -499,10 +499,10 @@ async fn subscribe_power_forwarder(
     }))
 }
 
-fn publish_power(stream: &'static str, sample: Sample<Power>, world: &MicrogridSite, state: &SharedMicrogrid) {
+fn publish_power(stream: &'static str, sample: Sample<Power>, site: &MicrogridSite, state: &SharedMicrogrid) {
     let value = sample.value().map(|p| p.as_watts());
     let ts_ms = sample.timestamp().timestamp_millis();
-    publish_scalar(stream, "Power", "W", value, ts_ms, world, state);
+    publish_scalar(stream, "Power", "W", value, ts_ms, site, state);
 }
 
 /// Push a typed scalar onto both the per-stream `latest` cache and
@@ -516,7 +516,7 @@ fn publish_scalar(
     unit: &'static str,
     value: Option<f32>,
     ts_ms: i64,
-    world: &MicrogridSite,
+    site: &MicrogridSite,
     state: &SharedMicrogrid,
 ) {
     let snapshot = MicrogridSampleSnapshot {
@@ -526,7 +526,7 @@ fn publish_scalar(
         value,
     };
     state.latest.write().insert(stream, snapshot);
-    world.broadcast_microgrid_sample(stream, quantity, unit, ts_ms, value);
+    site.broadcast_microgrid_sample(stream, quantity, unit, ts_ms, value);
 }
 
 /// Spawn the UI HTTP server on `addr`. Returns once the listener is
@@ -1173,15 +1173,15 @@ async fn topology_for_mg(
     Ok(Json(topology_snapshot(&config, &site)))
 }
 
-fn topology_snapshot(config: &Config, world: &crate::sim::MicrogridSite) -> TopologySnapshot {
-    let components = world
+fn topology_snapshot(config: &Config, site: &crate::sim::MicrogridSite) -> TopologySnapshot {
+    let components = site
         .components()
         .iter()
         .map(|c| {
-            let runtime = world.runtime_of(c.id());
+            let runtime = site.runtime_of(c.id());
             ComponentSummary {
                 id: c.id(),
-                name: world
+                name: site
                     .display_name(c.id())
                     .unwrap_or_else(|| c.name().to_string()),
                 category: category_label(c.category()),
@@ -1195,10 +1195,10 @@ fn topology_snapshot(config: &Config, world: &crate::sim::MicrogridSite) -> Topo
         .collect();
     TopologySnapshot {
         components,
-        connections: world.connections(),
-        hidden_connections: world.hidden_connections(),
+        connections: site.connections(),
+        hidden_connections: site.hidden_connections(),
         graph_status: config.graph_status(),
-        main_meter_id: world.main_meter_id(),
+        main_meter_id: site.main_meter_id(),
     }
 }
 

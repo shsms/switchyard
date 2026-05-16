@@ -232,7 +232,7 @@ pub fn start(
 
 /// Stop the scenario. Clears runtime state and records a
 /// `scenario-stop` event in every microgrid's journal. The
-/// underlying world state (component setpoints, timers installed
+/// underlying site state (component setpoints, timers installed
 /// by previous stage lambdas) is NOT rolled back — callers that
 /// need a clean slate follow this with `(reset-state)` or load a
 /// fresh snapshot.
@@ -380,7 +380,7 @@ pub fn auto_advance_tick(
 /// minute-level stage boundaries promptly without saturating the
 /// interpreter lock the physics tick depends on. Lifetime of the
 /// task is the process; there's no cancel handle since the
-/// registry + world live forever.
+/// registry + site live forever.
 pub fn spawn_auto_advance(
     reg: SharedScenarios,
     ctx: SharedMut<TulispContext>,

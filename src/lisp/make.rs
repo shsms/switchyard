@@ -515,14 +515,14 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
     );
 }
 
-fn connect_successors(world: &MicrogridSite, parent: u64, successors: &Option<Vec<ComponentHandle>>) {
+fn connect_successors(site: &MicrogridSite, parent: u64, successors: &Option<Vec<ComponentHandle>>) {
     if let Some(list) = successors {
         for child in list {
             // Every edge — hidden or not — lands in `MicrogridSite::connections`.
             // Visibility filtering happens at the `connections()` /
             // `hidden_connections()` boundary that drives gRPC and the
             // UI; the aggregation paths walk the unfiltered graph.
-            world.connect(parent, child.id());
+            site.connect(parent, child.id());
         }
     }
 }
@@ -535,10 +535,10 @@ fn ms_to_duration(ms: Option<i64>, default_ms: u64) -> Duration {
 /// `MicrogridSite::next_id()` when omitted. Centralized so casts stay one
 /// place — each make-* used to inline the same `as u64 / next_id()`
 /// pattern.
-fn id_or_next(world: &MicrogridSite, explicit: Option<i64>) -> u64 {
+fn id_or_next(site: &MicrogridSite, explicit: Option<i64>) -> u64 {
     explicit
         .map(|x| x as u64)
-        .unwrap_or_else(|| world.next_id())
+        .unwrap_or_else(|| site.next_id())
 }
 
 /// Register a freshly-built component, then apply any initial runtime
@@ -549,15 +549,15 @@ fn id_or_next(world: &MicrogridSite, explicit: Option<i64>) -> u64 {
 /// same order (health, then telemetry, then command) right after
 /// registration — before any tick or subscriber runs.
 fn register_with_modes<C: crate::sim::SimulatedComponent + 'static>(
-    world: &MicrogridSite,
+    site: &MicrogridSite,
     component: C,
     health: Option<Health>,
     telemetry: Option<TelemetryMode>,
     command: Option<CommandMode>,
 ) -> Result<ComponentHandle, Error> {
     let id = component.id();
-    let h = world.register(component);
-    apply_initial_modes(world, id, health, telemetry, command);
+    let h = site.register(component);
+    apply_initial_modes(site, id, health, telemetry, command);
     Ok(h)
 }
 
@@ -565,33 +565,33 @@ fn register_with_modes<C: crate::sim::SimulatedComponent + 'static>(
 /// display-name override so the gRPC `ListElectricalComponents`
 /// response and the UI's topology endpoint both pick it up. No-op
 /// when the user didn't pass `:name`.
-fn apply_initial_name(world: &MicrogridSite, id: u64, name: Option<String>) {
+fn apply_initial_name(site: &MicrogridSite, id: u64, name: Option<String>) {
     if let Some(n) = name {
-        world.rename(id, n);
+        site.rename(id, n);
     }
 }
 
 /// Apply initial runtime mode args from a plist constructor. Each
-/// `make-*` calls this immediately after `world.register(...)` so a
+/// `make-*` calls this immediately after `site.register(...)` so a
 /// component declared with `:health 'error` is broken from the very
 /// first tick. Symbol → enum parsing happens in the `TryFrom` impls
 /// (`src/lisp/runtime_modes.rs`); by the time we get here the values
 /// are typed.
 fn apply_initial_modes(
-    world: &MicrogridSite,
+    site: &MicrogridSite,
     id: u64,
     health: Option<Health>,
     telemetry: Option<TelemetryMode>,
     command: Option<CommandMode>,
 ) {
     if let Some(h) = health {
-        world.set_health(id, h);
+        site.set_health(id, h);
     }
     if let Some(t) = telemetry {
-        world.set_telemetry_mode(id, t);
+        site.set_telemetry_mode(id, t);
     }
     if let Some(c) = command {
-        world.set_command_mode(id, c);
+        site.set_command_mode(id, c);
     }
 }
 
@@ -612,17 +612,17 @@ mod tests {
         use crate::sim::microgrids::{
             SiteRouter, new_current_microgrid, new_registry,
         };
-        let world = MicrogridSite::new();
+        let site = MicrogridSite::new();
         let mut ctx = TulispContext::new();
         crate::lisp::handle::register(&mut ctx);
-        let router = SiteRouter::new(new_registry(), new_current_microgrid(), world.clone());
+        let router = SiteRouter::new(new_registry(), new_current_microgrid(), site.clone());
         register(&mut ctx, router);
         // Load the `make-*` wrappers + `*-defaults` plists so tests
         // exercise the same wrapper → primitive path config.lisp uses.
         ctx.eval_string(include_str!("../../sim/defaults.lisp"))
             .expect("defaults.lisp");
         ctx.eval_string(src).expect("eval lisp source");
-        (world, ctx)
+        (site, ctx)
     }
 
     /// `:name "..."` on any %make-* lands as a display-name override
@@ -632,21 +632,21 @@ mod tests {
     /// auto-generated default (`category-id`).
     #[test]
     fn name_arg_sets_display_name() {
-        let world = run(r#"(%make-battery :id 200 :name "main-batt")"#);
-        assert_eq!(world.display_name(200).as_deref(), Some("main-batt"));
-        let world = run(r#"(%make-battery :id 201)"#);
-        assert_eq!(world.display_name(201).as_deref(), Some("bat-201"));
+        let site = run(r#"(%make-battery :id 200 :name "main-batt")"#);
+        assert_eq!(site.display_name(200).as_deref(), Some("main-batt"));
+        let site = run(r#"(%make-battery :id 201)"#);
+        assert_eq!(site.display_name(201).as_deref(), Some("bat-201"));
     }
 
     #[test]
     fn primitive_plist_args_set_fields() {
         // %make-battery is the primitive — every field arrives as a
         // plist key. Defaults are applied by wrappers, not here.
-        let world = run(
+        let site = run(
             r#"(%make-battery :id 100 :capacity 50000.0 :initial-soc 20.0
                               :rated-lower -8000.0 :rated-upper 8000.0)"#,
         );
-        let t = world.get(100).unwrap().telemetry(&world);
+        let t = site.get(100).unwrap().telemetry(&site);
         assert_eq!(t.capacity_wh, Some(50_000.0));
         assert!((t.soc_pct.unwrap() - 20.0).abs() < 1e-3);
     }
@@ -657,13 +657,13 @@ mod tests {
         // literal in sim/defaults.lisp) to the caller's args. AsPlist's
         // last-occurrence-wins resolution lets the per-component plist
         // override individual default fields while inheriting the rest.
-        let world = run(r#"(make-battery :id 200 :capacity 50000.0)"#);
-        let t = world.get(200).unwrap().telemetry(&world);
+        let site = run(r#"(make-battery :id 200 :capacity 50000.0)"#);
+        let t = site.get(200).unwrap().telemetry(&site);
         // From per-component plist:
         assert_eq!(t.capacity_wh, Some(50_000.0));
         // From battery-defaults — :health ok carried through.
         assert_eq!(
-            world.runtime_of(200).health,
+            site.runtime_of(200).health,
             crate::sim::runtime::Health::Ok
         );
     }
@@ -673,8 +673,8 @@ mod tests {
         // Calling %make-battery directly bypasses the wrapper's
         // default-prepending, so the BatteryConfig::default values
         // stand for every unset field.
-        let world = run("(%make-battery :id 103)");
-        let t = world.get(103).unwrap().telemetry(&world);
+        let site = run("(%make-battery :id 103)");
+        let t = site.get(103).unwrap().telemetry(&site);
         assert_eq!(t.capacity_wh, Some(92_000.0));
     }
 
@@ -683,9 +683,9 @@ mod tests {
         // Health is an enum carried as a bare symbol through the plist;
         // verify the wrapper-applied default (battery-defaults sets
         // :health ok) lands.
-        let world = run("(make-battery :id 102)");
+        let site = run("(make-battery :id 102)");
         assert_eq!(
-            world.runtime_of(102).health,
+            site.runtime_of(102).health,
             crate::sim::runtime::Health::Ok
         );
     }
@@ -694,9 +694,9 @@ mod tests {
     /// reads it through immediately, no refresh required.
     #[test]
     fn meter_power_constant_reads_through() {
-        let world = run("(%make-meter :id 7 :power 1875.0)");
-        let m = world.get(7).unwrap();
-        assert!((m.aggregate_power_w(&world) - 1875.0).abs() < 1e-3);
+        let site = run("(%make-meter :id 7 :power 1875.0)");
+        let m = site.get(7).unwrap();
+        assert!((m.aggregate_power_w(&site) - 1875.0).abs() < 1e-3);
     }
 
     /// `:power (lambda () N)` produces a dynamic source that the
@@ -706,13 +706,13 @@ mod tests {
     /// return.
     #[test]
     fn meter_power_lambda_resolves_each_refresh() {
-        let (world, mut ctx) = run_with_ctx(r#"(%make-meter :id 8 :power (lambda () 1234.5))"#);
-        let m = world.get(8).unwrap();
+        let (site, mut ctx) = run_with_ctx(r#"(%make-meter :id 8 :power (lambda () 1234.5))"#);
+        let m = site.get(8).unwrap();
         // Pre-refresh: cached fallback.
-        assert_eq!(m.aggregate_power_w(&world), 0.0);
+        assert_eq!(m.aggregate_power_w(&site), 0.0);
         // After refresh_inputs: the lambda's value is cached.
         m.refresh_inputs(&mut ctx);
-        assert!((m.aggregate_power_w(&world) - 1234.5).abs() < 1e-3);
+        assert!((m.aggregate_power_w(&site) - 1234.5).abs() < 1e-3);
     }
 
     /// `:power 'symbol` derefs the variable each refresh — mutating
@@ -720,17 +720,17 @@ mod tests {
     /// drive consumer load curves declaratively.
     #[test]
     fn meter_power_symbol_derefs_each_refresh() {
-        let (world, mut ctx) = run_with_ctx(
+        let (site, mut ctx) = run_with_ctx(
             r#"(setq consumer-power 1500.0)
                (%make-meter :id 9 :power 'consumer-power)"#,
         );
-        let m = world.get(9).unwrap();
+        let m = site.get(9).unwrap();
         m.refresh_inputs(&mut ctx);
-        assert!((m.aggregate_power_w(&world) - 1500.0).abs() < 1e-3);
+        assert!((m.aggregate_power_w(&site) - 1500.0).abs() < 1e-3);
         // Mutate the symbol; next refresh picks up the new value.
         ctx.eval_string("(setq consumer-power 2750.0)").unwrap();
         m.refresh_inputs(&mut ctx);
-        assert!((m.aggregate_power_w(&world) - 2750.0).abs() < 1e-3);
+        assert!((m.aggregate_power_w(&site) - 2750.0).abs() < 1e-3);
     }
 
     /// `:sunlight%` accepts a lambda the same way meter `:power`
@@ -740,13 +740,13 @@ mod tests {
     /// setpoints, observable as a clip on the ramp output.
     #[test]
     fn solar_inverter_sunlight_lambda_clips_setpoint() {
-        let (world, mut ctx) = run_with_ctx(
+        let (site, mut ctx) = run_with_ctx(
             r#"(%make-solar-inverter :id 11
                                     :sunlight% (lambda () 25.0)
                                     :rated-lower -8000.0
                                     :rated-upper 0.0)"#,
         );
-        let inv = world.get(11).unwrap();
+        let inv = site.get(11).unwrap();
         // Refresh runs the lambda → sunlight_pct = 25 →
         // min_avail = -2000 W.
         inv.refresh_inputs(&mut ctx);
@@ -757,9 +757,9 @@ mod tests {
         inv.set_active_setpoint(-5000.0)
             .expect("setpoint within rated");
         let now = chrono::Utc::now();
-        inv.tick(&world, now, Duration::from_millis(100));
+        inv.tick(&site, now, Duration::from_millis(100));
         let p = inv
-            .telemetry(&world)
+            .telemetry(&site)
             .active_power_w
             .expect("active power present");
         assert!(
@@ -775,15 +775,15 @@ mod tests {
     /// silently overwrite the user's intent.
     #[test]
     fn meter_set_power_collapses_to_constant() {
-        let (world, mut ctx) = run_with_ctx(r#"(%make-meter :id 10 :power (lambda () 1000.0))"#);
-        let m = world.get(10).unwrap();
+        let (site, mut ctx) = run_with_ctx(r#"(%make-meter :id 10 :power (lambda () 1000.0))"#);
+        let m = site.get(10).unwrap();
         m.refresh_inputs(&mut ctx);
-        assert!((m.aggregate_power_w(&world) - 1000.0).abs() < 1e-3);
+        assert!((m.aggregate_power_w(&site) - 1000.0).abs() < 1e-3);
 
         // External setter wins; refresh becomes a no-op on the
         // collapsed constant.
         m.set_active_power_override(7777.0);
         m.refresh_inputs(&mut ctx);
-        assert!((m.aggregate_power_w(&world) - 7777.0).abs() < 1e-3);
+        assert!((m.aggregate_power_w(&site) - 7777.0).abs() < 1e-3);
     }
 }

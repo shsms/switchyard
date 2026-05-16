@@ -110,7 +110,7 @@ impl SimulatedComponent for BatteryInverter {
         self.interval
     }
 
-    fn tick(&self, world: &MicrogridSite, now: DateTime<Utc>, dt: Duration) {
+    fn tick(&self, site: &MicrogridSite, now: DateTime<Utc>, dt: Duration) {
         self.bounds.lock().drop_expired(now);
 
         // Active path: clamp the pending command against our OWN
@@ -135,10 +135,10 @@ impl SimulatedComponent for BatteryInverter {
         // child accumulates pushes additively over the tick, so an
         // MxN topology (N inverters → 1 bus → M batteries) settles to
         // the clamped sum of all parent pushes, not last-writer-wins.
-        let healthy: Vec<u64> = world
+        let healthy: Vec<u64> = site
             .children_of(self.id)
             .into_iter()
-            .filter(|id| world.runtime_of(*id).health == Health::Ok)
+            .filter(|id| site.runtime_of(*id).health == Health::Ok)
             .collect();
         if healthy.is_empty() {
             // No child accepted the push → no AC output. Publishing the
@@ -154,7 +154,7 @@ impl SimulatedComponent for BatteryInverter {
             let p_share = commanded_p / n;
             let q_share = commanded_q / n;
             for id in &healthy {
-                if let Some(child) = world.get(*id) {
+                if let Some(child) = site.get(*id) {
                     child.set_dc_active_reactive(p_share, q_share);
                 }
             }
@@ -168,8 +168,8 @@ impl SimulatedComponent for BatteryInverter {
         }
     }
 
-    fn telemetry(&self, world: &MicrogridSite) -> Telemetry {
-        let grid = world.grid_state();
+    fn telemetry(&self, site: &MicrogridSite) -> Telemetry {
+        let grid = site.grid_state();
         // Report the measured AC output, not the internal ramp state —
         // those diverge when a battery clips downstream.
         let p = *self.measured_w.lock();

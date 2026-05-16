@@ -17,7 +17,7 @@
 
 ;; Live timer handles created by `every` and friends. Tracked so that
 ;; reset-state can cancel them on a config reload — otherwise the old
-;; callbacks keep firing into a fresh, unrelated World.
+;; callbacks keep firing into a fresh, unrelated microgrid.
 ;;
 ;; Process-global by design. If two distinct scenario scripts ever
 ;; share a process (rare with the current single-Config design),
