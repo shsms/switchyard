@@ -106,16 +106,27 @@ async fn main() {
     // in a follow-up commit.
     let ui_addr = "127.0.0.1:8801".parse().unwrap();
     let ui_config = config.clone();
-    // Loopback Microgrid client pointed at the first microgrid for
-    // now — B2 generalises this to one loopback per microgrid so
-    // the Dashboard tier can route per-mg tile data via the same
-    // frequenz-microgrid client a downstream control app would use.
-    let (first_id, _, first_port, first_site) = entries[0].clone();
-    let microgrid = ui::new_microgrid_slot();
-    let grpc_url = format!("http://[::1]:{first_port}");
-    ui::spawn_microgrid_loopback(grpc_url, microgrid.clone(), first_site);
+    // One loopback Microgrid client per registered microgrid. The
+    // map keys by id so the upcoming /api/mg/{id}/microgrid/*
+    // routes can look up the right slot directly; the legacy
+    // /api/microgrid/* endpoints continue to read the *first*
+    // microgrid's slot for backward compat until C1 lands.
+    let loopbacks = ui::new_microgrid_loopbacks();
+    let (first_id, _, _first_port, _) = entries[0].clone();
+    let mut primary_slot: Option<ui::SharedMicrogrid> = None;
+    for (id, name, port, site) in &entries {
+        let slot = ui::new_microgrid_slot();
+        let grpc_url = format!("http://[::1]:{port}");
+        ui::spawn_microgrid_loopback(grpc_url, slot.clone(), site.clone());
+        loopbacks.write().insert(*id, slot.clone());
+        if *id == first_id {
+            primary_slot = Some(slot);
+        }
+        log::info!("Microgrid #{id} {name:?} loopback client spawned");
+    }
+    let microgrid = primary_slot.expect("primary loopback slot");
     tokio::spawn(async move {
-        if let Err(e) = ui::serve(ui_addr, ui_config, microgrid).await {
+        if let Err(e) = ui::serve(ui_addr, ui_config, microgrid, loopbacks).await {
             log::error!("UI server exited: {e}");
         }
     });

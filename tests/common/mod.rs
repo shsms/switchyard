@@ -96,8 +96,15 @@ impl TestServer {
             microgrid.clone(),
             config.site(),
         );
+        // Single-microgrid integration test: a one-entry loopbacks
+        // map. /api/microgrid/* keeps reading the primary slot for
+        // backward compat.
+        let loopbacks = ui::new_microgrid_loopbacks();
+        loopbacks
+            .write()
+            .insert(0, microgrid.clone());
         handles.push(tokio::spawn(async move {
-            let _ = ui::serve_with_listener(ui_listener, ui_config, microgrid).await;
+            let _ = ui::serve_with_listener(ui_listener, ui_config, microgrid, loopbacks).await;
         }));
 
         // Single-microgrid integration test: pin the gRPC frontend

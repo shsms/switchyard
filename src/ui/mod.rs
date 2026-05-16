@@ -123,6 +123,24 @@ pub fn new_microgrid_slot() -> SharedMicrogrid {
     })
 }
 
+/// Enterprise map from microgrid id to its loopback state. Each
+/// `MicrogridServer` registered in `Config::microgrids` gets one
+/// entry — the supervisor for each entry pulls samples through
+/// the matching microgrid's gRPC server and feeds the entry's
+/// per-stream cache.
+///
+/// `BTreeMap` keeps the entries ordered by id so the UI's
+/// Microgrids list and `/api/mg/{id}/microgrid/latest` lookups
+/// stay deterministic. Behind an `Arc<RwLock>` so handlers can
+/// take a read lock for lookups without blocking new-microgrid
+/// inserts coming from the create-microgrid endpoint.
+pub type MicrogridLoopbacks =
+    std::sync::Arc<parking_lot::RwLock<std::collections::BTreeMap<u64, SharedMicrogrid>>>;
+
+pub fn new_microgrid_loopbacks() -> MicrogridLoopbacks {
+    std::sync::Arc::new(parking_lot::RwLock::new(std::collections::BTreeMap::new()))
+}
+
 /// Spawn a tokio task that constructs a [`Microgrid`] pointed at
 /// `grpc_url`, kicks off forwarders for the aggregated streams the
 /// Dashboard cares about, and stores the handle in `slot` once the
@@ -505,8 +523,9 @@ pub async fn serve(
     addr: SocketAddr,
     config: Config,
     microgrid: SharedMicrogrid,
+    loopbacks: MicrogridLoopbacks,
 ) -> Result<(), std::io::Error> {
-    let app = router(config, microgrid);
+    let app = router(config, microgrid, loopbacks);
     let listener = tokio::net::TcpListener::bind(addr).await?;
     log::info!("Switchyard UI listening on http://{addr}");
     axum::serve(listener, app).await
@@ -519,11 +538,12 @@ pub async fn serve_with_listener(
     listener: tokio::net::TcpListener,
     config: Config,
     microgrid: SharedMicrogrid,
+    loopbacks: MicrogridLoopbacks,
 ) -> Result<(), std::io::Error> {
-    axum::serve(listener, router(config, microgrid)).await
+    axum::serve(listener, router(config, microgrid, loopbacks)).await
 }
 
-fn router(config: Config, microgrid: SharedMicrogrid) -> Router {
+fn router(config: Config, microgrid: SharedMicrogrid, loopbacks: MicrogridLoopbacks) -> Router {
     Router::new()
         .route("/", get(index))
         .route("/assets/{*path}", get(asset))
@@ -558,6 +578,7 @@ fn router(config: Config, microgrid: SharedMicrogrid) -> Router {
         .route("/api/scenarios/{name}/jump/{idx}", post(scenarios_jump))
         .route("/ws/events", get(events_ws))
         .layer(Extension(microgrid))
+        .layer(Extension(loopbacks))
         .with_state(config)
 }
 
