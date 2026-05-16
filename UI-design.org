@@ -512,7 +512,7 @@ new endpoints are control. Mirror in =swctl=:
 
 Acceptance: round-trip via curl + via swctl.
 
-** TODO B4. Ship a starter scenario library
+** DONE B4. Ship a starter scenario library
 
 Pre-registered out of the box, picked from the UI dropdown
 without writing lisp. Each is two-to-four stages:
