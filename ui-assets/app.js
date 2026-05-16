@@ -2355,9 +2355,10 @@ function openWebSocket(onTopologyChanged) {
       }
       if (ev.kind === "sample") {
         liveCharts.pushSample(ev.id, ev.metric, ev.ts_ms, ev.value);
-        batteryRows.applySample(ev);
-        inverterRows.applySample(ev);
-        tier5Rows.applySample(ev);
+        batteryPairs.applySample(ev);
+        pvRows.applySample(ev);
+        evRows.applySample(ev);
+        chpRows.applySample(ev);
         gridFrequency.applySample(ev);
       } else if (ev.kind === "microgrid_sample") {
         dashboardTiles.applySample(ev);
@@ -2519,127 +2520,228 @@ const dashboardTiles = (() => {
   };
 })();
 
-// ─── Tier 2: per-battery rows ──────────────────────────────────────────────
-//
-// One row per visible battery under the Battery pool tile. Refreshed
-// on every /api/topology fetch (initial boot + every topology_changed
-// WS event), live-updated by routing the per-component `sample` WS
-// frames through applySample. Click a row -> jump to Topology mode
-// with that node selected, so an operator who spots a battery
-// drifting can drill in without leaving the keyboard.
-const batteryRows = (() => {
-  const data = new Map(); // id -> { name, health, soc, power_w }
-  let order = []; // ids sorted ascending by SoC (nulls last)
-  const TRACKED = new Set(["soc_pct", "dc_power_w"]);
+// Shared formatters reused by all per-component dashboard rows.
+function fmtRowPower(v) {
+  if (v == null || !Number.isFinite(v)) return "—";
+  const a = Math.abs(v);
+  if (a >= 1e6) return `${(v / 1e6).toFixed(2)} MW`;
+  if (a >= 1e3) return `${(v / 1e3).toFixed(2)} kW`;
+  return `${v.toFixed(1)} W`;
+}
+function fmtRowSoc(v) {
+  return v == null || !Number.isFinite(v) ? "—" : `${v.toFixed(1)}%`;
+}
+function socClass(v) {
+  if (v == null || !Number.isFinite(v)) return "muted";
+  if (v < 10 || v > 95) return "soc-warn";
+  return "soc-ok";
+}
+function invPinned(d) {
+  if (d.measured == null) return false;
+  const span = Math.max(Math.abs(d.upper ?? 0), Math.abs(d.lower ?? 0), 1);
+  const tol = 0.005 * span;
+  return (
+    (d.upper != null && d.measured >= d.upper - tol) ||
+    (d.lower != null && d.measured <= d.lower + tol)
+  );
+}
 
-  function fmtPower(v) {
-    if (v == null || !Number.isFinite(v)) return "—";
-    const a = Math.abs(v);
-    if (a >= 1e6) return `${(v / 1e6).toFixed(2)} MW`;
-    if (a >= 1e3) return `${(v / 1e3).toFixed(2)} kW`;
-    return `${v.toFixed(1)} W`;
-  }
-  function fmtSoc(v) {
-    return v == null || !Number.isFinite(v) ? "—" : `${v.toFixed(1)}%`;
-  }
-  function socClass(v) {
-    if (v == null || !Number.isFinite(v)) return "muted";
-    if (v < 10 || v > 95) return "soc-warn";
-    return "soc-ok";
-  }
+// ─── Battery pairs: battery + paired battery-inverter, one row each ───────
+//
+// Each row pairs a battery (`tier2-row` CSS, left side) with the
+// battery inverter wired immediately upstream of it (`tier3-row`
+// CSS, right side). The pairing is read off the topology snapshot's
+// connections list: walk parents of each visible battery, keep the
+// first inverter with subtype "battery". Multi-battery inverters
+// produce one row per battery; bare batteries with no inverter
+// upstream still render (right cell muted).
+//
+// Refreshed on every /api/topology fetch + live-updated via
+// applySample. Clicking the battery cell selects the battery;
+// clicking the inverter cell selects the inverter — both jump
+// the canvas to Topology with that node selected.
+const batteryPairs = (() => {
+  // id -> { battery: {…}, inverterId?: u64 }
+  const pairs = new Map();
+  // inverterId -> { name, subtype, health, measured, lower, upper }
+  const inverters = new Map();
+  // battery id -> backref to the inverter id it pairs with (for
+  // sample dispatch). Keeps lookup O(1) on the WS hot path.
+  const invByBattery = new Map();
+  let order = []; // battery ids, sort by SoC ascending then id
+  const TRACKED_BATTERY = new Set(["soc_pct", "dc_power_w"]);
+  const TRACKED_INVERTER = new Set([
+    "active_power_w",
+    "active_power_lower_bound_w",
+    "active_power_upper_bound_w",
+  ]);
+
   function sortKey(id) {
-    const s = data.get(id)?.soc;
+    const s = pairs.get(id)?.battery?.soc;
     return s == null ? Infinity : s;
   }
   function resort() {
-    order = [...data.keys()].sort((a, b) => sortKey(a) - sortKey(b) || a - b);
+    order = [...pairs.keys()].sort((a, b) => sortKey(a) - sortKey(b) || a - b);
   }
   function render() {
-    const grid = document.getElementById("tier-2-rows");
-    const section = grid?.closest(".dash-tier-2");
+    const grid = document.getElementById("battery-rows");
+    const section = grid?.closest(".dash-batteries");
     if (!grid || !section) return;
-    section.hidden = data.size === 0;
+    section.hidden = pairs.size === 0;
     grid.innerHTML = "";
     for (const id of order) {
-      const d = data.get(id);
-      const row = document.createElement("div");
-      row.className = "tier2-row";
-      row.dataset.id = id;
-      const soc = d.soc;
-      const socPct = soc == null ? 0 : Math.max(0, Math.min(100, soc));
-      const healthCls = d.health === "ok" ? "health-ok" : "health-bad";
-      row.innerHTML = `
-        <span class="tier2-name">${d.name}</span>
-        <span class="tier2-health ${healthCls}">${d.health}</span>
+      const { battery: b, inverterId } = pairs.get(id);
+      const inv = inverterId != null ? inverters.get(inverterId) : null;
+      const wrap = document.createElement("div");
+      wrap.className = "bat-pair";
+      const socPct = b.soc == null ? 0 : Math.max(0, Math.min(100, b.soc));
+      const bhCls = b.health === "ok" ? "health-ok" : "health-bad";
+      const batCell = document.createElement("div");
+      batCell.className = "tier2-row";
+      batCell.dataset.id = id;
+      batCell.innerHTML = `
+        <span class="tier2-name">${b.name}</span>
+        <span class="tier2-health ${bhCls}">${b.health}</span>
         <span class="tier2-soc-wrap">
-          <span class="tier2-soc-bar ${socClass(soc)}" style="width:${socPct.toFixed(1)}%"></span>
-          <span class="tier2-soc-text">${fmtSoc(soc)}</span>
+          <span class="tier2-soc-bar ${socClass(b.soc)}" style="width:${socPct.toFixed(1)}%"></span>
+          <span class="tier2-soc-text">${fmtRowSoc(b.soc)}</span>
         </span>
-        <span class="tier2-power">${fmtPower(d.power_w)}</span>
+        <span class="tier2-power">${fmtRowPower(b.power_w)}</span>
       `;
-      row.addEventListener("click", () => {
-        localStorage.setItem(MODE_KEY, "topology");
-        applyMode("topology");
-        topology.select([id]);
-        const c = topology.get(id);
-        if (c) showComponent(c);
-      });
-      grid.appendChild(row);
+      batCell.addEventListener("click", () => jumpToTopology(id));
+      wrap.appendChild(batCell);
+      const invCell = document.createElement("div");
+      invCell.className = "tier3-row bat-pair-inv";
+      if (inv) {
+        invCell.dataset.id = inverterId;
+        if (invPinned(inv)) invCell.classList.add("pinned");
+        const ihCls = inv.health === "ok" ? "health-ok" : "health-bad";
+        invCell.innerHTML = `
+          <span class="tier3-name">${inv.name}</span>
+          <span class="tier3-subtype muted">${inv.subtype || "—"}</span>
+          <span class="tier3-health ${ihCls}">${inv.health}</span>
+          ${envelopeBar(inv.lower, inv.measured, inv.upper, fmtRowPower)}
+        `;
+        invCell.addEventListener("click", () => jumpToTopology(inverterId));
+      } else {
+        invCell.classList.add("muted");
+        invCell.innerHTML = `<span class="tier3-name muted">no battery inverter</span>`;
+      }
+      wrap.appendChild(invCell);
+      grid.appendChild(wrap);
     }
   }
-  async function seedFromHistory(id) {
-    // Best-effort initial paint. window_s=10 keeps the response tiny;
-    // the last sample is all we need.
+  async function seedBattery(id) {
     try {
       const [soc, dc] = await Promise.all([
         fetch(`${mgPath("history")}?id=${id}&metric=soc_pct&window_s=10`).then((r) => r.json()),
         fetch(`${mgPath("history")}?id=${id}&metric=dc_power_w&window_s=10`).then((r) => r.json()),
       ]);
-      const d = data.get(id);
-      if (!d) return;
-      const lastSoc = soc.samples?.length ? soc.samples.at(-1)[1] : null;
-      const lastDc = dc.samples?.length ? dc.samples.at(-1)[1] : null;
-      d.soc = lastSoc;
-      d.power_w = lastDc;
-    } catch (_) {
-      // Live WS samples will fill the gap.
-    }
+      const p = pairs.get(id);
+      if (!p) return;
+      p.battery.soc = soc.samples?.at(-1)?.[1] ?? null;
+      p.battery.power_w = dc.samples?.at(-1)?.[1] ?? null;
+    } catch (_) {}
+  }
+  async function seedInverter(id) {
+    try {
+      const [m, lo, hi] = await Promise.all([
+        fetch(`${mgPath("history")}?id=${id}&metric=active_power_w&window_s=10`).then((r) => r.json()),
+        fetch(`${mgPath("history")}?id=${id}&metric=active_power_lower_bound_w&window_s=10`).then((r) => r.json()),
+        fetch(`${mgPath("history")}?id=${id}&metric=active_power_upper_bound_w&window_s=10`).then((r) => r.json()),
+      ]);
+      const inv = inverters.get(id);
+      if (!inv) return;
+      inv.measured = m.samples?.at(-1)?.[1] ?? null;
+      inv.lower = lo.samples?.at(-1)?.[1] ?? null;
+      inv.upper = hi.samples?.at(-1)?.[1] ?? null;
+    } catch (_) {}
   }
   return {
-    async refresh(components) {
-      const batteries = (components || []).filter(
+    async refresh(snapshot) {
+      const components = snapshot?.components || [];
+      const allConns = [
+        ...(snapshot?.connections || []),
+        ...(snapshot?.hidden_connections || []),
+      ];
+      const byId = new Map(components.map((c) => [c.id, c]));
+      // Map each battery id → its first parent that's a battery
+      // inverter (walking edges where dest == battery id). Multi-
+      // parent batteries land on the first matching parent in
+      // edge order; same heuristic the loopback's BatteryPool uses.
+      function findInverter(batteryId) {
+        for (const [from, to] of allConns) {
+          if (to !== batteryId) continue;
+          const parent = byId.get(from);
+          if (parent?.category === "inverter" && parent.subtype === "battery") {
+            return parent.id;
+          }
+        }
+        return null;
+      }
+      const nextPairs = new Map();
+      const nextInverters = new Map();
+      const nextInvByBattery = new Map();
+      const batteries = components.filter(
         (c) => c.category === "battery" && !c.hidden,
       );
-      const newData = new Map();
-      for (const c of batteries) {
-        const prev = data.get(c.id);
-        newData.set(c.id, {
-          name: c.name,
-          health: c.health,
-          soc: prev?.soc ?? null,
-          power_w: prev?.power_w ?? null,
+      for (const b of batteries) {
+        const inverterId = findInverter(b.id);
+        const prev = pairs.get(b.id);
+        nextPairs.set(b.id, {
+          battery: {
+            name: b.name,
+            health: b.health,
+            soc: prev?.battery?.soc ?? null,
+            power_w: prev?.battery?.power_w ?? null,
+          },
+          inverterId,
         });
+        if (inverterId != null) {
+          const invMeta = byId.get(inverterId);
+          const prevInv = inverters.get(inverterId);
+          nextInverters.set(inverterId, {
+            name: invMeta?.name ?? `#${inverterId}`,
+            subtype: invMeta?.subtype ?? null,
+            health: invMeta?.health ?? "unknown",
+            measured: prevInv?.measured ?? null,
+            lower: prevInv?.lower ?? null,
+            upper: prevInv?.upper ?? null,
+          });
+          nextInvByBattery.set(b.id, inverterId);
+        }
       }
-      data.clear();
-      for (const [k, v] of newData) data.set(k, v);
-      // Initial paint with whatever cached values we already had, then
-      // backfill from /api/history and re-render once values arrive.
+      pairs.clear();
+      for (const [k, v] of nextPairs) pairs.set(k, v);
+      inverters.clear();
+      for (const [k, v] of nextInverters) inverters.set(k, v);
+      invByBattery.clear();
+      for (const [k, v] of nextInvByBattery) invByBattery.set(k, v);
       resort();
       render();
-      await Promise.all(batteries.map((c) => seedFromHistory(c.id)));
+      await Promise.all([
+        ...batteries.map((b) => seedBattery(b.id)),
+        ...[...inverters.keys()].map((id) => seedInverter(id)),
+      ]);
       resort();
       render();
     },
     applySample(ev) {
-      if (!TRACKED.has(ev.metric)) return;
-      const d = data.get(ev.id);
-      if (!d) return;
-      if (ev.metric === "soc_pct") d.soc = ev.value;
-      else if (ev.metric === "dc_power_w") d.power_w = ev.value;
-      // SoC changes shift sort order; power changes don't. Resort only
-      // when worth it.
-      if (ev.metric === "soc_pct") resort();
-      render();
+      if (TRACKED_BATTERY.has(ev.metric)) {
+        const p = pairs.get(ev.id);
+        if (!p) return;
+        if (ev.metric === "soc_pct") p.battery.soc = ev.value;
+        else if (ev.metric === "dc_power_w") p.battery.power_w = ev.value;
+        if (ev.metric === "soc_pct") resort();
+        render();
+      } else if (TRACKED_INVERTER.has(ev.metric)) {
+        const inv = inverters.get(ev.id);
+        if (!inv) return;
+        if (ev.metric === "active_power_w") inv.measured = ev.value;
+        else if (ev.metric === "active_power_lower_bound_w") inv.lower = ev.value;
+        else if (ev.metric === "active_power_upper_bound_w") inv.upper = ev.value;
+        render();
+      }
     },
   };
 })();
@@ -2679,16 +2781,15 @@ function envelopeBar(lower, current, upper, fmtValue) {
   `;
 }
 
-// ─── Tier 3: per-inverter rows ─────────────────────────────────────────────
+// ─── PV inverter rows ─────────────────────────────────────────────────────
 //
-// One row per visible inverter under the PV pool tile. Measured AC
-// active power gets the highlight when it clips against either
-// envelope bound — that's the operator-visible signal that the
-// upstream control app's setpoint command is being held back by the
-// inverter's own clamp. Setpoint + request-lifetime columns are
-// deferred (they require a /api/setpoints lookup per row); they
-// fold in alongside F3's envelope visual.
-const inverterRows = (() => {
+// One row per visible solar inverter. Measured AC active power
+// highlights when it clips against either envelope bound — same
+// operator-visible signal that the upstream control app's setpoint
+// is being held back by the inverter's own clamp. Battery inverters
+// are intentionally absent from this section; they pair with their
+// batteries in the Batteries section above.
+const pvRows = (() => {
   const data = new Map(); // id -> { name, subtype, health, measured, lower, upper }
   let order = [];
   const TRACKED = new Set([
@@ -2697,47 +2798,19 @@ const inverterRows = (() => {
     "active_power_upper_bound_w",
   ]);
 
-  function fmtPower(v) {
-    if (v == null || !Number.isFinite(v)) return "—";
-    const a = Math.abs(v);
-    if (a >= 1e6) return `${(v / 1e6).toFixed(2)} MW`;
-    if (a >= 1e3) return `${(v / 1e3).toFixed(2)} kW`;
-    return `${v.toFixed(1)} W`;
-  }
-  function pinned(d) {
-    if (d.measured == null) return false;
-    // 0.5 % of the broader envelope side — tight enough to flag a
-    // genuine clip without false-positiving on a measurement that's
-    // merely near the limit.
-    const span = Math.max(
-      Math.abs(d.upper ?? 0),
-      Math.abs(d.lower ?? 0),
-      1,
-    );
-    const tol = 0.005 * span;
-    return (
-      (d.upper != null && d.measured >= d.upper - tol) ||
-      (d.lower != null && d.measured <= d.lower + tol)
-    );
-  }
   function resort() {
-    // Pinned first, then by category subtype + id so the listing is
-    // stable across paints.
     order = [...data.keys()].sort((a, b) => {
       const A = data.get(a);
       const B = data.get(b);
-      const pa = pinned(A) ? 0 : 1;
-      const pb = pinned(B) ? 0 : 1;
+      const pa = invPinned(A) ? 0 : 1;
+      const pb = invPinned(B) ? 0 : 1;
       if (pa !== pb) return pa - pb;
-      const sa = A.subtype || "";
-      const sb = B.subtype || "";
-      if (sa !== sb) return sa.localeCompare(sb);
       return a - b;
     });
   }
   function render() {
-    const grid = document.getElementById("tier-3-rows");
-    const section = grid?.closest(".dash-tier-3");
+    const grid = document.getElementById("pv-rows");
+    const section = grid?.closest(".dash-pv");
     if (!grid || !section) return;
     section.hidden = data.size === 0;
     grid.innerHTML = "";
@@ -2746,21 +2819,15 @@ const inverterRows = (() => {
       const row = document.createElement("div");
       row.className = "tier3-row";
       row.dataset.id = id;
-      if (pinned(d)) row.classList.add("pinned");
+      if (invPinned(d)) row.classList.add("pinned");
       const healthCls = d.health === "ok" ? "health-ok" : "health-bad";
       row.innerHTML = `
         <span class="tier3-name">${d.name}</span>
         <span class="tier3-subtype muted">${d.subtype || "—"}</span>
         <span class="tier3-health ${healthCls}">${d.health}</span>
-        ${envelopeBar(d.lower, d.measured, d.upper, fmtPower)}
+        ${envelopeBar(d.lower, d.measured, d.upper, fmtRowPower)}
       `;
-      row.addEventListener("click", () => {
-        localStorage.setItem(MODE_KEY, "topology");
-        applyMode("topology");
-        topology.select([id]);
-        const c = topology.get(id);
-        if (c) showComponent(c);
-      });
+      row.addEventListener("click", () => jumpToTopology(id));
       grid.appendChild(row);
     }
   }
@@ -2776,14 +2843,13 @@ const inverterRows = (() => {
       d.measured = m.samples?.at(-1)?.[1] ?? null;
       d.lower = lo.samples?.at(-1)?.[1] ?? null;
       d.upper = hi.samples?.at(-1)?.[1] ?? null;
-    } catch (_) {
-      // Live samples will fill in.
-    }
+    } catch (_) {}
   }
   return {
-    async refresh(components) {
-      const inverters = (components || []).filter(
-        (c) => c.category === "inverter" && !c.hidden,
+    async refresh(snapshot) {
+      const components = snapshot?.components || [];
+      const inverters = components.filter(
+        (c) => c.category === "inverter" && c.subtype === "solar" && !c.hidden,
       );
       const next = new Map();
       for (const c of inverters) {
@@ -2812,104 +2878,69 @@ const inverterRows = (() => {
       if (ev.metric === "active_power_w") d.measured = ev.value;
       else if (ev.metric === "active_power_lower_bound_w") d.lower = ev.value;
       else if (ev.metric === "active_power_upper_bound_w") d.upper = ev.value;
-      // Pinning may change on any of these, which affects sort order.
       resort();
       render();
     },
   };
 })();
 
-// ─── Tier 5: EV charger + CHP rows ─────────────────────────────────────────
+// ─── EV charger rows ──────────────────────────────────────────────────────
 //
-// Smaller categories with one row each by default. EV rows mirror
-// the battery shape (SoC bar + DC W); CHP shows the AC active-power
-// reading. Both routes click -> Topology + select like F1/F2.
-const tier5Rows = (() => {
-  const data = new Map(); // id -> { name, category, health, soc?, power_w }
-  const TRACKED = new Set(["soc_pct", "dc_power_w", "active_power_w"]);
+// EV rows mirror the battery row shape: name + health pill + SoC bar
+// + DC power. Click → jump to Topology with the EV selected.
+const evRows = (() => {
+  const data = new Map(); // id -> { name, health, soc, power_w }
+  const TRACKED = new Set(["soc_pct", "dc_power_w"]);
 
-  function fmtPower(v) {
-    if (v == null || !Number.isFinite(v)) return "—";
-    const a = Math.abs(v);
-    if (a >= 1e6) return `${(v / 1e6).toFixed(2)} MW`;
-    if (a >= 1e3) return `${(v / 1e3).toFixed(2)} kW`;
-    return `${v.toFixed(1)} W`;
-  }
   function render() {
-    const grid = document.getElementById("tier-5-rows");
-    const section = grid?.closest(".dash-tier-5");
+    const grid = document.getElementById("ev-rows");
+    const section = grid?.closest(".dash-ev");
     if (!grid || !section) return;
     section.hidden = data.size === 0;
     grid.innerHTML = "";
-    // EV first (it has a richer row), then CHP.
-    const ids = [...data.keys()].sort((a, b) => {
-      const A = data.get(a).category;
-      const B = data.get(b).category;
-      if (A !== B) return A.localeCompare(B);
-      return a - b;
-    });
+    const ids = [...data.keys()].sort((a, b) => a - b);
     for (const id of ids) {
       const d = data.get(id);
       const row = document.createElement("div");
-      row.className = `tier5-row cat-${d.category}`;
+      row.className = "tier5-row cat-ev-charger";
       row.dataset.id = id;
       const healthCls = d.health === "ok" ? "health-ok" : "health-bad";
       const socPct = d.soc == null ? 0 : Math.max(0, Math.min(100, d.soc));
-      const socBlock =
-        d.category === "ev-charger"
-          ? `<span class="tier5-soc-wrap">
-               <span class="tier5-soc-bar" style="width:${socPct.toFixed(1)}%"></span>
-               <span class="tier5-soc-text">${d.soc == null ? "—" : d.soc.toFixed(1) + "%"}</span>
-             </span>`
-          : `<span class="tier5-soc-wrap muted">—</span>`;
       row.innerHTML = `
         <span class="tier5-name">${d.name}</span>
-        <span class="tier5-cat muted">${d.category}</span>
+        <span class="tier5-cat muted">ev-charger</span>
         <span class="tier5-health ${healthCls}">${d.health}</span>
-        ${socBlock}
-        <span class="tier5-power">${fmtPower(d.power_w)}</span>
+        <span class="tier5-soc-wrap">
+          <span class="tier5-soc-bar" style="width:${socPct.toFixed(1)}%"></span>
+          <span class="tier5-soc-text">${fmtRowSoc(d.soc)}</span>
+        </span>
+        <span class="tier5-power">${fmtRowPower(d.power_w)}</span>
       `;
-      row.addEventListener("click", () => {
-        localStorage.setItem(MODE_KEY, "topology");
-        applyMode("topology");
-        topology.select([id]);
-        const c = topology.get(id);
-        if (c) showComponent(c);
-      });
+      row.addEventListener("click", () => jumpToTopology(id));
       grid.appendChild(row);
     }
   }
-  async function seedFromHistory(id, category) {
-    const powerMetric = category === "chp" ? "active_power_w" : "dc_power_w";
-    const calls = [
-      fetch(`${mgPath("history")}?id=${id}&metric=${powerMetric}&window_s=10`).then((r) => r.json()),
-    ];
-    if (category === "ev-charger") {
-      calls.push(
-        fetch(`${mgPath("history")}?id=${id}&metric=soc_pct&window_s=10`).then((r) => r.json()),
-      );
-    }
+  async function seedFromHistory(id) {
     try {
-      const [p, soc] = await Promise.all(calls);
+      const [p, soc] = await Promise.all([
+        fetch(`${mgPath("history")}?id=${id}&metric=dc_power_w&window_s=10`).then((r) => r.json()),
+        fetch(`${mgPath("history")}?id=${id}&metric=soc_pct&window_s=10`).then((r) => r.json()),
+      ]);
       const d = data.get(id);
       if (!d) return;
       d.power_w = p.samples?.at(-1)?.[1] ?? null;
-      if (soc) d.soc = soc.samples?.at(-1)?.[1] ?? null;
-    } catch (_) {
-      // Live samples will fill in.
-    }
+      d.soc = soc.samples?.at(-1)?.[1] ?? null;
+    } catch (_) {}
   }
   return {
-    async refresh(components) {
-      const rows = (components || []).filter(
-        (c) => (c.category === "ev-charger" || c.category === "chp") && !c.hidden,
-      );
+    async refresh(snapshot) {
+      const components = snapshot?.components || [];
+      const rows = components.filter((c) => c.category === "ev-charger" && !c.hidden);
       const next = new Map();
       for (const c of rows) {
         const prev = data.get(c.id);
         next.set(c.id, {
           name: c.name,
-          category: c.category,
           health: c.health,
           soc: prev?.soc ?? null,
           power_w: prev?.power_w ?? null,
@@ -2918,17 +2949,86 @@ const tier5Rows = (() => {
       data.clear();
       for (const [k, v] of next) data.set(k, v);
       render();
-      await Promise.all(rows.map((c) => seedFromHistory(c.id, c.category)));
+      await Promise.all(rows.map((c) => seedFromHistory(c.id)));
       render();
     },
     applySample(ev) {
       if (!TRACKED.has(ev.metric)) return;
       const d = data.get(ev.id);
       if (!d) return;
-      if (ev.metric === "soc_pct" && d.category === "ev-charger") d.soc = ev.value;
-      else if (ev.metric === "dc_power_w" && d.category === "ev-charger") d.power_w = ev.value;
-      else if (ev.metric === "active_power_w" && d.category === "chp") d.power_w = ev.value;
-      else return;
+      if (ev.metric === "soc_pct") d.soc = ev.value;
+      else if (ev.metric === "dc_power_w") d.power_w = ev.value;
+      render();
+    },
+  };
+})();
+
+// ─── CHP rows ─────────────────────────────────────────────────────────────
+//
+// CHP rows show name + health + AC active power; no SoC field. The
+// AC reading is signed (-ve when generating into the grid).
+const chpRows = (() => {
+  const data = new Map(); // id -> { name, health, power_w }
+  const TRACKED = new Set(["active_power_w"]);
+
+  function render() {
+    const grid = document.getElementById("chp-rows");
+    const section = grid?.closest(".dash-chp");
+    if (!grid || !section) return;
+    section.hidden = data.size === 0;
+    grid.innerHTML = "";
+    const ids = [...data.keys()].sort((a, b) => a - b);
+    for (const id of ids) {
+      const d = data.get(id);
+      const row = document.createElement("div");
+      row.className = "tier5-row cat-chp";
+      row.dataset.id = id;
+      const healthCls = d.health === "ok" ? "health-ok" : "health-bad";
+      row.innerHTML = `
+        <span class="tier5-name">${d.name}</span>
+        <span class="tier5-cat muted">chp</span>
+        <span class="tier5-health ${healthCls}">${d.health}</span>
+        <span class="tier5-soc-wrap muted">—</span>
+        <span class="tier5-power">${fmtRowPower(d.power_w)}</span>
+      `;
+      row.addEventListener("click", () => jumpToTopology(id));
+      grid.appendChild(row);
+    }
+  }
+  async function seedFromHistory(id) {
+    try {
+      const p = await fetch(
+        `${mgPath("history")}?id=${id}&metric=active_power_w&window_s=10`,
+      ).then((r) => r.json());
+      const d = data.get(id);
+      if (!d) return;
+      d.power_w = p.samples?.at(-1)?.[1] ?? null;
+    } catch (_) {}
+  }
+  return {
+    async refresh(snapshot) {
+      const components = snapshot?.components || [];
+      const rows = components.filter((c) => c.category === "chp" && !c.hidden);
+      const next = new Map();
+      for (const c of rows) {
+        const prev = data.get(c.id);
+        next.set(c.id, {
+          name: c.name,
+          health: c.health,
+          power_w: prev?.power_w ?? null,
+        });
+      }
+      data.clear();
+      for (const [k, v] of next) data.set(k, v);
+      render();
+      await Promise.all(rows.map((c) => seedFromHistory(c.id)));
+      render();
+    },
+    applySample(ev) {
+      if (!TRACKED.has(ev.metric)) return;
+      const d = data.get(ev.id);
+      if (!d) return;
+      d.power_w = ev.value;
       render();
     },
   };
@@ -3086,12 +3186,7 @@ async function openFormulaPanel(stream) {
     inspectEl.querySelector(".formula-tree")?.addEventListener("click", (ev) => {
       const t = ev.target.closest(".formula-ref");
       if (!t) return;
-      const id = Number(t.dataset.id);
-      localStorage.setItem(MODE_KEY, "topology");
-      applyMode("topology");
-      topology.select([id]);
-      const c = topology.get(id);
-      if (c) showComponent(c);
+      jumpToTopology(Number(t.dataset.id));
     });
   } catch (_) {
     // Best-effort.
@@ -3845,6 +3940,20 @@ function applyMode(mode) {
   if (mode === "scenarios") scenariosPanel.refresh();
 }
 
+// Jump to the topology subview within the current mode and select
+// `id` on the canvas. Used by dashboard tier rows + the formula-tree
+// chip clicks. Pre-multi-mode this was a flat mode switch; now the
+// mode (`microgrids` / `scenarios`) stays put and we just flip the
+// subview pref + re-apply.
+function jumpToTopology(id) {
+  const mode = localStorage.getItem(MODE_KEY) || "microgrids";
+  localStorage.setItem(MG_SUBVIEW_KEY, "topology");
+  applyMode(mode);
+  topology.select([id]);
+  const c = topology.get(id);
+  if (c) showComponent(c);
+}
+
 function selectMicrogrid(id) {
   if (id == null) {
     localStorage.removeItem(MG_SELECTED_KEY);
@@ -3946,9 +4055,10 @@ async function refreshTopology() {
     // signals + a hot-reload's WS topology_changed nudge
     // already drives a refresh.
     pulseBar.applyTopology(data.components || [], data.graph_status);
-    batteryRows.refresh(data.components || []);
-    inverterRows.refresh(data.components || []);
-    tier5Rows.refresh(data.components || []);
+    batteryPairs.refresh(data);
+    pvRows.refresh(data);
+    evRows.refresh(data);
+    chpRows.refresh(data);
     gridFrequency.applyTopology(data);
   } catch (err) {
     setStatus(`error: ${err.message}`, "error");

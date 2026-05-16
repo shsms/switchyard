@@ -144,17 +144,21 @@
           <svg class="dash-spark" data-stream="producer_power" viewBox="0 0 100 30" preserveAspectRatio="none"></svg>
           <div class="dash-meta muted">all generation (PV + CHP + …) · <code>producer_formula</code></div>
         </section>
-        <section class="dash-section dash-tier-2" hidden>
+        <section class="dash-section dash-batteries" hidden>
           <h2 class="tier-heading">Batteries</h2>
-          <div id="tier-2-rows" class="tier-rows"></div>
+          <div id="battery-rows" class="tier-rows"></div>
         </section>
-        <section class="dash-section dash-tier-3" hidden>
-          <h2 class="tier-heading">Inverters</h2>
-          <div id="tier-3-rows" class="tier-rows"></div>
+        <section class="dash-section dash-pv" hidden>
+          <h2 class="tier-heading">PV inverters</h2>
+          <div id="pv-rows" class="tier-rows"></div>
         </section>
-        <section class="dash-section dash-tier-5" hidden>
-          <h2 class="tier-heading">EV / CHP</h2>
-          <div id="tier-5-rows" class="tier-rows"></div>
+        <section class="dash-section dash-ev" hidden>
+          <h2 class="tier-heading">EV chargers</h2>
+          <div id="ev-rows" class="tier-rows"></div>
+        </section>
+        <section class="dash-section dash-chp" hidden>
+          <h2 class="tier-heading">CHP</h2>
+          <div id="chp-rows" class="tier-rows"></div>
         </section>
       </div>
       <div id="splitter" title="Drag to resize"></div>
@@ -260,9 +264,9 @@
         <ul class="help-list">
           <li><strong>Pool tiles</strong> (top row) — grid, battery pool, PV, consumer, producer. Each tile renders a 60-second sparkline + the formula tree on click.</li>
           <li><strong>Battery pool envelope</strong> — lower → upper bounds line under the pool reading, derived from <code>BatteryPool::power_bounds</code>.</li>
-          <li><strong>Tier-2 rows</strong> (Batteries) — name + health pill + SoC bar + DC W. Rows sort SoC ascending. Click a row to flip to Topology with the node selected.</li>
-          <li><strong>Tier-3 rows</strong> (Inverters) — name + subtype + health + envelope visual (lower / measured / upper). Rows pinned at either bound float to the top.</li>
-          <li><strong>Tier-5 rows</strong> (EV / CHP) — name + health + SoC (EV only) + power readout.</li>
+          <li><strong>Battery rows</strong> — each battery row pairs with the inverter it's wired to (looked up via successor edges). Battery cell: name + health + SoC bar + DC W; inverter cell: name + subtype + health + envelope visual (lower / measured / upper). Sort by SoC ascending; rows pinned at either bound float to the top. Click either cell to flip to Topology with the node selected.</li>
+          <li><strong>PV rows</strong> — solar inverters only, same envelope shape as the inverter half of a battery row.</li>
+          <li><strong>EV / CHP rows</strong> — own section each: name + health + SoC (EV only) + power readout.</li>
         </ul>
         <h4>Aggregations</h4>
         <ul class="help-list">

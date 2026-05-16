@@ -705,6 +705,23 @@ body.compact .dash-envelope { font-size: 11px; margin-top: 2px; }
   display: grid;
   gap: 4px;
 }
+/* Battery + paired inverter render as two stacked sub-rows inside a
+ * single .bat-pair wrapper. The inverter cell sits flush under the
+ * battery cell with a subtle left rule so the pairing reads as one
+ * unit on the canvas. */
+.bat-pair {
+  display: grid;
+  gap: 2px;
+  border-left: 2px solid var(--accent);
+  padding-left: 6px;
+}
+.bat-pair-inv {
+  font-size: 13px;
+  opacity: 0.92;
+}
+.bat-pair-inv.muted {
+  font-style: italic;
+}
 .tier2-row {
   display: grid;
   grid-template-columns: minmax(140px, 1.5fr) 80px minmax(160px, 3fr) minmax(100px, 1fr);
