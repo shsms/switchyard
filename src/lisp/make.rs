@@ -799,3 +799,49 @@ mod tests {
         assert!((m.aggregate_power_w(&site) - 7777.0).abs() < 1e-3);
     }
 }
+
+#[cfg(test)]
+mod main_meter_tests {
+    //! End-to-end tests for the `:main t` slot on `%make-meter`,
+    //! driven through `Config` so the failure modes are exactly
+    //! the ones a real config would see.
+    use crate::lisp::test_support::config_with;
+
+    /// Two meters with `:main t` is a config error. The first one
+    /// claims the slot; the second's `(%make-meter)` returns an
+    /// error rather than silently overwriting.
+    #[test]
+    fn duplicate_main_meter_rejects() {
+        let (cfg, _dir) = config_with(
+            "(set-microgrid-id 9)
+             (%make-meter :id 1 :main t)",
+        );
+        let res = cfg.eval("(%make-meter :id 2 :main t)");
+        assert!(res.is_err(), "expected duplicate-main error");
+        assert!(res.unwrap_err().contains("main meter"));
+    }
+
+    /// The rejection from `duplicate_main_meter_rejects` shouldn't
+    /// leave a half-registered meter behind: the failing
+    /// `(%make-meter :main t)` must not land in `world.components()`
+    /// or `world.get(id)`. Regressed once when the slot check fired
+    /// AFTER `register_with_modes`.
+    #[test]
+    fn duplicate_main_meter_rejection_doesnt_register() {
+        let (cfg, _dir) = config_with(
+            "(set-microgrid-id 9)
+             (%make-meter :id 1 :main t)",
+        );
+        let before = cfg.site().components().len();
+        let _ = cfg.eval("(%make-meter :id 2 :main t)");
+        let after = cfg.site().components().len();
+        assert_eq!(
+            before, after,
+            "rejected :main meter leaked into the components list",
+        );
+        assert!(
+            cfg.site().get(2).is_none(),
+            "rejected :main meter is still reachable via get(2)"
+        );
+    }
+}
