@@ -144,6 +144,12 @@
     ;; default :stream-jitter-pct on a hidden component.
     (%make-meter :id 100 :name "consumer" :hidden t :power 1000.0)))))
 
+;; Load the starter scenarios library — seven multi-stage canned
+;; scenarios appear in the Scenarios mode dropdown on a fresh
+;; checkout. Edit scenarios/library/index.lisp to drop / add
+;; entries; each file is self-contained `(define-scenario …)`.
+(load "scenarios/library/index.lisp")
+
 ;; Apply UI-driven edits the user has clicked Persist on. The override
 ;; filename is parameterised by microgrid-id so multiple sims sharing
 ;; this directory each get their own. No-op when the file doesn't exist.
