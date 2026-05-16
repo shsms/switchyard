@@ -22,6 +22,7 @@
       <button id="help-btn" class="hdr-btn" title="Keyboard + mouse shortcuts">?</button>
       <button id="scenario-report-btn" class="hdr-btn">Report</button>
       <button id="defaults-btn" class="hdr-btn">Defaults</button>
+      <button id="snapshots-btn" class="hdr-btn" title="Save / load the world's persisted edits">Snapshots</button>
       <span id="pending-pill" class="pending-pill" hidden>
         <span id="pending-count">0</span> overrides
       </span>
@@ -155,6 +156,31 @@
         <button id="pending-dialog-close" type="button">×</button>
       </header>
       <div id="pending-dialog-content"></div>
+    </dialog>
+    <dialog id="snapshots-dialog">
+      <header>
+        <h3>Snapshots</h3>
+        <button id="snapshots-dialog-close" type="button">×</button>
+      </header>
+      <div id="snapshots-dialog-content">
+        <form id="snapshot-save-form">
+          <label>
+            <span>Save current overrides as</span>
+            <input type="text" id="snapshot-name-input" placeholder="snapshot name"
+                   pattern="[A-Za-z0-9_\-]+" autocomplete="off" required />
+          </label>
+          <button type="submit" class="hdr-btn primary">Save</button>
+        </form>
+        <ul id="snapshots-list">
+          <li class="hint">No snapshots yet.</li>
+        </ul>
+        <p class="hint">
+          Saving copies the current persisted-overrides file to
+          <code>snapshots/&lt;name&gt;.lisp</code>. Loading replaces
+          the overrides file with that snapshot and reloads the
+          world (live ramp / SoC state is not captured).
+        </p>
+      </div>
     </dialog>
     <dialog id="help-dialog">
       <header>
