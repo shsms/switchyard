@@ -71,21 +71,33 @@ async fn main() {
         log::error!("Failed to load config:\n{e}");
         std::process::exit(1);
     });
-    let world = config.site();
+
+    // Snapshot the enterprise registry: one tuple per microgrid
+    // (id, name, grpc_port, site). Each will get its own physics
+    // tick + history sampler + Microgrid gRPC server.
+    let entries: Vec<(u64, String, u16, switchyard::sim::MicrogridSite)> = config
+        .microgrids()
+        .lock()
+        .values()
+        .map(|e| (e.def.id, e.def.name.clone(), e.def.grpc_port, e.site.clone()))
+        .collect();
+    if entries.is_empty() {
+        log::error!("Boot produced no microgrids in the registry — config eval bug?");
+        std::process::exit(1);
+    }
     log::info!(
-        "Loaded {} components, {} connections",
-        world.components().len(),
-        world.connections().len()
+        "Enterprise carries {} microgrid(s); spawning per-microgrid runtimes",
+        entries.len()
     );
-
-    MicrogridSite::clone(&world).spawn_physics();
-    MicrogridSite::clone(&world).spawn_history_sampler();
-
-    let socket_addr_str = config.socket_addr();
-    let socket_addr = socket_addr_str
-        .parse()
-        .unwrap_or_else(|e| panic!("invalid socket addr {socket_addr_str:?}: {e}"));
-    log::info!("Microgrid gRPC server listening on {socket_addr_str}");
+    for (id, name, port, site) in &entries {
+        log::info!(
+            "Microgrid #{id} {name:?} → :{port} ({} components, {} connections)",
+            site.components().len(),
+            site.connections().len(),
+        );
+        MicrogridSite::clone(site).spawn_physics();
+        MicrogridSite::clone(site).spawn_history_sampler();
+    }
 
     // Watch the config file in the background so saves trigger reload.
     tokio::spawn(config.clone().watch());
@@ -94,26 +106,48 @@ async fn main() {
     // in a follow-up commit.
     let ui_addr = "127.0.0.1:8801".parse().unwrap();
     let ui_config = config.clone();
-    // Loopback Microgrid client: a frequenz-microgrid `Microgrid`
-    // pointed at this binary's own gRPC server. Constructed in the
-    // background so the UI server starts immediately and dashboard
-    // endpoints return 503 until the gRPC server is reachable + the
-    // component graph is built. See UI-design.org §Z2.
+    // Loopback Microgrid client pointed at the first microgrid for
+    // now — B2 generalises this to one loopback per microgrid so
+    // the Dashboard tier can route per-mg tile data via the same
+    // frequenz-microgrid client a downstream control app would use.
+    let (first_id, _, first_port, first_site) = entries[0].clone();
     let microgrid = ui::new_microgrid_slot();
-    let grpc_url = format!("http://{socket_addr_str}");
-    ui::spawn_microgrid_loopback(grpc_url, microgrid.clone(), world.clone());
+    let grpc_url = format!("http://[::1]:{first_port}");
+    ui::spawn_microgrid_loopback(grpc_url, microgrid.clone(), first_site);
     tokio::spawn(async move {
         if let Err(e) = ui::serve(ui_addr, ui_config, microgrid).await {
             log::error!("UI server exited: {e}");
         }
     });
 
-    let microgrid_server = MicrogridServer::new(config.clone());
-    let assets_server = AssetsServer::new(config);
-    Server::builder()
-        .add_service(MicrogridGrpcServer::new(microgrid_server))
-        .add_service(AssetsGrpcServer::new(assets_server))
-        .serve(socket_addr)
-        .await
-        .unwrap();
+    // One Microgrid gRPC server per registry entry. tonic Server's
+    // `serve` future drives a single listener — we spawn one task
+    // per microgrid so the binary's main future is the join of all
+    // listeners. AssetsServer mounts on the first microgrid's port
+    // for now; B3 splits it onto its own port (9900).
+    let mut tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+    for (id, name, port, site) in entries {
+        let addr: std::net::SocketAddr = format!("[::1]:{port}")
+            .parse()
+            .unwrap_or_else(|e| panic!("invalid grpc port for microgrid {id}: {e}"));
+        log::info!("Microgrid #{id} {name:?} gRPC listening on {addr}");
+        let cfg_for_server = config.clone();
+        let is_primary = id == first_id;
+        let cfg_for_assets = config.clone();
+        tasks.push(tokio::spawn(async move {
+            let mg_server = MicrogridServer::new(cfg_for_server, id, site);
+            let mut builder =
+                Server::builder().add_service(MicrogridGrpcServer::new(mg_server));
+            if is_primary {
+                builder = builder
+                    .add_service(AssetsGrpcServer::new(AssetsServer::new(cfg_for_assets)));
+            }
+            if let Err(e) = builder.serve(addr).await {
+                log::error!("Microgrid #{id} gRPC server exited: {e}");
+            }
+        }));
+    }
+    for h in tasks {
+        let _ = h.await;
+    }
 }

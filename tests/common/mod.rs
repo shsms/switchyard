@@ -100,7 +100,18 @@ impl TestServer {
             let _ = ui::serve_with_listener(ui_listener, ui_config, microgrid).await;
         }));
 
-        let microgrid_server = MicrogridServer::new(config.clone());
+        // Single-microgrid integration test: pin the gRPC frontend
+        // to the default registry entry (the one auto-seeded by
+        // Config::new when no `(make-microgrid)` form ran). The id
+        // sourced from metadata mirrors the legacy `set-microgrid-id`
+        // path and matches what `get_microgrid` reports.
+        let default_mg_id = {
+            let reg = config.microgrids();
+            let r = reg.lock();
+            r.keys().copied().next().expect("default microgrid entry")
+        };
+        let microgrid_server =
+            MicrogridServer::new(config.clone(), default_mg_id, config.site());
         let assets_server = AssetsServer::new(config.clone());
         handles.push(tokio::spawn(async move {
             let _ = Server::builder()

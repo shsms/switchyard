@@ -61,13 +61,32 @@ use crate::sim::runtime::{CommandMode, Health, TelemetryMode};
 use crate::sim::setpoints::{SetpointEvent, SetpointKind, SetpointOutcome};
 use crate::sim::{SetpointError, bounds::VecBounds};
 
+/// gRPC frontend for one microgrid. Each microgrid registered in
+/// `Config::microgrids` spawns its own server bound to its
+/// `MicrogridDef::grpc_port` and serving against its own
+/// `MicrogridSite`. The legacy single-microgrid binary still uses
+/// this — the registry just carries one entry (the default).
 pub struct MicrogridServer {
     pub config: Config,
+    /// Specific id of the microgrid this gRPC frontend represents.
+    /// `get_microgrid` sources its response from here so each
+    /// per-port server returns its own MicrogridInfo (matching the
+    /// id the client picked when connecting to its port).
+    pub microgrid_id: u64,
+    /// Pinned site this server reads from. Captured at
+    /// construction time rather than re-resolved via the registry
+    /// on every RPC, so a topology rebuild on a *different*
+    /// microgrid doesn't disturb this server's stream sessions.
+    pub site: crate::sim::MicrogridSite,
 }
 
 impl MicrogridServer {
-    pub fn new(config: Config) -> Self {
-        Self { config }
+    pub fn new(config: Config, microgrid_id: u64, site: crate::sim::MicrogridSite) -> Self {
+        Self {
+            config,
+            microgrid_id,
+            site,
+        }
     }
 
     /// The body of `set_electrical_component_power` minus the
@@ -82,7 +101,7 @@ impl MicrogridServer {
         tonic::Response<<Self as microgrid_server::Microgrid>::SetElectricalComponentPowerStream>,
         tonic::Status,
     > {
-        let world = self.config.site();
+        let world = self.site.clone();
         let component = world.get(req.electrical_component_id).ok_or_else(|| {
             tonic::Status::not_found(format!(
                 "component {} not found",
@@ -184,16 +203,28 @@ impl microgrid_server::Microgrid for MicrogridServer {
         _request: tonic::Request<()>,
     ) -> Result<tonic::Response<GetMicrogridResponse>, tonic::Status> {
         let m = self.config.metadata();
+        // The MicrogridInfo response reports *this server's*
+        // microgrid id; only enterprise_id + the optional display
+        // name still come from Metadata. The display name falls
+        // back to the registry's entry when set, so each per-port
+        // server returns the right label even when Metadata only
+        // tracks the first microgrid for backward compat.
+        let registry_name = self
+            .config
+            .microgrids()
+            .lock()
+            .get(&self.microgrid_id)
+            .map(|e| e.def.name.clone());
+        let name = registry_name
+            .filter(|s| !s.is_empty())
+            .or_else(|| Some(m.name.clone()).filter(|s| !s.is_empty()))
+            .unwrap_or_else(|| format!("Microgrid {}", self.microgrid_id));
         let now = Some(Timestamp::from(SystemTime::now()));
         Ok(tonic::Response::new(GetMicrogridResponse {
             microgrid: Some(Microgrid {
-                id: m.microgrid_id,
+                id: self.microgrid_id,
                 enterprise_id: m.enterprise_id,
-                name: if m.name.is_empty() {
-                    format!("Microgrid {}", m.microgrid_id)
-                } else {
-                    m.name
-                },
+                name,
                 status: MicrogridStatus::Active as i32,
                 create_timestamp: now,
                 ..Default::default()
@@ -282,7 +313,7 @@ impl microgrid_server::Microgrid for MicrogridServer {
             PowerType::Reactive => SetpointKind::ReactivePower,
             PowerType::Unspecified => unreachable!("rejected above"),
         };
-        let world = self.config.site();
+        let world = self.site.clone();
         let response = self.do_set_power(req, power_type).await;
 
         let outcome = match &response {
@@ -312,7 +343,7 @@ impl microgrid_server::Microgrid for MicrogridServer {
     {
         let req = request.into_inner();
         let id = req.electrical_component_id;
-        let world = self.config.site();
+        let world = self.site.clone();
 
         let component = world
             .get(id)
@@ -431,7 +462,7 @@ impl microgrid_server::Microgrid for MicrogridServer {
         let now = chrono::Utc::now();
         let id = req.electrical_component_id;
 
-        let world = self.config.site();
+        let world = self.site.clone();
         let response = match world.get(id) {
             Some(component) => {
                 component.augment_active_bounds(now, VecBounds::new(req.bounds), lifetime);
