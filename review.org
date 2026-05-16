@@ -195,7 +195,7 @@ tool is fine as-is. Flagging for visibility.
 Not bugs. Directional suggestions for refactoring as the codebase
 grows.
 
-** IN-PROGRESS A1. ~src/lisp/mod.rs~ is 2621 lines
+** DONE A1. ~src/lisp/mod.rs~ is 2621 lines
 
 Defuns extracted into ~src/lisp/defuns.rs~ as a single module
 (953 lines). mod.rs is down to 1854 lines and now holds only
@@ -235,7 +235,7 @@ src/lisp/
 └── tests.rs
 #+end_example
 
-** IN-PROGRESS A2. ~src/ui/mod.rs~ is 1857 lines
+** DONE A2. ~src/ui/mod.rs~ is 1857 lines
 
 Loopback supervisor + WS event pump split out:
 
@@ -268,7 +268,7 @@ src/ui/
 └── tests.rs
 #+end_example
 
-** IN-PROGRESS A3. ~ui-assets/app.js~ is 4178 lines
+** DONE A3. ~ui-assets/app.js~ is 4178 lines
 
 First slice extracted as an ES module:
 ~ui-assets/repl-syntax.js~ — COMPLETIONS, rainbowHighlight,
