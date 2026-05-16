@@ -313,6 +313,16 @@ async fn subscribe_power_forwarders(
             handles.push(h);
         }
     }
+    // Grid frequency via `lm.grid::<metric::AcFrequency>()` would
+    // be the natural way to feed a "Grid frequency" tile, but
+    // frequenz-microgrid 0.4.1's LogicalMeterActor's
+    // `TypedFormulaResponseSender` branches only on Power /
+    // Voltage / ReactivePower / Current — calling `.subscribe()`
+    // on the Frequency formula returns `Internal: Can't create
+    // TypedFormulaResponseSender for ...Frequency`. See
+    // /vagrant/upstream-frequency-formula.md. Until that lands
+    // upstream, frequency stays on the per-component
+    // /api/history?metric=frequency_hz path.
     // BatteryPool takes &mut self for power() / power_bounds() (it
     // caches subscriber refs); build it once and let it go out of
     // scope after both subscriptions resolve.
@@ -360,8 +370,24 @@ fn spawn_bounds_forwarder(
                     let lower = outer_bound(&envelopes, |b| b.lower(), f32::min);
                     let upper = outer_bound(&envelopes, |b| b.upper(), f32::max);
                     let ts_ms = chrono::Utc::now().timestamp_millis();
-                    publish_scalar("battery_pool_bounds_lower", lower, ts_ms, &world, &state);
-                    publish_scalar("battery_pool_bounds_upper", upper, ts_ms, &world, &state);
+                    publish_scalar(
+                        "battery_pool_bounds_lower",
+                        "Power",
+                        "W",
+                        lower,
+                        ts_ms,
+                        &world,
+                        &state,
+                    );
+                    publish_scalar(
+                        "battery_pool_bounds_upper",
+                        "Power",
+                        "W",
+                        upper,
+                        ts_ms,
+                        &world,
+                        &state,
+                    );
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                     log::warn!("microgrid loopback: battery_pool_bounds lagged {n} samples");
@@ -437,31 +463,31 @@ async fn subscribe_power_forwarder(
 fn publish_power(stream: &'static str, sample: Sample<Power>, world: &World, state: &SharedMicrogrid) {
     let value = sample.value().map(|p| p.as_watts());
     let ts_ms = sample.timestamp().timestamp_millis();
-    publish_scalar(stream, value, ts_ms, world, state);
+    publish_scalar(stream, "Power", "W", value, ts_ms, world, state);
 }
 
-/// Push a Watts-valued scalar onto both the per-stream `latest`
-/// cache and the WS event bus. Used by every forwarder that emits
-/// Power-quantity samples — the regular per-formula forwarders
-/// derive their `value` from a `Sample<Power>`, the pool-bounds
-/// forwarder synthesises one from `Bounds<Power>::lower / upper`
-/// — but the downstream shape is identical, so a single helper
-/// owns the snapshot and broadcast.
+/// Push a typed scalar onto both the per-stream `latest` cache and
+/// the WS event bus. The `quantity` + `unit` pair travels with the
+/// sample so the SPA picks the right autoscale family (Power
+/// W→kW→MW, Frequency Hz, etc.) without pattern-matching on the
+/// stream name.
 fn publish_scalar(
     stream: &'static str,
+    quantity: &'static str,
+    unit: &'static str,
     value: Option<f32>,
     ts_ms: i64,
     world: &World,
     state: &SharedMicrogrid,
 ) {
     let snapshot = MicrogridSampleSnapshot {
-        quantity: "Power",
-        unit: "W",
+        quantity,
+        unit,
         ts_ms,
         value,
     };
     state.latest.write().insert(stream, snapshot);
-    world.broadcast_microgrid_sample(stream, "Power", "W", ts_ms, value);
+    world.broadcast_microgrid_sample(stream, quantity, unit, ts_ms, value);
 }
 
 /// Spawn the UI HTTP server on `addr`. Returns once the listener is
