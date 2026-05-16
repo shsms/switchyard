@@ -19,7 +19,9 @@ use tokio::task::JoinHandle;
 
 use crate::sim::{MicrogridSite, events::SiteEvent};
 
-use super::{HistorySample, MICROGRID_HISTORY_CAP, MicrogridSampleSnapshot, SharedMicrogrid};
+use super::state::{
+    HistorySample, MICROGRID_HISTORY_CAP, MicrogridSampleSnapshot, SharedMicrogrid,
+};
 
 /// Spawn a tokio task that constructs a [`Microgrid`] pointed at
 /// `grpc_url`, kicks off forwarders for the aggregated streams the
