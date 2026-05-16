@@ -1,11 +1,12 @@
 //! gRPC server: implements the Frequenz Assets API
 //! (`frequenz.api.assets.v1.PlatformAssets`) on top of switchyard's
-//! `MicrogridSite` + `Config`.
+//! `MicrogridSite` registry + `Config`.
 //!
 //! Exposes the same topology data as `MicrogridServer`, just under the
-//! assets API surface. All three RPCs validate the request's
-//! `microgrid_id` against the configured one — switchyard hosts a
-//! single microgrid, so anything else is `NotFound`.
+//! assets API surface. Each RPC looks up the requested `microgrid_id`
+//! in the enterprise-scoped registry and dispatches against that
+//! entry's `MicrogridSite` — anything missing comes back as
+//! `NotFound`.
 
 use crate::lisp::Config;
 use crate::proto::assets::{
@@ -17,6 +18,8 @@ use crate::proto::assets::{
 use crate::proto::common::microgrid::electrical_components::ElectricalComponentConnection;
 use crate::proto::common::microgrid::{Microgrid, MicrogridStatus};
 use crate::proto_conv::make_component_proto;
+use crate::sim::MicrogridSite;
+use crate::sim::microgrids::MicrogridDef;
 use prost_types::Timestamp;
 use std::time::SystemTime;
 
@@ -29,16 +32,21 @@ impl AssetsServer {
         Self { config }
     }
 
-    /// Rejects requests that target a different microgrid than the one
-    /// switchyard is configured for.
-    fn check_microgrid_id(&self, requested: u64) -> Result<(), tonic::Status> {
-        let configured = self.config.metadata().microgrid_id;
-        if requested != configured {
-            return Err(tonic::Status::not_found(format!(
-                "microgrid {requested} not found (this switchyard hosts {configured})"
-            )));
-        }
-        Ok(())
+    /// Resolve the registry entry for `requested` or return `NotFound`.
+    /// Returned tuple is `(MicrogridDef, MicrogridSite)` so callers
+    /// dispatch components / connections against the resolved site
+    /// instead of the bootstrap one.
+    fn lookup_microgrid(
+        &self,
+        requested: u64,
+    ) -> Result<(MicrogridDef, MicrogridSite), tonic::Status> {
+        let reg = self.config.microgrids();
+        let r = reg.lock();
+        r.get(&requested)
+            .map(|e| (e.def.clone(), e.site.clone()))
+            .ok_or_else(|| {
+                tonic::Status::not_found(format!("microgrid {requested} not found"))
+            })
     }
 }
 
@@ -49,18 +57,17 @@ impl platform_assets_server::PlatformAssets for AssetsServer {
         request: tonic::Request<GetMicrogridRequest>,
     ) -> Result<tonic::Response<GetMicrogridResponse>, tonic::Status> {
         let req = request.into_inner();
-        self.check_microgrid_id(req.microgrid_id)?;
-
-        let m = self.config.metadata();
+        let (def, _site) = self.lookup_microgrid(req.microgrid_id)?;
+        let enterprise_id = self.config.metadata().enterprise_id;
         let now = Some(Timestamp::from(SystemTime::now()));
         Ok(tonic::Response::new(GetMicrogridResponse {
             microgrid: Some(Microgrid {
-                id: m.microgrid_id,
-                enterprise_id: m.enterprise_id,
-                name: if m.name.is_empty() {
-                    format!("Microgrid {}", m.microgrid_id)
+                id: def.id,
+                enterprise_id,
+                name: if def.name.is_empty() {
+                    format!("Microgrid {}", def.id)
                 } else {
-                    m.name
+                    def.name
                 },
                 status: MicrogridStatus::Active as i32,
                 create_timestamp: now,
@@ -74,11 +81,9 @@ impl platform_assets_server::PlatformAssets for AssetsServer {
         request: tonic::Request<ListMicrogridElectricalComponentsRequest>,
     ) -> Result<tonic::Response<ListMicrogridElectricalComponentsResponse>, tonic::Status> {
         let req = request.into_inner();
-        self.check_microgrid_id(req.microgrid_id)?;
+        let (_def, site) = self.lookup_microgrid(req.microgrid_id)?;
 
-        let components: Vec<_> = self
-            .config
-            .site()
+        let components: Vec<_> = site
             .components()
             .iter()
             .filter(|c| !c.is_hidden())
@@ -102,11 +107,9 @@ impl platform_assets_server::PlatformAssets for AssetsServer {
     ) -> Result<tonic::Response<ListMicrogridElectricalComponentConnectionsResponse>, tonic::Status>
     {
         let req = request.into_inner();
-        self.check_microgrid_id(req.microgrid_id)?;
+        let (_def, site) = self.lookup_microgrid(req.microgrid_id)?;
 
-        let connections: Vec<_> = self
-            .config
-            .site()
+        let connections: Vec<_> = site
             .connections()
             .into_iter()
             .map(|(from, to)| ElectricalComponentConnection {

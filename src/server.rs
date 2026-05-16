@@ -202,13 +202,10 @@ impl microgrid_server::Microgrid for MicrogridServer {
         &self,
         _request: tonic::Request<()>,
     ) -> Result<tonic::Response<GetMicrogridResponse>, tonic::Status> {
-        let m = self.config.metadata();
         // The MicrogridInfo response reports *this server's*
-        // microgrid id; only enterprise_id + the optional display
-        // name still come from Metadata. The display name falls
-        // back to the registry's entry when set, so each per-port
-        // server returns the right label even when Metadata only
-        // tracks the first microgrid for backward compat.
+        // microgrid id. The display name comes from the registry
+        // entry so each per-port server returns the right label.
+        let enterprise_id = self.config.metadata().enterprise_id;
         let registry_name = self
             .config
             .microgrids()
@@ -217,13 +214,12 @@ impl microgrid_server::Microgrid for MicrogridServer {
             .map(|e| e.def.name.clone());
         let name = registry_name
             .filter(|s| !s.is_empty())
-            .or_else(|| Some(m.name.clone()).filter(|s| !s.is_empty()))
             .unwrap_or_else(|| format!("Microgrid {}", self.microgrid_id));
         let now = Some(Timestamp::from(SystemTime::now()));
         Ok(tonic::Response::new(GetMicrogridResponse {
             microgrid: Some(Microgrid {
                 id: self.microgrid_id,
-                enterprise_id: m.enterprise_id,
+                enterprise_id,
                 name,
                 status: MicrogridStatus::Active as i32,
                 create_timestamp: now,

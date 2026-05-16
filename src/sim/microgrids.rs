@@ -23,16 +23,17 @@ use serde::Serialize;
 
 use crate::sim::MicrogridSite;
 
-/// Canonical id the binary boots into when `config.lisp` doesn't
-/// call `(make-microgrid …)` — preserves the single-microgrid
-/// shape every existing sample config + integration test relies
-/// on. Matches the prior `(set-microgrid-id 2200)` default in the
-/// stock `config.lisp`.
+/// Canonical id used as the starting point when `make-microgrid` is
+/// called without an explicit `:id`. The DSL's auto-allocator
+/// (`next_free_id`) picks the lowest free id at or above this; tests
+/// and the stock `config.lisp` pin 2200 explicitly.
 pub const DEFAULT_MICROGRID_ID: u64 = 2200;
-/// Default display name for the implicit microgrid.
+/// Default display name when `make-microgrid` is called without
+/// `:name`.
 pub const DEFAULT_MICROGRID_NAME: &str = "default";
-/// Default gRPC port for the implicit microgrid. Multi-microgrid
-/// configs auto-allocate from this base upward.
+/// Starting gRPC port for the auto-port allocator
+/// (`next_free_port`). Multi-microgrid configs auto-allocate from
+/// this base upward.
 pub const DEFAULT_GRPC_PORT: u16 = 8800;
 
 #[derive(Clone, Debug, Serialize)]
@@ -122,8 +123,8 @@ pub fn next_free_port(registry: &SharedMicrogrids) -> u16 {
 ///   3. Otherwise fall back to the bootstrap site supplied at
 ///      Router construction time — covers the brief window
 ///      between `Config::new` allocating its initial site and
-///      the post-eval `ensure_default_microgrid_entry` seeding
-///      the registry.
+///      the config eval running its first `(make-microgrid …)`
+///      form.
 ///
 /// Holding a `SharedSiteRouter` is cheap (Arc clone); the inner
 /// `RwLock` only contends with the rare write path that flips

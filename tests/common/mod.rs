@@ -62,7 +62,8 @@ impl TestServer {
         ))
         .expect("create temp dir");
         let path = tempdir.path().join("config.lisp");
-        std::fs::write(&path, config_body).expect("write config");
+        let wrapped = wrap_body(config_body);
+        std::fs::write(&path, wrapped).expect("write config");
 
         let config = Config::new(path.to_str().unwrap()).expect("config eval");
         // Physics + history sampler match the prod boot sequence.
@@ -164,4 +165,44 @@ impl Drop for TestServer {
             h.abort();
         }
     }
+}
+
+/// Wrap a test body in `(make-microgrid …)` if the body doesn't
+/// already register one. Inline `(set-microgrid-id N)` survives from
+/// the pre-migration shape; pull its N into the wrapper's :id so
+/// per-mg id assertions hold.
+fn wrap_body(body: &str) -> String {
+    if body.contains("make-microgrid") {
+        return body.to_string();
+    }
+    let (stripped, mg_id) = strip_set_microgrid_id(body);
+    let inner = if stripped.trim().is_empty() {
+        "nil".to_string()
+    } else {
+        stripped
+    };
+    format!("(make-microgrid :id {mg_id} :grpc-port 8800 :topology (lambda () {inner}))")
+}
+
+fn strip_set_microgrid_id(body: &str) -> (String, u64) {
+    let needle = "(set-microgrid-id ";
+    let mut out = String::with_capacity(body.len());
+    let mut rest = body;
+    let mut mg_id: u64 = 2200;
+    while let Some(idx) = rest.find(needle) {
+        out.push_str(&rest[..idx]);
+        let tail = &rest[idx + needle.len()..];
+        if let Some(close) = tail.find(')') {
+            let n_str = tail[..close].trim();
+            if let Ok(v) = n_str.parse::<u64>() {
+                mg_id = v;
+            }
+            rest = &tail[close + 1..];
+        } else {
+            out.push_str(&rest[idx..]);
+            return (out, mg_id);
+        }
+    }
+    out.push_str(rest);
+    (out, mg_id)
 }

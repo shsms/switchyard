@@ -68,8 +68,9 @@ cancel it on reload."
 (defun overrides-path ()
   "Path of the per-microgrid UI overrides file, relative to the
 config's load directory. Mirrors what the UI's /api/persist endpoint
-writes to."
-  (format "config.ui-overrides.%d.lisp" (get-microgrid-id)))
+writes to. Reads `(current-microgrid-id)`, which inside a
+make-microgrid `:topology` lambda resolves to the entry being built."
+  (format "config.ui-overrides.%d.lisp" (current-microgrid-id)))
 
 (defun load-overrides ()
   "Load the persisted UI overrides for this microgrid if they exist.

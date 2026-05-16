@@ -322,6 +322,42 @@ microgrids, sum of battery pools, etc. Waits on the basic
 multi-microgrid stack being live so the aggregation has
 something to aggregate.
 
+** Phase G — Drop single-microgrid fallback
+
+*** DONE G1. Require =(make-microgrid …)= in every config
+- =Metadata= trimmed to enterprise-wide fields only
+  (=enterprise_id=, =assets_socket_addr=,
+  =default_request_lifetime=). The per-microgrid id / name /
+  socket all live on =MicrogridDef= in the registry now.
+- =set-microgrid-id=, =set-microgrid-name=, =set-socket-addr=,
+  =get-microgrid-id= defuns removed; =register_metadata= keeps
+  only the enterprise-scoped setters.
+- =Config::new= + =reload()= hard-error if the registry is empty
+  after eval. =ensure_default_microgrid_entry= deleted.
+- =overrides-path= (Lisp) reads =(current-microgrid-id)= instead
+  of the dropped =get-microgrid-id=. The current-microgrid
+  defun falls back to the first registry entry when called
+  outside a per-mg scope, so the call from top-level
+  =config.lisp= picks up the only registered microgrid.
+- =assets_server.rs= dispatches per request: looks up the
+  microgrid in =Config::microgrids()= and returns =NotFound=
+  when absent; components / connections come from the resolved
+  entry's site rather than =Config::site()=.
+- =Config::site()= now routes through =SiteRouter::site=, so
+  UI endpoints that called =config.site()= directly fall back
+  to the first registered microgrid.
+- =start_timeout_loop= polls every registered microgrid's
+  TimeoutTracker each tick — the single bootstrap-site loop
+  couldn't see expirations queued on per-mg sites.
+- Pre-tick hook stashed in a shared =Arc<RwLock<Option<…>>>=
+  so =make-microgrid= installs it on each freshly-created
+  site; the post-eval loop in =Config::new= covers entries
+  that registered before the hook existed.
+- Test fixtures auto-wrap bodies missing =(make-microgrid)=
+  in a default entry; inline =(set-microgrid-id N)= seeds the
+  wrapper's =:id=. =tests/hot_reload.rs= rewrites use the
+  explicit =(make-microgrid …)= form.
+
 * Implementation order
 
 Roughly in phase order, with the principle that each commit
