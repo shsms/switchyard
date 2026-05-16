@@ -187,6 +187,18 @@ impl Config {
             timer_handle.tick(&mut guard);
         }));
 
+        // Scenarios auto-advance task — polls the wallclock and
+        // transitions running scenarios on stage boundaries. Lives
+        // on the same runtime as the gRPC + UI servers; the
+        // interpreter lock it grabs to funcall :on lambdas is the
+        // same one the pre-tick hook uses, so no extra plumbing.
+        crate::sim::scenarios::spawn_auto_advance(
+            scenarios.clone(),
+            ctx.clone(),
+            world.clone(),
+            clock.clone(),
+        );
+
         Ok(Self {
             filename: filename.to_string(),
             ctx,
