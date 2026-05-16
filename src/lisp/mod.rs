@@ -1791,21 +1791,39 @@ tulisp::AsPlist! {
 ///   this is useful for test fixtures or for setting an initial
 ///   condition the OU then evolves away from.
 /// - `(set-frequency-model :nominal :mean-rev-rate :sigma)` —
-///   tune the driver parameters. Each key optional; unspecified
-///   keys keep their current values. The defaults pick a noise
-///   floor (~47 mHz std dev) and correlation time (~20 s) that
-///   look like a healthy synchronous grid.
-/// - `(set-frequency-override F)` — pin the value at F. The
-///   driver respects the flag and stops integrating until the
-///   override clears. Scenarios use this to script a UFLS dip /
-///   generator-trip recovery without fighting the driver.
-/// - `(clear-frequency-override)` — release the override; the
-///   driver resumes from the current value.
+///   tune the *base* driver parameters. Each key optional;
+///   unspecified keys keep their current base values. Defaults
+///   pick a noise floor (~47 mHz std dev) and correlation time
+///   (~20 s) that look like a healthy synchronous grid.
+/// - `(override-frequency-model :nominal :mean-rev-rate :sigma)`
+///   — install an override on the OU dynamics. Driver keeps
+///   integrating, but uses the override's params in place of the
+///   base while it's set. Unspecified keys inherit from the
+///   current active model (override if already set, else base) —
+///   so `(override-frequency-model :nominal 49.5)` pulls toward
+///   49.5 with the base dynamics, and a later
+///   `(override-frequency-model :sigma 0.05)` widens noise
+///   without disturbing the override nominal.
+/// - `(clear-frequency-override)` — drop the override; the
+///   driver returns to base dynamics from the current value.
 /// - `(current-frequency)` — read the live value.
 fn register_frequency(
     ctx: &mut TulispContext,
     state: crate::sim::frequency::SharedFrequency,
 ) {
+    use crate::sim::frequency::FrequencyModel;
+    fn apply_overrides(model: &mut FrequencyModel, a: &FrequencyModelArgs) {
+        if let Some(v) = a.nominal {
+            model.nominal_hz = v as f32;
+        }
+        if let Some(v) = a.mean_rev_rate {
+            model.mean_rev_rate = v.max(0.0) as f32;
+        }
+        if let Some(v) = a.sigma {
+            model.sigma = v.max(0.0) as f32;
+        }
+    }
+
     let s = state.clone();
     ctx.defun("set-frequency", move |hz: f64| -> Result<bool, Error> {
         s.write().current_hz = hz as f32;
@@ -1817,25 +1835,24 @@ fn register_frequency(
         "set-frequency-model",
         move |args: tulisp::Plist<FrequencyModelArgs>| -> Result<bool, Error> {
             let a = args.into_inner();
-            let mut g = s.write();
-            if let Some(v) = a.nominal {
-                g.nominal_hz = v as f32;
-            }
-            if let Some(v) = a.mean_rev_rate {
-                g.mean_rev_rate = v.max(0.0) as f32;
-            }
-            if let Some(v) = a.sigma {
-                g.sigma = v.max(0.0) as f32;
-            }
+            apply_overrides(&mut s.write().base, &a);
             Ok(true)
         },
     );
 
     let s = state.clone();
     ctx.defun(
-        "set-frequency-override",
-        move |hz: f64| -> Result<bool, Error> {
-            s.write().override_hz = Some(hz as f32);
+        "override-frequency-model",
+        move |args: tulisp::Plist<FrequencyModelArgs>| -> Result<bool, Error> {
+            let a = args.into_inner();
+            let mut g = s.write();
+            // Missing keys inherit from the currently-active model:
+            // the existing override if there is one (so repeated
+            // calls layer), else the base (so the first call after a
+            // clear picks up sensible defaults).
+            let mut next = g.active_model();
+            apply_overrides(&mut next, &a);
+            g.override_model = Some(next);
             Ok(true)
         },
     );
@@ -1844,7 +1861,7 @@ fn register_frequency(
     ctx.defun(
         "clear-frequency-override",
         move || -> Result<bool, Error> {
-            s.write().override_hz = None;
+            s.write().override_model = None;
             Ok(true)
         },
     );

@@ -39,46 +39,67 @@ pub const DEFAULT_SIGMA: f32 = 0.015;
 /// doesn't dominate the runtime cost.
 const STEP_MS: u64 = 200;
 
-#[derive(Clone, Debug)]
-pub struct FrequencyState {
+/// The three knobs the OU step reads on each tick. Wrapped in its
+/// own struct so the base + override slots share a shape: a
+/// scenario can `(override-frequency-model :nominal 49.5)` to pull
+/// frequency toward 49.5 with the same dynamics as the base, then
+/// later layer on `(override-frequency-model :sigma 0.05)` without
+/// touching the override nominal.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FrequencyModel {
     pub nominal_hz: f32,
     pub mean_rev_rate: f32,
     pub sigma: f32,
+}
+
+impl FrequencyModel {
+    pub const DEFAULT: Self = Self {
+        nominal_hz: NOMINAL_HZ,
+        mean_rev_rate: DEFAULT_MEAN_REV_RATE,
+        sigma: DEFAULT_SIGMA,
+    };
+}
+
+#[derive(Clone, Debug)]
+pub struct FrequencyState {
+    /// The shape the OU driver follows by default. Configurable from
+    /// lisp via `(set-frequency-model …)`; sticks across scenarios.
+    pub base: FrequencyModel,
+    /// Scenario-driven override. When `Some`, the driver uses these
+    /// params in place of the base for each step (drift toward the
+    /// override's nominal, noise at the override's sigma, reversion
+    /// at the override's rate). `(clear-frequency-override)` drops it.
+    pub override_model: Option<FrequencyModel>,
     pub current_hz: f32,
-    /// When `Some(f)`, the driver leaves `current_hz` alone and
-    /// `read_hz` returns `f`. Set via `(set-frequency-override F)`
-    /// from scenario `:on` lambdas; cleared by
-    /// `(clear-frequency-override)`.
-    pub override_hz: Option<f32>,
 }
 
 impl FrequencyState {
     pub fn new() -> Self {
         Self {
-            nominal_hz: NOMINAL_HZ,
-            mean_rev_rate: DEFAULT_MEAN_REV_RATE,
-            sigma: DEFAULT_SIGMA,
-            current_hz: NOMINAL_HZ,
-            override_hz: None,
+            base: FrequencyModel::DEFAULT,
+            override_model: None,
+            current_hz: FrequencyModel::DEFAULT.nominal_hz,
         }
     }
 
-    /// One Euler-Maruyama step of the OU process. Skipped entirely
-    /// when an override is pinned — the override value sticks until
-    /// cleared.
+    /// Active set of params: override if set, else base.
+    pub fn active_model(&self) -> FrequencyModel {
+        self.override_model.unwrap_or(self.base)
+    }
+
+    /// One Euler-Maruyama step of the OU process driven by the
+    /// active model. Override is just a different set of params —
+    /// the driver keeps integrating either way.
     pub fn step(&mut self, dt: f32, rng: &mut SmallRng) {
-        if self.override_hz.is_some() {
-            return;
-        }
-        let drift = -self.mean_rev_rate * (self.current_hz - self.nominal_hz) * dt;
-        let noise = self.sigma * dt.sqrt() * normal_sample(rng);
+        let m = self.active_model();
+        let drift = -m.mean_rev_rate * (self.current_hz - m.nominal_hz) * dt;
+        let noise = m.sigma * dt.sqrt() * normal_sample(rng);
         self.current_hz += drift + noise;
     }
 
-    /// Component-facing read. Returns the override when pinned,
-    /// else the OU state.
+    /// Component-facing read.
     pub fn read_hz(&self) -> f32 {
-        self.override_hz.unwrap_or(self.current_hz)
+        self.current_hz
     }
 }
 
@@ -134,7 +155,7 @@ mod tests {
     #[test]
     fn ou_drifts_back_to_nominal() {
         let mut s = FrequencyState::new();
-        s.sigma = 0.0;
+        s.base.sigma = 0.0;
         s.current_hz = 49.5; // 500 mHz low
         let mut rng = SmallRng::seed_from_u64(0);
         for _ in 0..500 {
@@ -144,19 +165,45 @@ mod tests {
         assert!(gap < 0.01, "expected within 10 mHz after 100 s, got {gap}");
     }
 
-    /// Override pins the value: stepping doesn't move it.
+    /// Override switches the dynamics, not the value: drift pulls
+    /// toward the override's nominal at the override's rate. With
+    /// σ = 0 the test is deterministic.
     #[test]
-    fn override_pins_value() {
+    fn override_pulls_toward_override_nominal() {
         let mut s = FrequencyState::new();
-        s.override_hz = Some(49.0);
         s.current_hz = 50.0;
+        s.override_model = Some(FrequencyModel {
+            nominal_hz: 49.0,
+            mean_rev_rate: 0.05,
+            sigma: 0.0,
+        });
         let mut rng = SmallRng::seed_from_u64(0);
-        for _ in 0..50 {
+        for _ in 0..500 {
             s.step(0.2, &mut rng);
         }
-        assert_eq!(s.read_hz(), 49.0);
-        // OU state under the hood doesn't move while the override is on.
-        assert!((s.current_hz - 50.0).abs() < 1e-6);
+        let gap = (s.current_hz - 49.0).abs();
+        assert!(gap < 0.01, "expected to drift to 49.0 ±10 mHz, got {}", s.current_hz);
+    }
+
+    /// Clearing the override hands the dynamics back to the base.
+    #[test]
+    fn clearing_override_returns_to_base_dynamics() {
+        let mut s = FrequencyState::new();
+        s.base.sigma = 0.0;
+        s.override_model = Some(FrequencyModel {
+            nominal_hz: 49.0,
+            mean_rev_rate: 1.0,
+            sigma: 0.0,
+        });
+        s.current_hz = 49.0; // pinned to override
+        s.override_model = None; // release
+        let mut rng = SmallRng::seed_from_u64(0);
+        for _ in 0..500 {
+            s.step(0.2, &mut rng);
+        }
+        // Base pulls back to 50.0.
+        let gap = (s.current_hz - NOMINAL_HZ).abs();
+        assert!(gap < 0.01, "expected drift back to 50.0, got {}", s.current_hz);
     }
 
     /// Box-Muller stays bounded for typical seeds. Sanity check: the
