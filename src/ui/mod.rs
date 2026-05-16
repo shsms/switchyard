@@ -576,6 +576,7 @@ fn router(config: Config, microgrid: SharedMicrogrid, loopbacks: MicrogridLoopba
         .route("/api/scenarios/{name}/next", post(scenarios_next))
         .route("/api/scenarios/{name}/prev", post(scenarios_prev))
         .route("/api/scenarios/{name}/jump/{idx}", post(scenarios_jump))
+        .route("/api/microgrids", get(microgrids_list))
         .route("/ws/events", get(events_ws))
         .layer(Extension(microgrid))
         .layer(Extension(loopbacks))
@@ -592,6 +593,12 @@ struct MicrogridStatusResp {
     /// confirms switchyard's gRPC server returned what the
     /// graph crate accepted.
     component_count: Option<usize>,
+}
+
+async fn microgrids_list(
+    State(config): State<Config>,
+) -> Json<Vec<crate::sim::microgrids::MicrogridView>> {
+    Json(crate::sim::microgrids::snapshot(&config.microgrids()))
 }
 
 async fn scenarios_list(
