@@ -283,8 +283,8 @@ async fn overrides_endpoint_lists_appended_evals() {
 /// get this from `sim/common.lisp`, but `config_with` writes a
 /// bare-bones config that doesn't pull in the helper file.
 const LOAD_OVERRIDES_HELPER: &str = "(defun load-overrides ()
-       (when (file-exists-p \"config.ui-overrides.7.lisp\")
-         (load \"config.ui-overrides.7.lisp\")))
+       (when (file-exists-p \"microgrids/config.7.overrides.lisp\")
+         (load \"microgrids/config.7.overrides.lisp\")))
      (load-overrides)";
 
 #[tokio::test]

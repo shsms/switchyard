@@ -69,13 +69,15 @@ cancel it on reload."
   "Path of the per-microgrid UI overrides file, relative to the
 config's load directory. Mirrors what the UI's /api/persist endpoint
 writes to. Reads `(current-microgrid-id)`, which inside a
-make-microgrid `:topology` lambda resolves to the entry being built."
-  (format "config.ui-overrides.%d.lisp" (current-microgrid-id)))
+make-microgrid `:topology` lambda resolves to the entry being built.
+The file sits next to the per-mg config under microgrids/."
+  (format "microgrids/config.%d.overrides.lisp" (current-microgrid-id)))
 
 (defun load-overrides ()
   "Load the persisted UI overrides for this microgrid if they exist.
-No-op on a fresh checkout. Call from config.lisp after build-topology
-so user-driven mutations apply on top of the canonical graph."
+No-op on a fresh checkout. Call from inside a make-microgrid
+:topology lambda so the load happens with the per-mg current-microgrid
+context active."
   (let ((path (overrides-path)))
     (when (file-exists-p path)
       (load path))))

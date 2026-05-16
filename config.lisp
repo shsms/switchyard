@@ -1,6 +1,7 @@
 ;; Switchyard sample configuration. Reload-safe: (reset-state) cancels
 ;; outstanding timers and wipes every microgrid's site, then the
-;; (make-microgrid …) form below rebuilds the topology.
+;; per-microgrid (make-microgrid …) forms under microgrids/ rebuild
+;; the topology.
 
 ;; Load runtime helpers (every, reset-state) once. Avoids re-defining
 ;; defuns on every reload — they don't change between saves and the
@@ -46,10 +47,10 @@
           (+ 49.99 (/ (random 4) 100.0)))))
 
 ;; PV cloud-cover schedule over a 10-minute window, driving the solar
-;; inverter (id 200 below). Sunny first 3 min (80%), 2-min ramp into
-;; clouds (→ 20%), 2 min cloudy, 2-min ramp back to clear. The
-;; per-tick min-avail clamp on the solar inverter picks up each new
-;; sunlight% on the next tick.
+;; inverter (id 200 in the Berlin demo microgrid). Sunny first 3 min
+;; (80%), 2-min ramp into clouds (→ 20%), 2 min cloudy, 2-min ramp
+;; back to clear. The per-tick min-avail clamp on the solar inverter
+;; picks up each new sunlight% on the next tick.
 (defun cloud-curve (t-window)
   (cond ((< t-window 180.0) 80.0)
         ((< t-window 300.0) (- 80.0 (* 0.5 (- t-window 180.0))))
@@ -62,77 +63,17 @@
          (set-solar-sunlight 200 (cloud-curve (window-elapsed 600.0)))))
 
 ;; -----------------------------------------------------------------------------
-;; Microgrid — one (make-microgrid …) form per microgrid. The
-;; :topology lambda is what scopes nested make-* calls into this
-;; microgrid's site; the lambda's body reads top-to-bottom from
-;; grid-connection-point → main meter → per-branch meters →
-;; underlying device chain.
+;; Microgrids — one file per microgrid under microgrids/. Each file
+;; holds a single (make-microgrid …) form and loads its own
+;; persisted UI overrides from inside the :topology lambda.
+;; Runtime-created microgrids (via /api/microgrids/create) get a
+;; stub file written here too, so they survive process restarts.
 ;; -----------------------------------------------------------------------------
 
-(make-microgrid
- :id 2200
- :name "Berlin demo"
- :grpc-port 8800
- :tso "TN"
- :topology
- (lambda ()
-   (make-grid-connection-point
-    :id 1
-    :rated-lower -90000.0
-    :rated-upper  100000.0
-    :successors
-    (list
-     (make-meter
-      :id 2
-      :main t                       ;; flagged for scenario-report peak tracking
-      :successors
-      (list
-       ;; Battery branch — every knob (SCADA delay, ramp, jitter,
-       ;; kVA-circle reactive envelope) comes from battery-inverter-
-       ;; defaults / battery-defaults.
-       (make-meter
-        :successors
-        (list (make-battery-inverter
-               :successors
-               (list (make-battery :initial-soc 85.0)))))   ; per-component override
-
-       ;; Solar branch — id 200 so the cloud-curve timer above can reach it.
-       (make-meter
-        :successors
-        (list (make-solar-inverter :id 200 :sunlight% 80.0)))   ; scenario starting point
-
-       ;; EV branch — near-full so the SoC-protect taper is observable.
-       (make-meter
-        :successors
-        (list (make-ev-charger
-               :initial-soc  92.0
-               :soc-upper   100.0
-               :rated-upper 22000.0)))
-
-       ;; CHP modeled as a constant -2 kW generator on its meter.
-       (make-meter :power -2000.0 :successors (list (make-chp)))
-
-       ;; Hidden consumer meter — invisible in ListComponents / tree but
-       ;; aggregated into the main meter. `%make-meter` bypasses
-       ;; meter-defaults so the explicit :power isn't combined with a
-       ;; default :stream-jitter-pct on a hidden component. Power
-       ;; follows a sine wave: peak 30 kW, trough 5 kW, one cycle
-       ;; every 15 min, plus ±500 W jitter. The pre-tick hook
-       ;; re-evaluates the lambda each physics tick.
-       (%make-meter
-        :id 100 :name "consumer" :hidden t
-        :power (lambda ()
-                 (+ 17500.0
-                    (* 12500.0 (sin (* 6.2831853 (/ (window-elapsed 900.0) 900.0))))
-                    (- (random 1000) 500))))))))))
+(load-microgrid-configs)
 
 ;; Load the starter scenarios library — seven multi-stage canned
 ;; scenarios appear in the Scenarios mode dropdown on a fresh
 ;; checkout. Edit scenarios/library/index.lisp to drop / add
 ;; entries; each file is self-contained `(define-scenario …)`.
 (load "scenarios/library/index.lisp")
-
-;; Apply UI-driven edits the user has clicked Persist on. The override
-;; filename is parameterised by microgrid-id so each microgrid in the
-;; enterprise gets its own. No-op when the file doesn't exist.
-(load-overrides)

@@ -542,6 +542,12 @@ impl Config {
 
     fn append_to_overrides_file(&self, src: &str) -> std::io::Result<()> {
         let path = self.overrides_path();
+        // Per-mg overrides live under `microgrids/`; the dir might not
+        // exist yet on a fresh checkout. Create lazily on the first
+        // write so the user doesn't have to seed it manually.
+        if let Some(dir) = path.parent() {
+            fs::create_dir_all(dir)?;
+        }
         let mut file = fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -656,12 +662,13 @@ impl Config {
             .filter(|p| !p.as_os_str().is_empty())
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| PathBuf::from("."));
-        // Per-microgrid overrides keyed by the active microgrid id (set
-        // by /api/mg/{id}/eval and the scenarios per-mg replay). Falls
-        // back to the first registered microgrid for callers that read
-        // overrides before any UI request has selected one — every
-        // config registers at least one microgrid, so this is always a
-        // valid id.
+        // Per-microgrid overrides live next to the per-mg config file
+        // under `microgrids/`. Keyed by the active microgrid id (set
+        // by /api/mg/{id}/eval and the scenarios per-mg replay).
+        // Falls back to the first registered microgrid for callers
+        // that read overrides before any UI request has selected one
+        // — every config registers at least one microgrid, so this
+        // is always a valid id.
         let mg_id = self.current_microgrid.read().unwrap_or_else(|| {
             self.microgrids
                 .lock()
@@ -670,7 +677,9 @@ impl Config {
                 .copied()
                 .unwrap_or_default()
         });
-        load_dir.join(format!("config.ui-overrides.{mg_id}.lisp"))
+        load_dir
+            .join("microgrids")
+            .join(format!("config.{mg_id}.overrides.lisp"))
     }
 
     /// Directory snapshots are stored in: a `snapshots/` subdirectory
@@ -1910,7 +1919,7 @@ mod tests {
         let (cfg, dir) = config_with("(set-microgrid-id 9) (%make-grid-connection-point :id 1)");
         cfg.eval("(world-rename-component 1 \"a\")").unwrap();
         cfg.eval("(world-rename-component 1 \"b\")").unwrap();
-        let path = dir.join("config.ui-overrides.9.lisp");
+        let path = dir.join("microgrids/config.9.overrides.lisp");
         let body = std::fs::read_to_string(&path).unwrap();
         assert!(body.contains("(world-rename-component 1 \"a\")"));
         assert!(body.contains("(world-rename-component 1 \"b\")"));
