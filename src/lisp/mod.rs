@@ -1067,6 +1067,38 @@ fn register_microgrids(
     id_allocator: Arc<std::sync::atomic::AtomicU64>,
     metadata: Arc<RwLock<Metadata>>,
 ) {
+    // Read-only accessors scripts use to dispatch on the active
+    // microgrid (E2 of gridpool-support.org). Outside a per-mg
+    // context (e.g. boot before any (make-microgrid) form, or a
+    // legacy /api/eval call without an mg scope) they fall back
+    // to the first registry entry so single-microgrid configs
+    // keep returning sensible values.
+    {
+        let cur = current.clone();
+        let reg = registry.clone();
+        ctx.defun("current-microgrid-id", move || -> Result<i64, tulisp::Error> {
+            if let Some(id) = *cur.read() {
+                return Ok(id as i64);
+            }
+            let r = reg.lock();
+            Ok(r.keys().next().copied().unwrap_or(0) as i64)
+        });
+    }
+    {
+        let cur = current.clone();
+        let reg = registry.clone();
+        ctx.defun(
+            "microgrid-name",
+            move || -> Result<String, tulisp::Error> {
+                let id_opt = *cur.read();
+                let r = reg.lock();
+                let entry = id_opt
+                    .and_then(|id| r.get(&id))
+                    .or_else(|| r.values().next());
+                Ok(entry.map(|e| e.def.name.clone()).unwrap_or_default())
+            },
+        );
+    }
     use crate::sim::microgrids::{
         DEFAULT_MICROGRID_ID, DEFAULT_MICROGRID_NAME, MicrogridDef, MicrogridEntry,
         next_free_id, next_free_port, with_microgrid,
