@@ -1577,18 +1577,60 @@ async fn events_ws(ws: WebSocketUpgrade, State(config): State<Config>) -> impl I
     ws.on_upgrade(move |socket| event_pump(socket, config))
 }
 
-async fn event_pump(mut socket: WebSocket, config: Config) {
-    let mut rx = config.site().subscribe_events();
-    // Optional: log tap. Only set when running through the binary;
-    // tests hit this path with no tap initialised, so subscribe via
-    // `Option<broadcast::Receiver>` and skip the branch when absent.
-    let mut log_rx = crate::ui_log::LOG_TAP.get().map(|t| t.subscribe());
+/// Wrap a SiteEvent with the originating microgrid id so the SPA
+/// can filter samples / topology bumps / setpoint events by the
+/// currently-active microgrid. `mg_id` is `None` for enterprise-
+/// scoped events (terminal log lines, ws lag notices).
+#[derive(Serialize)]
+struct WireEvent<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mg_id: Option<u64>,
+    #[serde(flatten)]
+    event: &'a crate::sim::events::SiteEvent,
+}
 
+async fn event_pump(mut socket: WebSocket, config: Config) {
+    use tokio::sync::broadcast::error::RecvError as BroadcastRecv;
+    let mut log_rx = crate::ui_log::LOG_TAP.get().map(|t| t.subscribe());
+    // Subscribe to every microgrid's per-site event bus. New
+    // microgrids registered after the WS connects aren't picked up
+    // until the client reconnects (the SPA's auto-reconnect
+    // backoff handles that). One forwarder task per site tags the
+    // event with its mg_id and pushes onto a shared mpsc.
+    let (fwd_tx, mut fwd_rx) =
+        tokio::sync::mpsc::channel::<(u64, crate::sim::events::SiteEvent)>(512);
+    {
+        let reg = config.microgrids();
+        let r = reg.lock();
+        for (id, entry) in r.iter() {
+            let mg_id = *id;
+            let mut rx = entry.site.subscribe_events();
+            let tx = fwd_tx.clone();
+            tokio::spawn(async move {
+                loop {
+                    match rx.recv().await {
+                        Ok(ev) => {
+                            if tx.send((mg_id, ev)).await.is_err() {
+                                break;
+                            }
+                        }
+                        Err(BroadcastRecv::Lagged(n)) => {
+                            log::warn!("ws: microgrid {mg_id} event bus lagged {n} samples");
+                            continue;
+                        }
+                        Err(BroadcastRecv::Closed) => break,
+                    }
+                }
+            });
+        }
+    }
+    drop(fwd_tx);
     loop {
         tokio::select! {
-            ev = rx.recv() => match ev {
-                Ok(event) => {
-                    let json = match serde_json::to_string(&event) {
+            ev = fwd_rx.recv() => match ev {
+                Some((mg_id, event)) => {
+                    let wire = WireEvent { mg_id: Some(mg_id), event: &event };
+                    let json = match serde_json::to_string(&wire) {
                         Ok(j) => j,
                         Err(e) => {
                             log::error!("ws: serde error: {e}");
@@ -1596,17 +1638,10 @@ async fn event_pump(mut socket: WebSocket, config: Config) {
                         }
                     };
                     if socket.send(Message::Text(json.into())).await.is_err() {
-                        break; // client closed
-                    }
-                }
-                Err(RecvError::Lagged(n)) => {
-                    log::warn!("ws: subscriber lagged by {n} events");
-                    let msg = serde_json::json!({"kind": "lagged", "skipped": n}).to_string();
-                    if socket.send(Message::Text(msg.into())).await.is_err() {
                         break;
                     }
                 }
-                Err(RecvError::Closed) => break,
+                None => break, // every forwarder dropped
             },
             // Log tap branch — only fires when LOG_TAP was initialised
             // (i.e. running under the binary, not in a unit test).
@@ -1623,14 +1658,15 @@ async fn event_pump(mut socket: WebSocket, config: Config) {
                         target: line.target,
                         message: line.message,
                     };
-                    if let Ok(json) = serde_json::to_string(&event)
+                    let wire = WireEvent { mg_id: None, event: &event };
+                    if let Ok(json) = serde_json::to_string(&wire)
                         && socket.send(Message::Text(json.into())).await.is_err()
                     {
                         break;
                     }
                 }
-                Err(RecvError::Lagged(_)) => continue,
-                Err(RecvError::Closed) => log_rx = None,
+                Err(BroadcastRecv::Lagged(_)) => continue,
+                Err(BroadcastRecv::Closed) => log_rx = None,
             },
             msg = socket.recv() => match msg {
                 Some(Ok(_)) => {}

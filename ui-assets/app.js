@@ -691,7 +691,7 @@ const visOptions = {
         callback(null);
         return;
       }
-      fetch("/api/eval", {
+      fetch(mgPath("eval"), {
         method: "POST",
         body: `(world-connect ${data.from} ${data.to})`,
       })
@@ -855,7 +855,7 @@ function jsToLispString(s) {
 }
 
 async function evalQuoted(expr) {
-  const res = await fetch("/api/eval", { method: "POST", body: expr });
+  const res = await fetch(mgPath("eval"), { method: "POST", body: expr });
   // res.json() can throw "JSON.parse: unexpected character" if the
   // server returned an empty / non-JSON body (e.g. a 5xx with HTML
   // error page, or a connection that died mid-response). Surface the
@@ -896,7 +896,7 @@ async function showComponent(d) {
     const slot = document.createElement("div");
     slot.className = "chart";
     container.appendChild(slot);
-    const url = `/api/history?id=${d.id}&metric=${metric}&window_s=300`;
+    const url = `${mgPath("history")}?id=${d.id}&metric=${metric}&window_s=300`;
     const resp = await (await fetch(url)).json();
     const samples = resp.samples || [];
     const xs = samples.map(([t]) => t / 1000);
@@ -1085,7 +1085,7 @@ async function pasteClipboard() {
   const src = reconnects
     ? `(let* (${bindings}) ${reconnects})`
     : `(let* (${bindings}) t)`;
-  const res = await fetch("/api/eval", { method: "POST", body: src });
+  const res = await fetch(mgPath("eval"), { method: "POST", body: src });
   const data = await res.json();
   if (!data.ok) notify(`Paste failed: ${data.error}`);
 }
@@ -1098,7 +1098,7 @@ async function deleteSelection() {
   }
   const removes = ids.map((id) => `(world-remove-component ${id})`).join(" ");
   const src = `(progn ${removes})`;
-  const res = await fetch("/api/eval", { method: "POST", body: src });
+  const res = await fetch(mgPath("eval"), { method: "POST", body: src });
   const data = await res.json();
   if (!data.ok) notify(`Delete failed: ${data.error}`);
 }
@@ -1185,7 +1185,7 @@ function setupAddForm() {
     const fn = sel.value;
     btn.disabled = true;
     try {
-      const res = await fetch("/api/eval", {
+      const res = await fetch(mgPath("eval"), {
         method: "POST",
         body: `(${fn})`,
       });
@@ -2113,7 +2113,7 @@ function setupRepl() {
     output.appendChild(entry);
     output.scrollTop = output.scrollHeight;
     try {
-      const res = await fetch("/api/eval", { method: "POST", body: src });
+      const res = await fetch(mgPath("eval"), { method: "POST", body: src });
       const data = await res.json();
       const klass = data.ok ? "repl-value" : "repl-error";
       const text = data.ok ? data.value : data.error;
@@ -2307,6 +2307,17 @@ function openWebSocket(onTopologyChanged) {
         console.warn("WS: JSON parse failed:", e.message, "payload was:", msg.data);
         return;
       }
+      // Per-microgrid events carry mg_id (post-D3); we filter out
+      // anything from a microgrid other than the currently-selected
+      // one so the dashboard doesn't paint with samples from a
+      // neighbour. Enterprise-scoped events (log, lagged) ship
+      // mg_id = undefined and pass through regardless.
+      const selectedMg = readSelectedMg();
+      const perMg = ev.kind === "sample" || ev.kind === "microgrid_sample"
+                 || ev.kind === "topology_changed" || ev.kind === "setpoint";
+      if (perMg && selectedMg != null && ev.mg_id != null && ev.mg_id !== selectedMg) {
+        return;
+      }
       if (ev.kind === "sample") {
         liveCharts.pushSample(ev.id, ev.metric, ev.ts_ms, ev.value);
         batteryRows.applySample(ev);
@@ -2455,7 +2466,7 @@ const dashboardTiles = (() => {
     },
     async backfill() {
       try {
-        const res = await fetch("/api/microgrid/latest");
+        const res = await fetch(mgPath("microgrid/latest"));
         if (!res.ok) return;
         const map = await res.json();
         for (const [stream, snap] of Object.entries(map)) paint(stream, snap);
@@ -2546,8 +2557,8 @@ const batteryRows = (() => {
     // the last sample is all we need.
     try {
       const [soc, dc] = await Promise.all([
-        fetch(`/api/history?id=${id}&metric=soc_pct&window_s=10`).then((r) => r.json()),
-        fetch(`/api/history?id=${id}&metric=dc_power_w&window_s=10`).then((r) => r.json()),
+        fetch(`${mgPath("history")}?id=${id}&metric=soc_pct&window_s=10`).then((r) => r.json()),
+        fetch(`${mgPath("history")}?id=${id}&metric=dc_power_w&window_s=10`).then((r) => r.json()),
       ]);
       const d = data.get(id);
       if (!d) return;
@@ -2721,9 +2732,9 @@ const inverterRows = (() => {
   async function seedFromHistory(id) {
     try {
       const [m, lo, hi] = await Promise.all([
-        fetch(`/api/history?id=${id}&metric=active_power_w&window_s=10`).then((r) => r.json()),
-        fetch(`/api/history?id=${id}&metric=active_power_lower_bound_w&window_s=10`).then((r) => r.json()),
-        fetch(`/api/history?id=${id}&metric=active_power_upper_bound_w&window_s=10`).then((r) => r.json()),
+        fetch(`${mgPath("history")}?id=${id}&metric=active_power_w&window_s=10`).then((r) => r.json()),
+        fetch(`${mgPath("history")}?id=${id}&metric=active_power_lower_bound_w&window_s=10`).then((r) => r.json()),
+        fetch(`${mgPath("history")}?id=${id}&metric=active_power_upper_bound_w&window_s=10`).then((r) => r.json()),
       ]);
       const d = data.get(id);
       if (!d) return;
@@ -2836,11 +2847,11 @@ const tier5Rows = (() => {
   async function seedFromHistory(id, category) {
     const powerMetric = category === "chp" ? "active_power_w" : "dc_power_w";
     const calls = [
-      fetch(`/api/history?id=${id}&metric=${powerMetric}&window_s=10`).then((r) => r.json()),
+      fetch(`${mgPath("history")}?id=${id}&metric=${powerMetric}&window_s=10`).then((r) => r.json()),
     ];
     if (category === "ev-charger") {
       calls.push(
-        fetch(`/api/history?id=${id}&metric=soc_pct&window_s=10`).then((r) => r.json()),
+        fetch(`${mgPath("history")}?id=${id}&metric=soc_pct&window_s=10`).then((r) => r.json()),
       );
     }
     try {
@@ -3023,7 +3034,7 @@ function formulaToHtml(node) {
 // uniform.
 async function openFormulaPanel(stream) {
   try {
-    const res = await fetch("/api/microgrid/formulas");
+    const res = await fetch(mgPath("microgrid/formulas"));
     if (!res.ok) return;
     const map = await res.json();
     const src = map[stream];
@@ -3076,7 +3087,7 @@ const gridFrequency = (() => {
     if (mainId == null) return;
     try {
       const r = await fetch(
-        `/api/history?id=${mainId}&metric=frequency_hz&window_s=60`,
+        `${mgPath("history")}?id=${mainId}&metric=frequency_hz&window_s=60`,
       );
       if (!r.ok) return;
       const j = await r.json();
@@ -3103,6 +3114,16 @@ const gridFrequency = (() => {
   }
   return { applyTopology, applySample, backfill };
 })();
+
+// Per-mg URL helper: prefixes /api/mg/{selected_id}/ when a
+// microgrid is selected, falls back to /api/{suffix} otherwise
+// (used by the loopback HTTP backfill on legacy endpoints that
+// haven't been migrated yet, e.g. /api/setpoints + /api/format
+// + /api/snapshots).
+function mgPath(suffix) {
+  const id = readSelectedMg();
+  return id == null ? `/api/${suffix}` : `/api/mg/${id}/${suffix}`;
+}
 
 // ─── Microgrids mode (list view + selection) ───────────────────────────────
 //
@@ -3423,7 +3444,7 @@ const scenariosPanel = (() => {
 
 async function loadFormulas() {
   try {
-    const res = await fetch("/api/microgrid/formulas");
+    const res = await fetch(mgPath("microgrid/formulas"));
     if (!res.ok) return;
     const map = await res.json();
     for (const [stream, formula] of Object.entries(map)) {
@@ -3655,7 +3676,7 @@ const pulseBar = (() => {
     const el = document.getElementById("pulse-loopback");
     if (!el) return;
     try {
-      const res = await fetch("/api/microgrid/status");
+      const res = await fetch(mgPath("microgrid/status"));
       const j = await res.json();
       if (res.ok && j.connected) {
         el.textContent = `✓ ${j.component_count ?? "?"} nodes`;
@@ -3839,7 +3860,7 @@ function setupModeToggle() {
 
 async function refreshTopology() {
   try {
-    const res = await fetch("/api/topology");
+    const res = await fetch(mgPath("topology"));
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     topology.apply(data);
