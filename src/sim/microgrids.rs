@@ -18,7 +18,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use serde::Serialize;
 
 use crate::sim::MicrogridSite;
@@ -105,6 +105,84 @@ pub fn next_free_port(registry: &SharedMicrogrids) -> u16 {
         }
     }
     candidate
+}
+
+/// Dynamic "current microgrid" pointer + registry lookup. Every
+/// lisp setter / make-* defun captures a `SharedSiteRouter` and
+/// calls `.site()` at the *moment of invocation* to find the
+/// `MicrogridSite` it should act on:
+///
+///   1. If `current_microgrid` is set (via /api/mg/{id}/eval, the
+///      scenarios per-microgrid replay, or the (make-microgrid)
+///      body), and that id resolves to an entry in the registry,
+///      return that entry's site.
+///   2. Otherwise return the first registry entry's site
+///      (BTreeMap min-id ordering), so single-microgrid configs
+///      keep working without ever touching `current_microgrid`.
+///   3. Otherwise fall back to the bootstrap site supplied at
+///      Router construction time — covers the brief window
+///      between `Config::new` allocating its initial site and
+///      the post-eval `ensure_default_microgrid_entry` seeding
+///      the registry.
+///
+/// Holding a `SharedSiteRouter` is cheap (Arc clone); the inner
+/// `RwLock` only contends with the rare write path that flips
+/// `current_microgrid`.
+pub struct SiteRouter {
+    registry: SharedMicrogrids,
+    current: Arc<RwLock<Option<u64>>>,
+    bootstrap: MicrogridSite,
+}
+
+pub type SharedSiteRouter = Arc<SiteRouter>;
+
+impl SiteRouter {
+    pub fn new(
+        registry: SharedMicrogrids,
+        current: Arc<RwLock<Option<u64>>>,
+        bootstrap: MicrogridSite,
+    ) -> SharedSiteRouter {
+        Arc::new(Self {
+            registry,
+            current,
+            bootstrap,
+        })
+    }
+
+    /// Resolve the active site under the rules above. Cheap clone
+    /// of the underlying `MicrogridSite` (`Arc<MicrogridSiteInner>`
+    /// inside).
+    pub fn site(&self) -> MicrogridSite {
+        if let Some(id) = *self.current.read()
+            && let Some(entry) = self.registry.lock().get(&id)
+        {
+            return entry.site.clone();
+        }
+        if let Some(entry) = self.registry.lock().values().next() {
+            return entry.site.clone();
+        }
+        self.bootstrap.clone()
+    }
+}
+
+/// Shared `Arc<RwLock<Option<u64>>>` carrying the active microgrid
+/// id. Lifted out so callers (HTTP handlers, scenario tick) can
+/// flip it via `with_microgrid`.
+pub type CurrentMicrogrid = Arc<RwLock<Option<u64>>>;
+
+pub fn new_current_microgrid() -> CurrentMicrogrid {
+    Arc::new(RwLock::new(None))
+}
+
+/// Run `f` with `current_microgrid` temporarily set to `id`, then
+/// restore the prior value. Single-threaded usage is assumed (the
+/// interpreter ctx serialises eval anyway); `RwLock` is the
+/// cheapest read-mostly primitive that fits.
+pub fn with_microgrid<R>(current: &CurrentMicrogrid, id: u64, f: impl FnOnce() -> R) -> R {
+    let prior = current.write().replace(id);
+    let out = f();
+    *current.write() = prior;
+    out
 }
 
 /// Smallest microgrid id not currently registered, starting at

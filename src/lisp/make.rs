@@ -203,11 +203,12 @@ AsPlist! {
 // Registration
 // -----------------------------------------------------------------------------
 
-pub fn register(ctx: &mut TulispContext, world: MicrogridSite) {
-    let w = world.clone();
+pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedSiteRouter) {
+    let r = router.clone();
     ctx.defun(
         "%make-grid-connection-point",
         move |_ctx: &mut TulispContext, args: Plist<GridArgs>| {
+            let w = r.site();
             let a = args.into_inner();
             let id = id_or_next(&w, a.id);
             let rated_active_bounds = match (a.rated_lower, a.rated_upper) {
@@ -227,10 +228,11 @@ pub fn register(ctx: &mut TulispContext, world: MicrogridSite) {
         },
     );
 
-    let w = world.clone();
+    let r = router.clone();
     ctx.defun(
         "%make-meter",
         move |_ctx: &mut TulispContext, args: Plist<MeterArgs>| {
+            let w = r.site();
             let a = args.into_inner();
             let id = id_or_next(&w, a.id);
             let interval = ms_to_duration(a.interval, 1000);
@@ -262,10 +264,11 @@ pub fn register(ctx: &mut TulispContext, world: MicrogridSite) {
         },
     );
 
-    let w = world.clone();
+    let r = router.clone();
     ctx.defun(
         "%make-battery",
         move |_ctx: &mut TulispContext, args: Plist<BatteryArgs>| {
+            let w = r.site();
             let a = args.into_inner();
             let id = id_or_next(&w, a.id);
             let interval = ms_to_duration(a.interval, 1000);
@@ -309,10 +312,11 @@ pub fn register(ctx: &mut TulispContext, world: MicrogridSite) {
         },
     );
 
-    let w = world.clone();
+    let r = router.clone();
     ctx.defun(
         "%make-battery-inverter",
         move |_ctx: &mut TulispContext, args: Plist<BatteryInverterArgs>| {
+            let w = r.site();
             let a = args.into_inner();
             let id = id_or_next(&w, a.id);
             let interval = ms_to_duration(a.interval, 1000);
@@ -371,10 +375,11 @@ pub fn register(ctx: &mut TulispContext, world: MicrogridSite) {
         },
     );
 
-    let w = world.clone();
+    let r = router.clone();
     ctx.defun(
         "%make-solar-inverter",
         move |_ctx: &mut TulispContext, args: Plist<SolarInverterArgs>| {
+            let w = r.site();
             let a = args.into_inner();
             let id = id_or_next(&w, a.id);
             let interval = ms_to_duration(a.interval, 1000);
@@ -438,10 +443,11 @@ pub fn register(ctx: &mut TulispContext, world: MicrogridSite) {
         },
     );
 
-    let w = world.clone();
+    let r = router.clone();
     ctx.defun(
         "%make-ev-charger",
         move |_ctx: &mut TulispContext, args: Plist<EvChargerArgs>| {
+            let w = r.site();
             let a = args.into_inner();
             let id = id_or_next(&w, a.id);
             let interval = ms_to_duration(a.interval, 1000);
@@ -488,10 +494,11 @@ pub fn register(ctx: &mut TulispContext, world: MicrogridSite) {
         },
     );
 
-    let w = world;
+    let r = router;
     ctx.defun(
         "%make-chp",
         move |_ctx: &mut TulispContext, args: Plist<ChpArgs>| {
+            let w = r.site();
             let a = args.into_inner();
             let id = id_or_next(&w, a.id);
             let jitter = a.stream_jitter_pct.unwrap_or(0.0) as f32;
@@ -602,10 +609,14 @@ mod tests {
     /// that drive `refresh_inputs` (lambda / symbol `:power` etc.)
     /// after the components have registered.
     fn run_with_ctx(src: &str) -> (MicrogridSite, TulispContext) {
+        use crate::sim::microgrids::{
+            SiteRouter, new_current_microgrid, new_registry,
+        };
         let world = MicrogridSite::new();
         let mut ctx = TulispContext::new();
         crate::lisp::handle::register(&mut ctx);
-        register(&mut ctx, world.clone());
+        let router = SiteRouter::new(new_registry(), new_current_microgrid(), world.clone());
+        register(&mut ctx, router);
         // Load the `make-*` wrappers + `*-defaults` plists so tests
         // exercise the same wrapper → primitive path config.lisp uses.
         ctx.eval_string(include_str!("../../sim/defaults.lisp"))

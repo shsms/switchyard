@@ -27,6 +27,7 @@ use parking_lot::{Mutex, RwLock};
 use tulisp::{Error, SharedMut, TulispContext, TulispObject};
 
 use crate::sim::MicrogridSite;
+use crate::sim::microgrids::{CurrentMicrogrid, SharedSiteRouter, SiteRouter};
 
 /// Microgrid identity + gateway-level settings, exposed to the Lisp
 /// config and read back by `MicrogridServer`.
@@ -96,6 +97,16 @@ pub struct Config {
     /// shape that only calls `(set-microgrid-id N)`) keep working
     /// unchanged. See `crate::sim::microgrids` for the data model.
     pub(crate) microgrids: crate::sim::microgrids::SharedMicrogrids,
+    /// Dynamic site lookup the lisp defuns capture. Resolves to
+    /// the current microgrid's site at call time, falling back
+    /// to the first registry entry and finally to the bootstrap
+    /// site allocated in `Config::new`. See
+    /// [`crate::sim::microgrids::SiteRouter`].
+    pub(crate) router: SharedSiteRouter,
+    /// Active microgrid id, written by /api/mg/{id}/eval and the
+    /// scenario per-microgrid replay. `None` defers to the
+    /// router's fallback (first registry entry).
+    pub(crate) current_microgrid: CurrentMicrogrid,
 }
 
 /// One top-level form found in the per-microgrid override file. The
@@ -126,6 +137,8 @@ impl Config {
         let clock = crate::sim::clock::new_clock();
         let scenarios = crate::sim::scenarios::new_registry();
         let microgrids = crate::sim::microgrids::new_registry();
+        let current_microgrid = crate::sim::microgrids::new_current_microgrid();
+        let router = SiteRouter::new(microgrids.clone(), current_microgrid.clone(), world.clone());
 
         // `Path::parent()` returns `Some("")` for bare filenames like
         // "config.lisp" — tulisp rejects empty paths, so fall back to
@@ -138,11 +151,11 @@ impl Config {
         ctx.set_load_path(Some(&load_dir))
             .map_err(|e| format!("set_load_path({}): {e}", load_dir.display()))?;
 
-        register_runtime(&mut ctx, &world, metadata.clone(), load_dir.clone());
+        register_runtime(&mut ctx, router.clone(), metadata.clone(), load_dir.clone());
         register_clock(&mut ctx, clock.clone());
         register_watches(&mut ctx, load_dir.clone(), extra_watches.clone());
         register_scenarios(&mut ctx, scenarios.clone());
-        register_microgrids(&mut ctx, microgrids.clone(), world.clone(), metadata.clone());
+        register_microgrids(&mut ctx, microgrids.clone(), router.clone(), metadata.clone());
 
         // tulisp-async gives the config DSL access to run-with-timer,
         // cancel-timer, sleep-for and friends, used to drive
@@ -226,6 +239,8 @@ impl Config {
             clock,
             scenarios,
             microgrids,
+            router,
+            current_microgrid,
         })
     }
 
@@ -297,6 +312,12 @@ impl Config {
         let mut ctx = TulispContext::new();
         let world = MicrogridSite::new();
         let metadata = Arc::new(RwLock::new(Metadata::default()));
+        // Throwaway router for the TAGS pass — no microgrids
+        // registered, so SiteRouter::site falls through to the
+        // bootstrap site and every defun captures that one.
+        let microgrids = crate::sim::microgrids::new_registry();
+        let current = crate::sim::microgrids::new_current_microgrid();
+        let router = SiteRouter::new(microgrids, current, world.clone());
 
         let load_dir: PathBuf = roots
             .first()
@@ -307,7 +328,7 @@ impl Config {
         ctx.set_load_path(Some(&load_dir))
             .map_err(|e| Error::os_error(format!("set_load_path({}): {e}", load_dir.display())))?;
 
-        register_runtime(&mut ctx, &world, metadata, load_dir);
+        register_runtime(&mut ctx, router, metadata, load_dir);
         // The Handle is unused here — tags_table is a one-shot parse
         // pass, no timers ever fire — but `register` still installs
         // the four builtins so that `(run-with-timer …)` etc. show up
@@ -971,7 +992,7 @@ fn ensure_default_microgrid_entry(
 fn register_microgrids(
     ctx: &mut TulispContext,
     registry: crate::sim::microgrids::SharedMicrogrids,
-    site: MicrogridSite,
+    router: SharedSiteRouter,
     metadata: Arc<RwLock<Metadata>>,
 ) {
     use crate::sim::microgrids::{
@@ -1009,13 +1030,11 @@ fn register_microgrids(
                 grpc_port,
                 tso: a.tso.clone(),
             };
-            registry.lock().insert(
-                id,
-                MicrogridEntry {
-                    def,
-                    site: site.clone(),
-                },
-            );
+            // Resolve the site BEFORE locking the registry —
+            // SiteRouter::site internally locks the same registry,
+            // and parking_lot::Mutex is non-reentrant.
+            let site = router.site();
+            registry.lock().insert(id, MicrogridEntry { def, site });
             // Sync legacy metadata to the *first* registered
             // microgrid so the existing MicrogridInfo gRPC path
             // (which reads from Metadata) keeps producing
@@ -1041,23 +1060,23 @@ fn register_microgrids(
 /// Register every Rust function the config DSL needs.
 fn register_runtime(
     ctx: &mut TulispContext,
-    world: &MicrogridSite,
+    router: SharedSiteRouter,
     metadata: Arc<RwLock<Metadata>>,
     load_dir: PathBuf,
 ) {
     add_log_functions(ctx);
     handle::register(ctx);
-    make::register(ctx, world.clone());
-    register_reset(ctx, world.clone());
-    register_grid_state(ctx, world.clone());
+    make::register(ctx, router.clone());
+    register_reset(ctx, router.clone());
+    register_grid_state(ctx, router.clone());
     register_metadata(ctx, metadata.clone());
-    register_runtime_modes(ctx, world.clone());
-    register_load_drivers(ctx, world.clone());
+    register_runtime_modes(ctx, router.clone());
+    register_load_drivers(ctx, router.clone());
     register_time_helpers(ctx);
-    register_reactive_setters(ctx, world.clone());
-    register_setpoints(ctx, world.clone(), metadata);
-    register_world_ops(ctx, world.clone());
-    register_scenario(ctx, world.clone());
+    register_reactive_setters(ctx, router.clone());
+    register_setpoints(ctx, router.clone(), metadata);
+    register_world_ops(ctx, router.clone());
+    register_scenario(ctx, router);
     register_fs_helpers(ctx, load_dir);
     csv_profile::register(ctx);
 }
@@ -1067,26 +1086,29 @@ fn register_runtime(
 /// at interesting moments, and `(scenario-stop)` when finished. The
 /// underlying journal lives on `MicrogridSite` and is read by the
 /// `/api/scenario` and `/api/scenario/events` endpoints.
-fn register_scenario(ctx: &mut TulispContext, world: MicrogridSite) {
-    let w = world.clone();
+fn register_scenario(ctx: &mut TulispContext, router: SharedSiteRouter) {
+    let r = router.clone();
     ctx.defun(
         "scenario-start",
         move |name: String| -> Result<bool, Error> {
+            let w = r.site();
             w.scenario_start(name, Utc::now());
             Ok(true)
         },
     );
 
-    let w = world.clone();
+    let r = router.clone();
     ctx.defun("scenario-stop", move || -> Result<bool, Error> {
+            let w = r.site();
         w.scenario_stop(Utc::now());
         Ok(true)
     });
 
-    let w = world.clone();
+    let r = router.clone();
     ctx.defun(
         "scenario-event",
         move |kind: TulispObject, payload: TulispObject| -> Result<i64, Error> {
+            let w = r.site();
             // Accept either a string or a symbol for `kind` so
             // scripts can write `(scenario-event 'outage "bat-1003")`
             // alongside `(scenario-event "note" "warming up")`.
@@ -1102,10 +1124,11 @@ fn register_scenario(ctx: &mut TulispContext, world: MicrogridSite) {
         },
     );
 
-    let w = world.clone();
+    let r = router.clone();
     ctx.defun(
         "scenario-record-csv",
         move |dir: String| -> Result<i64, Error> {
+            let w = r.site();
             let path = std::path::PathBuf::from(dir);
             w.scenario_open_csv(&path)
                 .map(|n| n as i64)
@@ -1113,13 +1136,16 @@ fn register_scenario(ctx: &mut TulispContext, world: MicrogridSite) {
         },
     );
 
-    let w = world.clone();
+    let r = router.clone();
     ctx.defun("scenario-stop-csv", move || -> Result<i64, Error> {
+            let w = r.site();
         Ok(w.scenario_close_csv() as i64)
     });
 
+    let r = router;
     ctx.defun("scenario-elapsed", move || -> Result<f64, Error> {
-        Ok(world.scenario_elapsed_s(Utc::now()))
+        let w = r.site();
+        Ok(w.scenario_elapsed_s(Utc::now()))
     });
 }
 
@@ -1142,11 +1168,13 @@ fn register_scenario(ctx: &mut TulispContext, world: MicrogridSite) {
 /// immediately" escape (used by tests) and bypasses the clamp.
 const MIN_SET_ACTIVE_POWER_LIFETIME_MS: u64 = 150;
 
-fn register_setpoints(ctx: &mut TulispContext, world: MicrogridSite, metadata: Arc<RwLock<Metadata>>) {
+fn register_setpoints(ctx: &mut TulispContext, router: SharedSiteRouter, metadata: Arc<RwLock<Metadata>>) {
+    let r = router;
     ctx.defun(
         "set-active-power",
         move |id: i64, watts: f64, lifetime_ms: Option<i64>| -> Result<bool, Error> {
-            let component = world.get(id as u64).ok_or_else(|| {
+            let w = r.site();
+            let component = w.get(id as u64).ok_or_else(|| {
                 Error::invalid_argument(format!("set-active-power: component {id} not found"))
             })?;
             component
@@ -1163,7 +1191,7 @@ fn register_setpoints(ctx: &mut TulispContext, world: MicrogridSite, metadata: A
                     Duration::from_millis(clamped)
                 })
                 .unwrap_or_else(|| metadata.read().default_request_lifetime);
-            world.add_timeout(id as u64, lifetime);
+            w.add_timeout(id as u64, lifetime);
             Ok(true)
         },
     );
@@ -1172,25 +1200,30 @@ fn register_setpoints(ctx: &mut TulispContext, world: MicrogridSite, metadata: A
 /// Mutation defuns the UI editor (and power-user REPL) call to
 /// reshape the running MicrogridSite — remove a component, drop an edge,
 /// rename for display.
-fn register_world_ops(ctx: &mut TulispContext, world: MicrogridSite) {
-    let w = world.clone();
+fn register_world_ops(ctx: &mut TulispContext, router: SharedSiteRouter) {
+    let r = router.clone();
     ctx.defun("world-connect", move |parent: i64, child: i64| -> bool {
+            let w = r.site();
         // MicrogridSite::connect doesn't return a status; we always ack.
         w.connect(parent as u64, child as u64);
         true
     });
-    let w = world.clone();
+    let r = router.clone();
     ctx.defun("world-remove-component", move |id: i64| -> bool {
+            let w = r.site();
         w.remove_component(id as u64)
     });
-    let w = world.clone();
+    let r = router.clone();
     ctx.defun("world-disconnect", move |parent: i64, child: i64| -> bool {
+            let w = r.site();
         w.disconnect(parent as u64, child as u64)
     });
+    let r = router;
     ctx.defun(
         "world-rename-component",
         move |id: i64, name: String| -> bool {
-            world.rename(id as u64, name);
+            let w = r.site();
+            w.rename(id as u64, name);
             true
         },
     );
@@ -1214,15 +1247,16 @@ fn register_fs_helpers(ctx: &mut TulispContext, load_dir: PathBuf) {
     });
 }
 
-fn register_reactive_setters(ctx: &mut TulispContext, world: MicrogridSite) {
+fn register_reactive_setters(ctx: &mut TulispContext, router: SharedSiteRouter) {
     // Same opt-in convention as the make-* plist args:
     //   value > 0  → that constraint is active with this magnitude
     //   value ≤ 0  → that constraint is disabled
     // Mirrors what a SunSpec / IEEE 1547-2018 EMS pushes via Modbus.
-    let w = world.clone();
+    let r = router.clone();
     ctx.defun(
         "set-reactive-pf-limit",
         move |id: i64, k: f64| -> Result<bool, Error> {
+            let w = r.site();
             match w.get(id as u64) {
                 Some(c) => {
                     c.set_reactive_pf_limit(if k > 0.0 { Some(k as f32) } else { None });
@@ -1235,10 +1269,12 @@ fn register_reactive_setters(ctx: &mut TulispContext, world: MicrogridSite) {
         },
     );
 
+    let r = router;
     ctx.defun(
         "set-reactive-apparent-va",
         move |id: i64, va: f64| -> Result<bool, Error> {
-            match world.get(id as u64) {
+            let w = r.site();
+            match w.get(id as u64) {
                 Some(c) => {
                     c.set_reactive_apparent_va(if va > 0.0 { Some(va as f32) } else { None });
                     Ok(true)
@@ -1289,7 +1325,7 @@ fn register_watches(
     });
 }
 
-fn register_load_drivers(ctx: &mut TulispContext, world: MicrogridSite) {
+fn register_load_drivers(ctx: &mut TulispContext, router: SharedSiteRouter) {
     // Drive a meter's `:power` slot from Lisp. Accepts a number, a
     // lambda, or a symbol — numeric values land as a constant
     // override (microsim-style timer-driven load curve); lambda /
@@ -1297,10 +1333,11 @@ fn register_load_drivers(ctx: &mut TulispContext, world: MicrogridSite) {
     // re-resolves on every tick. UI's `:power` text input piggy-
     // backs on this: whatever the user types becomes the second
     // argument here.
-    let w = world.clone();
+    let r = router.clone();
     ctx.defun(
         "set-meter-power",
         move |id: i64, value: TulispObject| -> Result<bool, Error> {
+            let w = r.site();
             let Some(c) = w.get(id as u64) else {
                 return Err(Error::invalid_argument(format!(
                     "set-meter-power: component {id} not found"
@@ -1327,10 +1364,12 @@ fn register_load_drivers(ctx: &mut TulispContext, world: MicrogridSite) {
     // friends from scenarios or the UI. Per-tick `min-avail =
     // rated-lower × sunlight%/100` clamp picks up the new value on
     // the next refresh + tick pair.
+    let r = router;
     ctx.defun(
         "set-solar-sunlight",
         move |id: i64, value: TulispObject| -> Result<bool, Error> {
-            let Some(c) = world.get(id as u64) else {
+            let w = r.site();
+            let Some(c) = w.get(id as u64) else {
                 return Err(Error::invalid_argument(format!(
                     "set-solar-sunlight: component {id} not found"
                 )));
@@ -1381,28 +1420,32 @@ fn register_time_helpers(ctx: &mut TulispContext) {
     });
 }
 
-fn register_runtime_modes(ctx: &mut TulispContext, world: MicrogridSite) {
+fn register_runtime_modes(ctx: &mut TulispContext, router: SharedSiteRouter) {
     use crate::sim::runtime::{CommandMode, Health, TelemetryMode};
 
-    let w = world.clone();
+    let r = router.clone();
     ctx.defun("set-component-health", move |id: i64, h: Health| -> bool {
+            let w = r.site();
         w.set_health(id as u64, h);
         true
     });
 
-    let w = world.clone();
+    let r = router.clone();
     ctx.defun(
         "set-component-telemetry-mode",
         move |id: i64, m: TelemetryMode| -> bool {
+            let w = r.site();
             w.set_telemetry_mode(id as u64, m);
             true
         },
     );
 
+    let r = router;
     ctx.defun(
         "set-component-command-mode",
         move |id: i64, m: CommandMode| -> bool {
-            world.set_command_mode(id as u64, m);
+            let w = r.site();
+            w.set_command_mode(id as u64, m);
             true
         },
     );
@@ -1469,30 +1512,32 @@ fn add_log_functions(ctx: &mut TulispContext) {
         });
 }
 
-fn register_reset(ctx: &mut TulispContext, world: MicrogridSite) {
+fn register_reset(ctx: &mut TulispContext, router: SharedSiteRouter) {
     // Rust-side: clear the MicrogridSite registry. The Lisp-side `reset-state`
     // (in sim/common.lisp) wraps this and also cancels any
     // outstanding tulisp-async timers so the next config load doesn't
     // double-fire `every` callbacks.
     ctx.defun("world-reset", move || -> Result<bool, Error> {
-        world.reset();
+        router.site().reset();
         Ok(true)
     });
 }
 
-fn register_grid_state(ctx: &mut TulispContext, world: MicrogridSite) {
-    let w = world.clone();
+fn register_grid_state(ctx: &mut TulispContext, router: SharedSiteRouter) {
+    let r = router.clone();
     ctx.defun("set-frequency", move |hz: f64| -> Result<bool, Error> {
+            let w = r.site();
         let mut state = w.grid_state();
         state.frequency_hz = hz as f32;
         w.set_grid_state(state);
         Ok(true)
     });
 
-    let w = world.clone();
+    let r = router.clone();
     ctx.defun(
         "set-voltage-per-phase",
         move |p1: f64, p2: f64, p3: f64| -> Result<bool, Error> {
+            let w = r.site();
             let mut state = w.grid_state();
             state.voltage_per_phase = (p1 as f32, p2 as f32, p3 as f32);
             w.set_grid_state(state);
@@ -1500,10 +1545,12 @@ fn register_grid_state(ctx: &mut TulispContext, world: MicrogridSite) {
         },
     );
 
+    let r = router;
     ctx.defun(
         "set-physics-tick-ms",
         move |ms: i64| -> Result<bool, Error> {
-            world.set_physics_tick_ms(ms.max(1) as u64);
+            let w = r.site();
+            w.set_physics_tick_ms(ms.max(1) as u64);
             Ok(true)
         },
     );
