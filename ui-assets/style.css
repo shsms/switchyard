@@ -542,6 +542,21 @@ body[data-mode="microgrids"][data-mg-view="selected"][data-subview="topology"]  
   color: var(--fg);
 }
 
+.repl-mg-chip {
+  font: inherit;
+  font-size: 12px;
+  background: var(--bg-deep, #1b1f27);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 10px;
+  color: var(--accent);
+  cursor: pointer;
+  white-space: nowrap;
+  align-self: stretch;
+}
+.repl-mg-chip:hover { border-color: var(--accent); }
+.repl-mg-chip.muted { color: var(--muted); }
+
 /* Mode toggle in the header. Sits just right of the status pill,
    left of everything else, so it reads as the "what am I looking
    at" affordance. */

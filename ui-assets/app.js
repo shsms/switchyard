@@ -3206,8 +3206,10 @@ const microgridsPanel = (() => {
     } catch (_) {
       cached = [];
     }
+    window.__mgPanelCache = cached;
     renderList();
     renderBreadcrumb();
+    renderReplMgChip();
     schedulePoll();
   }
 
@@ -3815,6 +3817,40 @@ function selectMicrogrid(id) {
     localStorage.setItem(MG_SELECTED_KEY, String(id));
   }
   applyMode(localStorage.getItem(MODE_KEY) || "microgrids");
+  renderReplMgChip();
+}
+
+// REPL chip — surfaces which microgrid the REPL form's POSTs
+// route to. Mirrors mgPath()'s logic: shows "→ {name}" when a
+// microgrid is selected, "→ enterprise" otherwise. Clicking
+// jumps to the Microgrids list so the operator can pick a
+// different one.
+function renderReplMgChip() {
+  const chip = document.getElementById("repl-mg-chip");
+  if (!chip) return;
+  const id = readSelectedMg();
+  if (id == null) {
+    chip.textContent = "→ enterprise";
+    chip.classList.add("muted");
+    return;
+  }
+  chip.classList.remove("muted");
+  // Pull the name from the microgridsPanel's cache if available;
+  // fall back to "#id" so the chip never sits empty.
+  const cached = (window.__mgPanelCache || []).find((m) => m.id === id);
+  chip.textContent = `→ ${cached ? cached.name || `#${id}` : `#${id}`}`;
+}
+
+function setupReplMgChip() {
+  const chip = document.getElementById("repl-mg-chip");
+  if (!chip) return;
+  chip.addEventListener("click", () => {
+    localStorage.setItem(MODE_KEY, "microgrids");
+    localStorage.removeItem(MG_SELECTED_KEY);
+    applyMode("microgrids");
+    renderReplMgChip();
+  });
+  renderReplMgChip();
 }
 
 function setupModeToggle() {
@@ -3925,6 +3961,7 @@ async function init() {
   setupContextMenu();
   setupHelpButton();
   setupModeToggle();
+  setupReplMgChip();
   setupFormulaTileClicks();
   scenariosPanel.setup();
   await clockState.init();
