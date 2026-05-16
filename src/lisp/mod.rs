@@ -155,7 +155,13 @@ impl Config {
         register_clock(&mut ctx, clock.clone());
         register_watches(&mut ctx, load_dir.clone(), extra_watches.clone());
         register_scenarios(&mut ctx, scenarios.clone());
-        register_microgrids(&mut ctx, microgrids.clone(), router.clone(), metadata.clone());
+        register_microgrids(
+            &mut ctx,
+            microgrids.clone(),
+            router.clone(),
+            current_microgrid.clone(),
+            metadata.clone(),
+        );
 
         // tulisp-async gives the config DSL access to run-with-timer,
         // cancel-timer, sleep-for and friends, used to drive
@@ -930,16 +936,16 @@ tulisp::AsPlist! {
         /// Optional TSO zone label (informational; see
         /// `crate::sim::microgrids::MicrogridDef::tso`).
         tso: Option<String> {= None},
-        /// The grid-connection-point form whose evaluation
-        /// registers the microgrid's components into the current
-        /// site. Evaluated *before* make-microgrid sees it (regular
-        /// argument-evaluation order), so by the time the body
-        /// runs the nested topology already exists; we only stash
-        /// the handle here for forward-compat (multi-site dispatch
-        /// will use it to know which component is the microgrid's
-        /// grid root). Optional so a config can register an empty
+        /// Zero-arg lambda whose body builds the microgrid's
+        /// topology — typically a single nested
+        /// `(make-grid-connection-point …)` call. The lambda
+        /// form is required (not a plain expression) because the
+        /// body must evaluate *after* make-microgrid has set the
+        /// current-microgrid pointer, so the nested make-* calls
+        /// register into the new site instead of the previously-
+        /// active one. Optional so a config can register an empty
         /// microgrid that the UI fills in component-by-component.
-        grid: Option<crate::lisp::value::LispValue> {= None},
+        topology: Option<crate::lisp::value::LispValue> {= None},
     }
 }
 
@@ -984,24 +990,34 @@ fn ensure_default_microgrid_entry(
     );
 }
 
-/// Register `(make-microgrid …)`. Upserts a microgrid entry in
-/// the registry; the entry's site is the binary's single
-/// `MicrogridSite` (multi-site dispatch lands in a follow-up
-/// commit). Also syncs `metadata.microgrid_id` / `metadata.name`
-/// so the legacy gRPC `MicrogridInfo` path keeps working.
+/// Register `(make-microgrid …)`. Each call creates a fresh
+/// `MicrogridSite`, inserts a registry entry for it, sets the
+/// `CurrentMicrogrid` pointer, funcalls the `:topology` lambda
+/// (whose body's make-* calls then register into the new site
+/// via the router's per-call dispatch), and finally restores the
+/// previous pointer.
+///
+/// Also syncs `metadata.microgrid_id` / `metadata.name` to the
+/// first registered microgrid so the legacy `MicrogridInfo` gRPC
+/// path keeps producing single-microgrid-shaped responses on the
+/// default gRPC port.
 fn register_microgrids(
     ctx: &mut TulispContext,
     registry: crate::sim::microgrids::SharedMicrogrids,
     router: SharedSiteRouter,
+    current: crate::sim::microgrids::CurrentMicrogrid,
     metadata: Arc<RwLock<Metadata>>,
 ) {
     use crate::sim::microgrids::{
         DEFAULT_MICROGRID_ID, DEFAULT_MICROGRID_NAME, MicrogridDef, MicrogridEntry,
-        next_free_id, next_free_port,
+        next_free_id, next_free_port, with_microgrid,
     };
+    let _ = router;
     ctx.defun(
         "make-microgrid",
-        move |args: tulisp::Plist<MakeMicrogridArgs>| -> Result<i64, tulisp::Error> {
+        move |ctx: &mut TulispContext,
+              args: tulisp::Plist<MakeMicrogridArgs>|
+              -> Result<i64, tulisp::Error> {
             let a = args.into_inner();
             let id = match a.id {
                 Some(v) if v > 0 => v as u64,
@@ -1030,11 +1046,14 @@ fn register_microgrids(
                 grpc_port,
                 tso: a.tso.clone(),
             };
-            // Resolve the site BEFORE locking the registry —
-            // SiteRouter::site internally locks the same registry,
-            // and parking_lot::Mutex is non-reentrant.
-            let site = router.site();
-            registry.lock().insert(id, MicrogridEntry { def, site });
+            // Fresh site per microgrid. Inserting under the new
+            // id makes it visible to the router (which the
+            // topology lambda's nested make-* calls will hit on
+            // their next site() lookup).
+            let site = MicrogridSite::new();
+            registry
+                .lock()
+                .insert(id, MicrogridEntry { def, site: site.clone() });
             // Sync legacy metadata to the *first* registered
             // microgrid so the existing MicrogridInfo gRPC path
             // (which reads from Metadata) keeps producing
@@ -1050,6 +1069,18 @@ fn register_microgrids(
                 }
                 if m.name.is_empty() {
                     m.name = name;
+                }
+            }
+            // Funcall the :topology lambda (if any) with the
+            // current-microgrid pointer flipped to this new
+            // entry, so the nested make-* calls register into
+            // the new site.
+            if let Some(topology) = a.topology {
+                let lambda = topology.into_inner();
+                if !lambda.null() {
+                    let nil = TulispObject::nil();
+                    let result = with_microgrid(&current, id, || ctx.funcall(&lambda, &nil));
+                    result?;
                 }
             }
             Ok(id as i64)
@@ -1948,10 +1979,11 @@ mod tests {
         assert_eq!(e.def.grpc_port, 8800);
     }
 
-    /// `(make-microgrid …)` upserts a registry entry with the
-    /// given metadata. The :grid argument's nested topology
-    /// registers into the (single) site as a side-effect of
-    /// pre-evaluation; the form itself just stamps metadata.
+    /// `(make-microgrid …)` builds a *new* site for the entry and
+    /// funcalls the :topology lambda with the current-microgrid
+    /// pointer set to the new id. Nested make-* calls register
+    /// into that fresh site, not the bootstrap or any prior
+    /// microgrid's site.
     #[test]
     fn make_microgrid_registers_entry_and_topology() {
         let (cfg, _dir) = config_with("(set-microgrid-id 0)");
@@ -1962,7 +1994,9 @@ mod tests {
               :id 7777
               :grpc-port 8810
               :tso "TN"
-              :grid (%make-grid-connection-point :id 1))
+              :topology
+              (lambda ()
+                (%make-grid-connection-point :id 1)))
             "#,
         )
         .unwrap();
@@ -1972,12 +2006,41 @@ mod tests {
         assert_eq!(e.def.name, "south yard");
         assert_eq!(e.def.grpc_port, 8810);
         assert_eq!(e.def.tso.as_deref(), Some("TN"));
-        // The :grid expression ran -> the grid component lives on
-        // the site.
+        // The :topology lambda ran with current-microgrid pinned
+        // to the new id, so the grid component lives on the new
+        // microgrid's own site — NOT on the bootstrap site.
         assert!(
-            cfg.site().get(1).is_some(),
-            "grid-connection-point id=1 should be registered",
+            e.site.get(1).is_some(),
+            "grid-connection-point id=1 should be on the new site",
         );
+    }
+
+    /// Two microgrids end up with isolated sites — adding a grid
+    /// to one doesn't leak into the other.
+    #[test]
+    fn two_microgrids_have_isolated_sites() {
+        let (cfg, _dir) = config_with("(set-microgrid-id 0)");
+        cfg.eval(
+            r#"
+            (make-microgrid :name "alpha" :id 1001
+                            :topology (lambda ()
+                                        (%make-grid-connection-point :id 1)))
+            (make-microgrid :name "beta"  :id 1002
+                            :topology (lambda ()
+                                        (%make-grid-connection-point :id 2)))
+            "#,
+        )
+        .unwrap();
+        let reg = cfg.microgrids();
+        let r = reg.lock();
+        let a = r.get(&1001).unwrap();
+        let b = r.get(&1002).unwrap();
+        // Each microgrid sees its own grid component.
+        assert!(a.site.get(1).is_some(), "alpha owns id=1");
+        assert!(b.site.get(2).is_some(), "beta owns id=2");
+        // Neither sees the other's.
+        assert!(a.site.get(2).is_none(), "alpha doesn't see beta's id=2");
+        assert!(b.site.get(1).is_none(), "beta doesn't see alpha's id=1");
     }
 
     /// When :id / :grpc-port are omitted, make-microgrid hands out
