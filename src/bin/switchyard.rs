@@ -19,29 +19,37 @@ use tonic::transport::Server;
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() {
-    // Combined logger: terminal output (existing UX) + a tap that
-    // captures records into a ring buffer + broadcasts them on a
-    // tokio channel. The UI server reads both: /api/logs returns the
-    // ring for backfill on page load, /ws/events forwards the live
-    // stream so the SPA's log panel updates in real time.
-    let log_tap = ui_log::LogTap::new(500, LevelFilter::Info);
-    ui_log::LOG_TAP
-        .set(log_tap.clone())
-        .unwrap_or_else(|_| panic!("LOG_TAP already initialised"));
     // Suppress per-tick "channel closed" spam from frequenz-microgrid
     // 0.4.1's ComponentTelemetryTracker. When a `BatteryPool` drops
     // (which happens on every topology rebuild) the tracker tasks it
     // spawned keep ticking on a timer and log at error level when
     // they fail to send into the closed mpsc — see
-    // /vagrant/upstream-component-tracker-leak.md. The trackers are
-    // otherwise harmless (orphaned, no measurable CPU), but the log
-    // spam scales linearly with rebuilds. Drop the noisy module here
-    // until upstream lands a fix.
-    let log_config = ConfigBuilder::new()
-        .add_filter_ignore_str(
-            "frequenz_microgrid::microgrid::telemetry_tracker::component_telemetry_tracker",
-        )
-        .build();
+    // /vagrant/upstream-tracker-leak.md. The trackers are otherwise
+    // harmless (orphaned, no measurable CPU), but the log spam scales
+    // linearly with rebuilds. Drop the noisy module here — same list
+    // applied to both the terminal logger and the UI tap so the SPA's
+    // log panel + /api/logs backfill stay clean too.
+    let ignore_targets: &[&str] =
+        &["frequenz_microgrid::microgrid::telemetry_tracker::component_telemetry_tracker"];
+
+    // Combined logger: terminal output (existing UX) + a tap that
+    // captures records into a ring buffer + broadcasts them on a
+    // tokio channel. The UI server reads both: /api/logs returns the
+    // ring for backfill on page load, /ws/events forwards the live
+    // stream so the SPA's log panel updates in real time.
+    let log_tap = ui_log::LogTap::new(
+        500,
+        LevelFilter::Info,
+        ignore_targets.iter().map(|s| (*s).to_owned()).collect(),
+    );
+    ui_log::LOG_TAP
+        .set(log_tap.clone())
+        .unwrap_or_else(|_| panic!("LOG_TAP already initialised"));
+    let mut log_cfg = ConfigBuilder::new();
+    for t in ignore_targets {
+        log_cfg.add_filter_ignore_str(t);
+    }
+    let log_config = log_cfg.build();
     CombinedLogger::init(vec![
         TermLogger::new(
             LevelFilter::Info,

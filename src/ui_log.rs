@@ -72,16 +72,28 @@ pub struct LogTap {
     buffer: LogBuffer,
     bus: broadcast::Sender<LogEvent>,
     level: log::LevelFilter,
+    /// Target-prefix list that gets dropped before the record
+    /// reaches the buffer / bus. Mirrors `simplelog`'s
+    /// `add_filter_ignore_str` on the terminal logger so a noisy
+    /// upstream module (e.g. frequenz-microgrid's
+    /// `ComponentTelemetryTracker` per-tick spam) is suppressed in
+    /// the SPA log panel + /api/logs backfill too — not just the
+    /// terminal output.
+    ignore_targets: Arc<Vec<String>>,
 }
 
 impl LogTap {
     /// `cap` events kept in the backfill buffer; `level` is the
-    /// minimum record level to capture.
-    pub fn new(cap: usize, level: log::LevelFilter) -> Self {
+    /// minimum record level to capture; `ignore_targets` drops any
+    /// record whose `target` starts with one of the listed
+    /// prefixes (compared with `str::starts_with`, so a module-path
+    /// prefix matches every submodule).
+    pub fn new(cap: usize, level: log::LevelFilter, ignore_targets: Vec<String>) -> Self {
         Self {
             buffer: LogBuffer::new(cap),
             bus: broadcast::channel(256).0,
             level,
+            ignore_targets: Arc::new(ignore_targets),
         }
     }
 
@@ -92,11 +104,17 @@ impl LogTap {
     pub fn subscribe(&self) -> broadcast::Receiver<LogEvent> {
         self.bus.subscribe()
     }
+
+    fn is_ignored(&self, target: &str) -> bool {
+        self.ignore_targets
+            .iter()
+            .any(|prefix| target.starts_with(prefix.as_str()))
+    }
 }
 
 impl log::Log for LogTap {
     fn enabled(&self, md: &log::Metadata) -> bool {
-        md.level() <= self.level
+        md.level() <= self.level && !self.is_ignored(md.target())
     }
     fn log(&self, record: &log::Record) {
         if !self.enabled(record.metadata()) {
@@ -150,7 +168,7 @@ mod tests {
 
     #[tokio::test]
     async fn tap_broadcasts_to_subscribers() {
-        let tap = LogTap::new(10, log::LevelFilter::Info);
+        let tap = LogTap::new(10, log::LevelFilter::Info, Vec::new());
         let mut rx = tap.subscribe();
         log::Log::log(
             &tap,
@@ -163,5 +181,36 @@ mod tests {
         let ev = rx.recv().await.unwrap();
         assert_eq!(ev.message, "hi");
         assert_eq!(tap.snapshot().len(), 1);
+    }
+
+    /// Records whose target starts with an ignored prefix are
+    /// dropped before the buffer / bus see them — same surface the
+    /// terminal logger applies via `add_filter_ignore_str`.
+    #[test]
+    fn ignored_target_prefix_is_dropped() {
+        let tap = LogTap::new(
+            10,
+            log::LevelFilter::Info,
+            vec!["frequenz_microgrid::microgrid::telemetry_tracker".to_owned()],
+        );
+        log::Log::log(
+            &tap,
+            &log::Record::builder()
+                .args(format_args!("noisy"))
+                .level(log::Level::Error)
+                .target("frequenz_microgrid::microgrid::telemetry_tracker::component_telemetry_tracker")
+                .build(),
+        );
+        log::Log::log(
+            &tap,
+            &log::Record::builder()
+                .args(format_args!("keep me"))
+                .level(log::Level::Info)
+                .target("switchyard::ui")
+                .build(),
+        );
+        let snap = tap.snapshot();
+        assert_eq!(snap.len(), 1);
+        assert_eq!(snap[0].message, "keep me");
     }
 }
