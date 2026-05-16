@@ -131,7 +131,7 @@ Eval surfaces the error but the world is partially mutated.
 Fix: probe the main-meter slot BEFORE ~register_with_modes~, or
 roll back the registry insert on Err.
 
-** TODO H7. ~pre_tick~ hook holds the interpreter lock through the whole tick
+** DONE H7. ~pre_tick~ hook holds the interpreter lock through the whole tick
 [[file:src/lisp/mod.rs::274][src/lisp/mod.rs:274-282]]
 
 #+begin_src rust
