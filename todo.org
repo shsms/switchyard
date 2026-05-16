@@ -193,6 +193,55 @@ only *and* the previous line is also whitespace-only, fall back
 to column 0 (or, more general: outdent by =indent-step=). Small
 addition to =indentForNewline=, no server roundtrip.
 
+** H. Navigation + editor history
+
+*** TODO H1. Back / forward navigation across screens
+
+Browser back / forward should walk the user's mode + microgrid +
+subview history: e.g. Microgrids list → per-mg Dashboard →
+Scenarios → back should land in the per-mg Dashboard, not the
+top of the Microgrids list. Currently mode + subview live in
+=localStorage= only, so the back/forward buttons walk the
+browser's URL history (which doesn't reflect SPA state) and end
+up at the previous page in the browser.
+
+Likely shape: push entries into =history.pushState= on every
+=applyMode= + =selectMicrogrid= + =setSubview= transition with
+the state as the payload; =window.onpopstate= reads it back and
+re-applies. The selected-mg id needs to round-trip through the
+URL so a back-then-refresh lands on the same view (currently a
+refresh keeps the mg from localStorage but the back button
+loses it).
+
+Acceptance: dashboard-of-mg-2200 → Scenarios → back puts the user
+back on dashboard-of-mg-2200 with the same subview; same for
+=switchyard.html#microgrids/2200/dashboard= deep-links.
+
+*** TODO H2. Undo in the topology editing canvas
+
+Cut / copy / paste land via =/api/mg/{id}/eval= and update the
+override file. There's no undo for the canvas-level operations
+(delete, paste, connect, disconnect, rename). The persisted-
+overrides dialog can hand-prune individual forms after the fact,
+but it's a row-by-row checkbox UI, not a Ctrl-Z stack.
+
+Want a per-mg undo stack the canvas + side-panel mutations push
+onto: each entry is enough state to revert. Two shapes:
+
+- *Optimistic snapshots.* Snapshot the override file before each
+  eval; Ctrl-Z restores it. Cheap but heavy (whole-file write per
+  edit) and doesn't help if the user evaluates via REPL.
+- *Inverse operations.* Each mutating verb produces an inverse
+  expression — =(rename-component 1 "old")=, =(connect a b)= →
+  =(disconnect a b)=, etc. — that the stack pushes. Lighter but
+  needs every mutating defun to declare its inverse.
+
+Probably start with snapshots (simpler) and refine.
+
+Acceptance: Ctrl-Z after a paste removes the pasted subgraph;
+Ctrl-Z after a rename restores the previous name; Ctrl-Shift-Z
+re-applies the undone step.
+
 * Bugs / open design questions
 
 ** d1. Rethink ~file-exists-p~ resolving against the config's load dir
