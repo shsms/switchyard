@@ -742,6 +742,10 @@ async fn microgrids_create(
     // gRPC server + loopback) via the binary-supplied spawner.
     // Tests pass a no-op spawner.
     spawner(id, &name, grpc_port, site);
+    // Notify enterprise-wide subscribers (the WS event pump) so live
+    // UI sessions start receiving topology_changed / sample events
+    // from the new microgrid without a page reload.
+    config.notify_microgrid_registered(id);
     let def_clone = def;
     Ok(Json(CreateMicrogridResp {
         id,
@@ -1596,38 +1600,52 @@ struct WireEvent<'a> {
 async fn event_pump(mut socket: WebSocket, config: Config) {
     use tokio::sync::broadcast::error::RecvError as BroadcastRecv;
     let mut log_rx = crate::ui_log::LOG_TAP.get().map(|t| t.subscribe());
-    // Subscribe to every microgrid's per-site event bus. New
-    // microgrids registered after the WS connects aren't picked up
-    // until the client reconnects (the SPA's auto-reconnect
-    // backoff handles that). One forwarder task per site tags the
-    // event with its mg_id and pushes onto a shared mpsc.
+    // Subscribe to every microgrid's per-site event bus + the
+    // enterprise-wide `microgrid_registered` channel. The initial
+    // snapshot covers every entry present at connect time; the
+    // registered-channel branch in the select! below spawns a fresh
+    // forwarder when /api/microgrids/create or (make-microgrid)
+    // adds an entry mid-session. One forwarder task per site tags
+    // events with the originating mg_id and pushes onto a shared
+    // mpsc that the select! drains into the WebSocket.
     let (fwd_tx, mut fwd_rx) =
         tokio::sync::mpsc::channel::<(u64, crate::sim::events::SiteEvent)>(512);
+    fn spawn_forwarder(
+        mg_id: u64,
+        mut rx: tokio::sync::broadcast::Receiver<crate::sim::events::SiteEvent>,
+        tx: tokio::sync::mpsc::Sender<(u64, crate::sim::events::SiteEvent)>,
+    ) {
+        use tokio::sync::broadcast::error::RecvError;
+        tokio::spawn(async move {
+            loop {
+                match rx.recv().await {
+                    Ok(ev) => {
+                        if tx.send((mg_id, ev)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(RecvError::Lagged(n)) => {
+                        log::warn!("ws: microgrid {mg_id} event bus lagged {n} samples");
+                        continue;
+                    }
+                    Err(RecvError::Closed) => break,
+                }
+            }
+        });
+    }
     {
         let reg = config.microgrids();
         let r = reg.lock();
         for (id, entry) in r.iter() {
-            let mg_id = *id;
-            let mut rx = entry.site.subscribe_events();
-            let tx = fwd_tx.clone();
-            tokio::spawn(async move {
-                loop {
-                    match rx.recv().await {
-                        Ok(ev) => {
-                            if tx.send((mg_id, ev)).await.is_err() {
-                                break;
-                            }
-                        }
-                        Err(BroadcastRecv::Lagged(n)) => {
-                            log::warn!("ws: microgrid {mg_id} event bus lagged {n} samples");
-                            continue;
-                        }
-                        Err(BroadcastRecv::Closed) => break,
-                    }
-                }
-            });
+            spawn_forwarder(*id, entry.site.subscribe_events(), fwd_tx.clone());
         }
     }
+    let mut registered_rx = config.subscribe_microgrid_registered();
+    // Keep one clone of the fwd_tx alive on this task so fwd_rx
+    // stays open across registration bursts — the per-mg forwarders
+    // each hold their own clone, but a window of "no microgrids yet"
+    // would otherwise close the mpsc and kill the loop.
+    let fwd_tx_keepalive = fwd_tx.clone();
     drop(fwd_tx);
     loop {
         tokio::select! {
@@ -1675,6 +1693,34 @@ async fn event_pump(mut socket: WebSocket, config: Config) {
             msg = socket.recv() => match msg {
                 Some(Ok(_)) => {}
                 Some(Err(_)) | None => break,
+            },
+            // A new microgrid landed in the registry (from
+            // `(make-microgrid)` or /api/microgrids/create). Spawn
+            // a forwarder for its site so this WS session starts
+            // receiving its sample / topology_changed events.
+            // Subscribers can lag if registrations burst past the
+            // 64-slot channel — continue past Lagged because the
+            // SPA can recover via reconnect, and Closed never
+            // fires since Config keeps the Sender alive for the
+            // process lifetime.
+            new_id = registered_rx.recv() => match new_id {
+                Ok(id) => {
+                    let entry = config.microgrids().lock().get(&id).cloned();
+                    if let Some(e) = entry {
+                        spawn_forwarder(id, e.site.subscribe_events(), fwd_tx_keepalive.clone());
+                    } else {
+                        log::warn!("ws: microgrid_registered({id}) but registry has no entry");
+                    }
+                }
+                Err(BroadcastRecv::Lagged(n)) => {
+                    log::warn!("ws: microgrid_registered channel lagged {n} ids");
+                    continue;
+                }
+                Err(BroadcastRecv::Closed) => {
+                    // Config dropped its Sender; nothing more will arrive.
+                    // Don't break — the existing forwarders keep working.
+                    std::future::pending::<()>().await;
+                }
             },
         }
     }

@@ -24,6 +24,7 @@ use std::{
 use chrono::Utc;
 use notify::{RecommendedWatcher, Watcher};
 use parking_lot::{Mutex, RwLock};
+use tokio::sync::broadcast;
 use tulisp::{Error, SharedMut, TulispContext, TulispObject};
 
 use crate::sim::MicrogridSite;
@@ -122,6 +123,13 @@ pub struct Config {
     /// per-site counter — only the multi-microgrid path gains
     /// cross-site uniqueness.
     pub(crate) enterprise_id_allocator: Arc<std::sync::atomic::AtomicU64>,
+    /// Enterprise-wide notification fired when a new microgrid
+    /// lands in `microgrids` — both `(make-microgrid …)` and
+    /// `/api/microgrids/create` publish on it. The WS event pump
+    /// subscribes so it can spawn a forwarder for the new site's
+    /// event bus on the fly, instead of only the entries that
+    /// existed at WS-connect time.
+    pub(crate) microgrid_registered: Arc<broadcast::Sender<u64>>,
 }
 
 /// One top-level form found in the per-microgrid override file. The
@@ -158,6 +166,12 @@ impl Config {
         let microgrids = crate::sim::microgrids::new_registry();
         let current_microgrid = crate::sim::microgrids::new_current_microgrid();
         let router = SiteRouter::new(microgrids.clone(), current_microgrid.clone(), world.clone());
+        // Capacity = 64 because new-microgrid bursts are tiny (config
+        // eval emits a few in quick succession, runtime creates are
+        // one-at-a-time). Lagged receivers can only miss notifications
+        // here, not events on per-site buses — the SPA's reconnect
+        // already covers WS sessions that fall behind.
+        let microgrid_registered = Arc::new(broadcast::channel(64).0);
         // Shared slot for the per-tick hook so make-microgrid can
         // install it on each freshly-created MicrogridSite. Populated
         // below once the timer handle exists.
@@ -186,6 +200,7 @@ impl Config {
             current_microgrid.clone(),
             enterprise_id_allocator.clone(),
             pre_tick_slot.clone(),
+            microgrid_registered.clone(),
         );
 
         // tulisp-async gives the config DSL access to run-with-timer,
@@ -294,6 +309,7 @@ impl Config {
             router,
             current_microgrid,
             enterprise_id_allocator,
+            microgrid_registered,
         })
     }
 
@@ -307,8 +323,8 @@ impl Config {
     /// Shared enterprise microgrid registry — `(make-microgrid …)`
     /// writes here, the UI Microgrids landing page + /api/microgrids
     /// read here. Always carries at least one entry once
-    /// `Config::new` has returned (the default microgrid, seeded
-    /// from `Metadata` if no `(make-microgrid)` form ran).
+    /// `Config::new` has returned — the hard-error in `Config::new`
+    /// rejects configs whose registry is empty after eval.
     pub fn microgrids(&self) -> crate::sim::microgrids::SharedMicrogrids {
         self.microgrids.clone()
     }
@@ -320,6 +336,21 @@ impl Config {
     /// globally-unique component-id space as boot-time ones.
     pub fn enterprise_id_allocator(&self) -> std::sync::Arc<std::sync::atomic::AtomicU64> {
         self.enterprise_id_allocator.clone()
+    }
+
+    /// Publish a `microgrid_registered` notification. Called by the
+    /// /api/microgrids/create handler after inserting the new entry,
+    /// so the WS event pump can spawn a forwarder for the freshly-
+    /// created site without waiting for a reconnect.
+    pub fn notify_microgrid_registered(&self, id: u64) {
+        let _ = self.microgrid_registered.send(id);
+    }
+
+    /// Subscribe to `microgrid_registered` notifications. The WS
+    /// event pump uses this to dynamically subscribe to new
+    /// microgrid event buses post-connect.
+    pub fn subscribe_microgrid_registered(&self) -> broadcast::Receiver<u64> {
+        self.microgrid_registered.subscribe()
     }
 
     /// Mutable handle on the active microgrid id. Per-microgrid
@@ -486,7 +517,13 @@ impl Config {
                 self.overrides_path().display(),
             );
         }
-        self.site.bump_version();
+        // Bump the version on the microgrid the eval actually
+        // mutated (the one current_microgrid points at, or — if no
+        // scope was set — the router's fallback) so the WS event
+        // pump fires TopologyChanged on the right bus. Without this
+        // the bootstrap site's version moved, but UI sessions only
+        // listen to per-mg buses.
+        self.router.site().bump_version();
         result
     }
 
@@ -1064,6 +1101,7 @@ fn register_microgrids(
     current: crate::sim::microgrids::CurrentMicrogrid,
     id_allocator: Arc<std::sync::atomic::AtomicU64>,
     pre_tick: Arc<RwLock<Option<crate::sim::microgrid_site::PreTickHook>>>,
+    registered_tx: Arc<broadcast::Sender<u64>>,
 ) {
     // Read-only accessors scripts use to dispatch on the active
     // microgrid (E2 of gridpool-support.org). Outside a per-mg
@@ -1151,6 +1189,11 @@ fn register_microgrids(
             registry
                 .lock()
                 .insert(id, MicrogridEntry { def, site: site.clone() });
+            // Notify enterprise-wide subscribers (currently the WS
+            // event pump) that a new microgrid landed. send() returns
+            // Err when there are no live receivers — fine to ignore;
+            // it just means no UI session is open.
+            let _ = registered_tx.send(id);
             // Funcall the :topology lambda (if any) with the
             // current-microgrid pointer flipped to this new
             // entry, so the nested make-* calls register into
