@@ -86,6 +86,7 @@ async fn lambda_meter_power_resolves_through_http_eval() {
     eval_or_panic(&client, &s, "(set-meter-power 2 'curve)").await;
 
     let mut now = chrono::Utc::now();
+    s.config.refresh_once();
     s.config
         .site()
         .tick_once(now, std::time::Duration::from_millis(100));
@@ -104,6 +105,7 @@ async fn lambda_meter_power_resolves_through_http_eval() {
     // Mutate the global; the next snapshot picks up the new value.
     eval_or_panic(&client, &s, "(setq curve 4321.0)").await;
     now += chrono::Duration::seconds(1);
+    s.config.refresh_once();
     s.config
         .site()
         .tick_once(now, std::time::Duration::from_millis(100));
@@ -119,6 +121,7 @@ async fn lambda_meter_power_resolves_through_http_eval() {
     // the next snapshot resolves it.
     eval_or_panic(&client, &s, "(set-meter-power 2 (lambda () 9999.0))").await;
     now += chrono::Duration::seconds(1);
+    s.config.refresh_once();
     s.config
         .site()
         .tick_once(now, std::time::Duration::from_millis(100));

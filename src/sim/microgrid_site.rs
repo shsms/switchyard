@@ -129,14 +129,6 @@ struct MicrogridSiteInner {
     /// `reset_setpoint` on each. Living on MicrogridSite means the loop runs
     /// once per process regardless of which call sites schedule.
     timeout_tracker: TimeoutTracker,
-    /// Optional callback invoked at the start of every `tick_once`,
-    /// before any component's `tick` runs. `Config::new` installs a
-    /// closure that locks the interpreter and calls
-    /// `SimulatedComponent::refresh_inputs` on every registered
-    /// component, so lambda-bound `:power` / `:sunlight%` / … values
-    /// resolve once per tick. MicrogridSite stays interpreter-agnostic at
-    /// the type level.
-    pre_tick: RwLock<Option<PreTickHook>>,
     /// Scenario lifecycle + event journal. Scoped to the MicrogridSite
     /// rather than the Config because long-running scenarios
     /// outlive an `eval_file` call and the gRPC server reads from
@@ -161,10 +153,6 @@ struct MicrogridSiteInner {
     /// and fall back to the per-mg `grid_state.frequency_hz`.
     grid_frequency: RwLock<Option<crate::sim::frequency::SharedFrequency>>,
 }
-
-/// Callback invoked at the start of every `tick_once`. Held behind an
-/// `Arc<dyn Fn>` so MicrogridSite's API doesn't depend on tulisp.
-pub(crate) type PreTickHook = Arc<dyn Fn(&MicrogridSite) + Send + Sync + 'static>;
 
 /// Compute mean / median / integer-bucketed mode over a battery
 /// SoC sample set. Returns `None` for an empty input.
@@ -298,7 +286,6 @@ impl MicrogridSite {
                 version: AtomicU64::new(0),
                 events: broadcast::channel(EVENT_BUS_CAPACITY).0,
                 timeout_tracker: TimeoutTracker::new(),
-                pre_tick: RwLock::new(None),
                 scenario: RwLock::new(ScenarioJournal::default()),
                 main_meter_id: RwLock::new(None),
                 scenario_csv: RwLock::new(CsvSinks::new()),
@@ -375,12 +362,6 @@ impl MicrogridSite {
         }
         *g = Some(id);
         Ok(())
-    }
-
-    /// Install the pre-tick hook. `Config::new` is the sole caller;
-    /// later overwrites replace the previous closure.
-    pub(crate) fn set_pre_tick(&self, hook: PreTickHook) {
-        *self.inner.pre_tick.write() = Some(hook);
     }
 
     // ── scenario journal ────────────────────────────────────────────
@@ -879,14 +860,13 @@ impl MicrogridSite {
     /// parents, so a single forward pass updates leaves before the
     /// meters that aggregate them.
     ///
-    /// If a pre-tick hook is installed it runs first — this is where
-    /// `Config::new` resolves Lisp-driven inputs (lambda `:power`,
-    /// symbol `:sunlight%`, …) into atomic scalars that the tick
-    /// pass then reads without re-entering the interpreter.
+    /// Pure Rust — does NOT enter the Lisp interpreter. Lambda-bound
+    /// component inputs (`:power`, `:sunlight%`, …) are refreshed
+    /// by `Config`'s dedicated lisp-refresh task on its own 100 ms
+    /// cadence; this method only reads the atomic scalars those
+    /// refreshes leave behind. Tests that need a synchronous refresh
+    /// before driving `tick_once` should call `Config::refresh_once`.
     pub fn tick_once(&self, now: DateTime<Utc>, dt: Duration) {
-        if let Some(hook) = self.inner.pre_tick.read().clone() {
-            hook(self);
-        }
         let components = self.inner.components.read().clone();
         for c in components {
             c.tick(self, now, dt);
@@ -1195,58 +1175,14 @@ mod tests {
         assert_eq!(w.parent_count(101), 0);
     }
 
-    /// `tick_once` runs the pre-tick hook to completion before any
-    /// component's `tick` fires. Components rely on this ordering so
-    /// a meter can read its lambda-resolved `:power` in `tick`
-    /// without re-entering the interpreter.
-    #[test]
-    fn pre_tick_hook_runs_before_component_tick() {
-        use crate::sim::Telemetry;
-        use chrono::TimeZone;
-        use parking_lot::Mutex;
-
-        struct OrderRecorder {
-            order: Arc<Mutex<Vec<&'static str>>>,
-        }
-        impl std::fmt::Display for OrderRecorder {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                write!(f, "order-recorder")
-            }
-        }
-        impl SimulatedComponent for OrderRecorder {
-            fn id(&self) -> u64 {
-                1
-            }
-            fn category(&self) -> crate::sim::Category {
-                crate::sim::Category::Meter
-            }
-            fn name(&self) -> &str {
-                "order"
-            }
-            fn stream_interval(&self) -> Duration {
-                Duration::from_secs(1)
-            }
-            fn tick(&self, _: &MicrogridSite, _: DateTime<Utc>, _: Duration) {
-                self.order.lock().push("tick");
-            }
-            fn telemetry(&self, _: &MicrogridSite) -> Telemetry {
-                Telemetry::default()
-            }
-        }
-
-        let w = MicrogridSite::new();
-        let order: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
-        let order_for_hook = order.clone();
-        w.set_pre_tick(Arc::new(move |_| {
-            order_for_hook.lock().push("pre_tick");
-        }));
-        w.register(OrderRecorder {
-            order: order.clone(),
-        });
-        let now = chrono::Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
-        w.tick_once(now, Duration::from_millis(100));
-        assert_eq!(*order.lock(), vec!["pre_tick", "tick"]);
-    }
+    // `tick_once` used to invoke a pre-tick hook installed by
+    // `Config::new` to refresh Lisp-driven component inputs. That
+    // hook moved off the per-site tick to a dedicated Lisp-refresh
+    // tokio task on `Config`, decoupling physics from the
+    // interpreter lock. The ordering test the old shape relied on
+    // no longer makes sense — physics is pure Rust now and the
+    // refresh runs at its own cadence — so the test was deleted
+    // along with the hook field.
 
     /// Driving `record_history_snapshot` directly populates the
     /// per-component ring buffers. Verified across multiple ticks via

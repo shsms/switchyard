@@ -130,6 +130,11 @@ pub struct Config {
     /// event bus on the fly, instead of only the entries that
     /// existed at WS-connect time.
     pub(crate) microgrid_registered: Arc<broadcast::Sender<u64>>,
+    /// tulisp-async timer handle. The Lisp refresh loop ticks it at
+    /// 100 ms cadence to fire `(run-with-timer …)` / `(every …)`
+    /// callbacks; `Config::refresh_once` ticks it synchronously for
+    /// tests that drive ticks deterministically.
+    pub(crate) timer_handle: tulisp_async::Handle,
 }
 
 /// One top-level form found in the per-microgrid override file. The
@@ -181,11 +186,6 @@ impl Config {
         let grid_frequency = crate::sim::frequency::new_shared();
         site.set_grid_frequency(grid_frequency.clone());
         crate::sim::frequency::spawn_driver(grid_frequency.clone());
-        // Shared slot for the per-tick hook so make-microgrid can
-        // install it on each freshly-created MicrogridSite. Populated
-        // below once the timer handle exists.
-        let pre_tick_slot: Arc<RwLock<Option<crate::sim::microgrid_site::PreTickHook>>> =
-            Arc::new(RwLock::new(None));
 
         // `Path::parent()` returns `Some("")` for bare filenames like
         // "config.lisp" — tulisp rejects empty paths, so fall back to
@@ -208,7 +208,6 @@ impl Config {
             router.clone(),
             current_microgrid.clone(),
             enterprise_id_allocator.clone(),
-            pre_tick_slot.clone(),
             microgrid_registered.clone(),
             grid_frequency.clone(),
         );
@@ -222,9 +221,10 @@ impl Config {
         // around it. Must be called inside a tokio runtime —
         // TokioExecutor::new captures Handle::current().
         //
-        // The returned `Handle` is what the pre-tick hook ticks each
-        // physics step to fire pending timer firings. Without it the
-        // mailbox would just accumulate.
+        // The returned `Handle` is what the dedicated
+        // `spawn_lisp_refresh_loop` task ticks at 100 ms cadence
+        // to fire pending timer firings. Without it the mailbox
+        // would just accumulate.
         let timer_handle =
             tulisp_async::register(&mut ctx, Arc::new(tulisp_async::TokioExecutor::new()));
 
@@ -259,38 +259,26 @@ impl Config {
 
         let ctx = SharedMut::new(ctx);
 
-        // Pre-tick hook: hold the interpreter lock once per tick,
-        // refresh every component's Lisp-driven inputs (lambda-bound
-        // `:power`, `:sunlight%`, …), then drain any timer firings
-        // whose deadline has passed. Lets components read the
-        // resolved scalar from an atomic in `tick` without re-entering
-        // the interpreter — see `dynamic_scalar::DynamicScalar` —
-        // and gives `(every …)` callbacks a fire cadence anchored to
-        // the physics tick.
+        // Lisp refresh loop. One tokio task at 100 ms cadence holds
+        // the interpreter lock once per pass, walks every registered
+        // microgrid's components calling `refresh_inputs` (which
+        // re-resolves any lambda-bound `:power` / `:sunlight%` / …
+        // into `DynamicScalar`'s atomic), and drains the
+        // tulisp-async timer mailbox so `(every …)` / `(run-with-
+        // timer …)` callbacks fire.
         //
-        // The hook owns the only `Handle` clone we keep outside ctx;
-        // that's enough to keep the mailbox alive between ticks.
-        let hook_ctx = ctx.clone();
-        let pre_tick_hook: crate::sim::microgrid_site::PreTickHook =
-            Arc::new(move |w: &MicrogridSite| {
-                let mut guard = hook_ctx.borrow_mut();
-                for c in w.components() {
-                    c.refresh_inputs(&mut guard);
-                }
-                timer_handle.tick(&mut guard);
-            });
-        site.set_pre_tick(pre_tick_hook.clone());
-        // Microgrid sites that were already registered while the
-        // config was evaluating (before this hook existed) need the
-        // hook installed retroactively so their `(every …)` callbacks
-        // fire on the per-mg physics loop. Future make-microgrid
-        // forms (post-eval `cfg.eval("(make-microgrid ...)")`, runtime
-        // create-microgrid HTTP requests) pick it up from the shared
-        // slot.
-        for entry in microgrids.lock().values() {
-            entry.site.set_pre_tick(pre_tick_hook.clone());
-        }
-        *pre_tick_slot.write() = Some(pre_tick_hook.clone());
+        // Decoupling this from the per-site physics tick means:
+        //  - Physics ticks are lock-free; a long-running /api/eval
+        //    no longer stalls every microgrid's per-second physics.
+        //  - The refresh ticks at its own cadence (100 ms by
+        //    default), so lambda-bound inputs lag at most one
+        //    refresh interval behind their underlying lisp source.
+        //    For a 15-min sine curve that's a 0.005% phase shift —
+        //    negligible.
+        //  - `Config::refresh_once` exposes the same work
+        //    synchronously for tests that drive `tick_once` and
+        //    expect the lambda result to be visible immediately.
+        Self::spawn_lisp_refresh_loop(microgrids.clone(), ctx.clone(), timer_handle.clone());
 
         // Scenarios auto-advance task — polls the wallclock and
         // transitions running scenarios on stage boundaries. Lives
@@ -319,6 +307,7 @@ impl Config {
             current_microgrid,
             enterprise_id_allocator,
             microgrid_registered,
+            timer_handle,
         })
     }
 
@@ -383,6 +372,66 @@ impl Config {
     /// crate should reach for `eval` / `eval_silent` instead.
     pub fn interpreter(&self) -> SharedMut<TulispContext> {
         self.ctx.clone()
+    }
+
+    /// Synchronous, single-shot version of the refresh loop's work.
+    /// Acquires the interpreter lock, walks every registered
+    /// microgrid's components calling `refresh_inputs`, then drains
+    /// the timer mailbox once. Tests that drive `tick_once` directly
+    /// call this first so lambda-bound `:power` / `:sunlight%` /
+    /// `(run-with-timer 0 …)` values are visible before the synthetic
+    /// physics tick.
+    pub fn refresh_once(&self) {
+        let mut guard = self.ctx.borrow_mut();
+        let sites: Vec<MicrogridSite> = self
+            .microgrids
+            .lock()
+            .values()
+            .map(|e| e.site.clone())
+            .collect();
+        for site in sites {
+            for c in site.components() {
+                c.refresh_inputs(&mut guard);
+            }
+        }
+        self.timer_handle.tick(&mut guard);
+    }
+
+    /// Spawn the Lisp refresh + timer-drain loop. Runs at 100 ms
+    /// cadence on its own tokio task; sole acquirer of the
+    /// interpreter lock for refresh purposes (eval still contends
+    /// at the same lock, but only when it's not held by us). See
+    /// the comment block in `Config::new` for the design rationale.
+    fn spawn_lisp_refresh_loop(
+        registry: crate::sim::microgrids::SharedMicrogrids,
+        ctx: SharedMut<TulispContext>,
+        timer_handle: tulisp_async::Handle,
+    ) {
+        tokio::spawn(async move {
+            // First tick at +100 ms so tests that boot a Config +
+            // drive `tick_once` synchronously don't race the loop.
+            let start = tokio::time::Instant::now() + Duration::from_millis(100);
+            let mut tick = tokio::time::interval_at(start, Duration::from_millis(100));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tick.tick().await;
+                // Snapshot the per-mg sites outside the ctx lock, then
+                // take the lock once and run the full refresh pass.
+                // A long /api/eval grabbing the same lock will delay
+                // this iteration but won't block physics: each site's
+                // `spawn_physics` task ticks lock-free against the
+                // atomics last published by `refresh_inputs`.
+                let sites: Vec<MicrogridSite> =
+                    registry.lock().values().map(|e| e.site.clone()).collect();
+                let mut guard = ctx.borrow_mut();
+                for site in &sites {
+                    for c in site.components() {
+                        c.refresh_inputs(&mut guard);
+                    }
+                }
+                timer_handle.tick(&mut guard);
+            }
+        });
     }
 
     fn start_timeout_loop(registry: crate::sim::microgrids::SharedMicrogrids) {
@@ -1173,7 +1222,7 @@ tulisp::AsPlist! {
 /// via the router's per-call dispatch), and finally restores the
 /// previous pointer.
 //
-// Eight args trips clippy's `too_many_arguments` threshold; the
+// Seven args trips clippy's `too_many_arguments` threshold; the
 // review item A6 plans to bundle the shared state into a single
 // `RuntimeHandles` struct that drops the count cleanly. Until
 // then, the explicit list is more readable than a one-off tuple.
@@ -1184,7 +1233,6 @@ fn register_microgrids(
     router: SharedSiteRouter,
     current: crate::sim::microgrids::CurrentMicrogrid,
     id_allocator: Arc<std::sync::atomic::AtomicU64>,
-    pre_tick: Arc<RwLock<Option<crate::sim::microgrid_site::PreTickHook>>>,
     registered_tx: Arc<broadcast::Sender<u64>>,
     grid_frequency: crate::sim::frequency::SharedFrequency,
 ) {
@@ -1270,14 +1318,6 @@ fn register_microgrids(
             // their `frequency_hz` reads all return the same OU
             // value (one AC grid → one frequency).
             site.set_grid_frequency(grid_frequency.clone());
-            // Install the shared pre-tick hook if Config::new has
-            // populated it (post-eval reload or runtime
-            // create-microgrid). During the initial config eval the
-            // slot is still empty; Config::new walks the registry
-            // afterwards and installs the hook on every entry.
-            if let Some(hook) = pre_tick.read().clone() {
-                site.set_pre_tick(hook);
-            }
             registry.lock().insert(
                 id,
                 MicrogridEntry {
@@ -2071,20 +2111,19 @@ mod tests {
         );
     }
 
-    /// The pre-tick hook drains tulisp-async's pending-timer queue
-    /// each physics step. Without that, run-with-timer would just
-    /// accumulate PendingTasks (same-ctx model — nothing fires them
+    /// `Config::refresh_once` drains tulisp-async's pending-timer
+    /// queue. Without that, run-with-timer would just accumulate
+    /// PendingTasks (same-ctx model — nothing fires them
     /// asynchronously). A zero-delay one-shot timer plus one
-    /// tick_once is the tightest expression of the contract.
+    /// refresh is the tightest expression of the contract.
     #[test]
-    fn pre_tick_drains_pending_timers() {
+    fn refresh_once_drains_pending_timers() {
         let (cfg, _dir) = config_with(
             "(set-microgrid-id 9)
              (setq fired 0)
              (run-with-timer 0 nil (lambda () (setq fired 1)))",
         );
-        cfg.site()
-            .tick_once(chrono::Utc::now(), Duration::from_millis(100));
+        cfg.refresh_once();
         assert_eq!(cfg.eval_silent("fired").unwrap(), "1");
     }
 
@@ -2146,9 +2185,8 @@ mod tests {
     }
 
     /// `(set-meter-power id (lambda () X))` installs a dynamic
-    /// source. The next physics tick — or `MicrogridSite::tick_once` driven
-    /// from a test — runs the pre-tick hook, refresh_inputs
-    /// resolves the lambda, and aggregate_power_w reflects it.
+    /// source. `Config::refresh_once` resolves the lambda and
+    /// `aggregate_power_w` reflects it on the next read.
     #[test]
     fn set_meter_power_accepts_a_lambda() {
         let (cfg, _dir) = config_with(
@@ -2156,11 +2194,7 @@ mod tests {
              (%make-meter :id 7)",
         );
         cfg.eval("(set-meter-power 7 (lambda () 1234.5))").unwrap();
-        // tick_once runs the Config-installed pre-tick hook, which
-        // locks the interpreter and calls refresh_inputs on every
-        // component before the tick pass.
-        cfg.site()
-            .tick_once(chrono::Utc::now(), std::time::Duration::from_millis(100));
+        cfg.refresh_once();
         let m = cfg.site().get(7).unwrap();
         assert!((m.aggregate_power_w(&cfg.site()) - 1234.5).abs() < 1e-3);
     }
@@ -2176,14 +2210,12 @@ mod tests {
              (%make-meter :id 7)",
         );
         cfg.eval("(set-meter-power 7 'consumer-power)").unwrap();
-        cfg.site()
-            .tick_once(chrono::Utc::now(), std::time::Duration::from_millis(100));
+        cfg.refresh_once();
         let m = cfg.site().get(7).unwrap();
         assert!((m.aggregate_power_w(&cfg.site()) - 1500.0).abs() < 1e-3);
-        // Mutate the bound variable; next tick picks up the new value.
+        // Mutate the bound variable; next refresh picks up the new value.
         cfg.eval("(setq consumer-power 2750.0)").unwrap();
-        cfg.site()
-            .tick_once(chrono::Utc::now(), std::time::Duration::from_millis(100));
+        cfg.refresh_once();
         assert!((m.aggregate_power_w(&cfg.site()) - 2750.0).abs() < 1e-3);
     }
 
@@ -2197,8 +2229,7 @@ mod tests {
              (%make-solar-inverter :id 8 :rated-lower -8000.0 :rated-upper 0.0)",
         );
         cfg.eval("(set-solar-sunlight 8 (lambda () 25.0))").unwrap();
-        cfg.site()
-            .tick_once(chrono::Utc::now(), std::time::Duration::from_millis(100));
+        cfg.refresh_once();
         let inv = cfg.site().get(8).unwrap();
         // Issue a setpoint below sunlight-derated min_avail so the
         // ramp clips — observable through telemetry's active_power.
