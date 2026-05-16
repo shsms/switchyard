@@ -1,9 +1,9 @@
 //! Lisp glue: load the config DSL, register the `make-*` functions
-//! against a `World`, and act as the runtime entry point for the gRPC
+//! against a `MicrogridSite`, and act as the runtime entry point for the gRPC
 //! server (which calls into us for `set_active_setpoint` and friends).
 //!
 //! The `Config` struct is intentionally thin — the simulation state
-//! lives in `World`, the lisp interpreter is just the configuration
+//! lives in `MicrogridSite`, the lisp interpreter is just the configuration
 //! frontend.
 
 pub mod csv_profile;
@@ -26,7 +26,7 @@ use notify::{RecommendedWatcher, Watcher};
 use parking_lot::{Mutex, RwLock};
 use tulisp::{Error, SharedMut, TulispContext, TulispObject};
 
-use crate::sim::World;
+use crate::sim::MicrogridSite;
 
 /// Microgrid identity + gateway-level settings, exposed to the Lisp
 /// config and read back by `MicrogridServer`.
@@ -64,7 +64,7 @@ impl Default for Metadata {
 pub struct Config {
     filename: String,
     pub(crate) ctx: SharedMut<TulispContext>,
-    pub(crate) world: World,
+    pub(crate) site: MicrogridSite,
     pub(crate) metadata: Arc<RwLock<Metadata>>,
     /// Additional files the config has registered via `(watch-file …)`.
     /// `Config::watch` adds each to the live notify watcher so edits to
@@ -112,7 +112,7 @@ impl Config {
     /// or abort.
     pub fn new(filename: &str) -> Result<Self, String> {
         let mut ctx = TulispContext::new();
-        let world = World::new();
+        let world = MicrogridSite::new();
         let metadata = Arc::new(RwLock::new(Metadata::default()));
         let extra_watches = Arc::new(Mutex::new(HashSet::new()));
         let graph_status: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));
@@ -149,7 +149,7 @@ impl Config {
         let timer_handle =
             tulisp_async::register(&mut ctx, Arc::new(tulisp_async::TokioExecutor::new()));
 
-        // One-per-process loop that walks World's TimeoutTracker and
+        // One-per-process loop that walks MicrogridSite's TimeoutTracker and
         // calls reset_setpoint on each elapsed entry. Both gRPC's
         // SetElectricalComponentPower and the Lisp `(set-active-power …)`
         // defun add to the tracker; this loop is what makes their
@@ -202,7 +202,7 @@ impl Config {
         Ok(Self {
             filename: filename.to_string(),
             ctx,
-            world,
+            site: world,
             metadata,
             extra_watches,
             graph_status,
@@ -233,7 +233,7 @@ impl Config {
         self.ctx.clone()
     }
 
-    fn start_timeout_loop(world: World) {
+    fn start_timeout_loop(world: MicrogridSite) {
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_millis(100)).await;
@@ -268,7 +268,7 @@ impl Config {
     /// would.
     pub fn tags_table(roots: &[&str]) -> Result<String, Error> {
         let mut ctx = TulispContext::new();
-        let world = World::new();
+        let world = MicrogridSite::new();
         let metadata = Arc::new(RwLock::new(Metadata::default()));
 
         let load_dir: PathBuf = roots
@@ -298,8 +298,8 @@ impl Config {
         self.metadata.read().socket_addr.clone()
     }
 
-    pub fn world(&self) -> World {
-        self.world.clone()
+    pub fn site(&self) -> MicrogridSite {
+        self.site.clone()
     }
 
     /// Latest graph-validator outcome. `None` = the graph crate
@@ -334,7 +334,7 @@ impl Config {
     /// override file (`config.ui-overrides.<id>.lisp`) so the
     /// edit survives a reload. Errored evals are skipped — a
     /// half-applied topology change shouldn't leave a re-erroring
-    /// expression on disk. Either way the World version bumps so
+    /// expression on disk. Either way the MicrogridSite version bumps so
     /// UI subscribers refetch.
     ///
     /// Append uses the source verbatim — no formatter pass — to
@@ -358,7 +358,7 @@ impl Config {
                 self.overrides_path().display(),
             );
         }
-        self.world.bump_version();
+        self.site.bump_version();
         result
     }
 
@@ -420,12 +420,12 @@ impl Config {
     }
 
     /// Drop a set of persisted-override entries (by their
-    /// file-position idx) and re-derive World state. Atomic: the
+    /// file-position idx) and re-derive MicrogridSite state. Atomic: the
     /// override file is rewritten without those forms (temp +
     /// rename, with a `tulisp-fmt` pretty-print pass over the
     /// surviving forms), then `reload()` re-runs config.lisp +
     /// `load-overrides` on the new file so the deleted forms'
-    /// effects vanish via the World reset inside reload.
+    /// effects vanish via the MicrogridSite reset inside reload.
     ///
     /// Returns the count of forms actually dropped — out-of-range
     /// indices are silently ignored. An IO error during rewrite
@@ -598,13 +598,13 @@ fn list_snapshots_in(dir: &Path) -> Vec<String> {
 }
 
 impl Config {
-    /// Re-evaluate the config file, resetting World state first.
+    /// Re-evaluate the config file, resetting MicrogridSite state first.
     /// Returns the formatted lisp error on failure — the world is
     /// left in its post-reset (empty) state in that case so the
     /// next reload starts from a known baseline.
     pub fn reload(&self) -> Result<(), String> {
         let start = std::time::Instant::now();
-        self.world.reset();
+        self.site.reset();
         {
             let mut ctx = self.ctx.borrow_mut();
             if let Err(e) = ctx.eval_file(&self.filename) {
@@ -613,12 +613,12 @@ impl Config {
                 return Err(formatted);
             }
         }
-        // Tell UI subscribers the World rebuilt. Catches the
+        // Tell UI subscribers the MicrogridSite rebuilt. Catches the
         // "removed the only pending entry" case where remove_pending
         // reloads but has no surviving entries to bump-version
         // through eval_with_affects.
-        *self.graph_status.write() = log_topology_validation(&self.world, "reload");
-        self.world.bump_version();
+        *self.graph_status.write() = log_topology_validation(&self.site, "reload");
+        self.site.bump_version();
         log::info!(
             "Reloaded config in {:.1}ms",
             start.elapsed().as_secs_f64() * 1000.0
@@ -691,13 +691,13 @@ impl Config {
                 }
             }
             if let Err(msg) = self.reload() {
-                self.world.broadcast_config_error(msg);
+                self.site.broadcast_config_error(msg);
             }
         }
     }
 }
 
-/// Run the component-graph validator on the current `World` and
+/// Run the component-graph validator on the current `MicrogridSite` and
 /// log the outcome. `phase` is one of "boot" / "reload" so the log
 /// line tags which path triggered the check.
 ///
@@ -718,7 +718,7 @@ impl Config {
 /// `None` = the graph crate accepted the topology (or the world is
 /// empty / hidden-only); `Some(msg)` = the human-readable error
 /// the validator produced.
-fn log_topology_validation(world: &World, phase: &str) -> Option<String> {
+fn log_topology_validation(world: &MicrogridSite, phase: &str) -> Option<String> {
     let (nodes, edges) = crate::sim::graph_adapter::snapshot(world);
     let visible_count = nodes.len();
     if visible_count == 0 {
@@ -871,7 +871,7 @@ fn register_scenarios(
 /// Register every Rust function the config DSL needs.
 fn register_runtime(
     ctx: &mut TulispContext,
-    world: &World,
+    world: &MicrogridSite,
     metadata: Arc<RwLock<Metadata>>,
     load_dir: PathBuf,
 ) {
@@ -895,9 +895,9 @@ fn register_runtime(
 /// Scenario lifecycle defuns. Scripts call `(scenario-start NAME)`
 /// to mark the beginning, drop `(scenario-event KIND PAYLOAD)` markers
 /// at interesting moments, and `(scenario-stop)` when finished. The
-/// underlying journal lives on `World` and is read by the
+/// underlying journal lives on `MicrogridSite` and is read by the
 /// `/api/scenario` and `/api/scenario/events` endpoints.
-fn register_scenario(ctx: &mut TulispContext, world: World) {
+fn register_scenario(ctx: &mut TulispContext, world: MicrogridSite) {
     let w = world.clone();
     ctx.defun(
         "scenario-start",
@@ -972,7 +972,7 @@ fn register_scenario(ctx: &mut TulispContext, world: World) {
 /// immediately" escape (used by tests) and bypasses the clamp.
 const MIN_SET_ACTIVE_POWER_LIFETIME_MS: u64 = 150;
 
-fn register_setpoints(ctx: &mut TulispContext, world: World, metadata: Arc<RwLock<Metadata>>) {
+fn register_setpoints(ctx: &mut TulispContext, world: MicrogridSite, metadata: Arc<RwLock<Metadata>>) {
     ctx.defun(
         "set-active-power",
         move |id: i64, watts: f64, lifetime_ms: Option<i64>| -> Result<bool, Error> {
@@ -1000,12 +1000,12 @@ fn register_setpoints(ctx: &mut TulispContext, world: World, metadata: Arc<RwLoc
 }
 
 /// Mutation defuns the UI editor (and power-user REPL) call to
-/// reshape the running World — remove a component, drop an edge,
+/// reshape the running MicrogridSite — remove a component, drop an edge,
 /// rename for display.
-fn register_world_ops(ctx: &mut TulispContext, world: World) {
+fn register_world_ops(ctx: &mut TulispContext, world: MicrogridSite) {
     let w = world.clone();
     ctx.defun("world-connect", move |parent: i64, child: i64| -> bool {
-        // World::connect doesn't return a status; we always ack.
+        // MicrogridSite::connect doesn't return a status; we always ack.
         w.connect(parent as u64, child as u64);
         true
     });
@@ -1044,7 +1044,7 @@ fn register_fs_helpers(ctx: &mut TulispContext, load_dir: PathBuf) {
     });
 }
 
-fn register_reactive_setters(ctx: &mut TulispContext, world: World) {
+fn register_reactive_setters(ctx: &mut TulispContext, world: MicrogridSite) {
     // Same opt-in convention as the make-* plist args:
     //   value > 0  → that constraint is active with this magnitude
     //   value ≤ 0  → that constraint is disabled
@@ -1119,7 +1119,7 @@ fn register_watches(
     });
 }
 
-fn register_load_drivers(ctx: &mut TulispContext, world: World) {
+fn register_load_drivers(ctx: &mut TulispContext, world: MicrogridSite) {
     // Drive a meter's `:power` slot from Lisp. Accepts a number, a
     // lambda, or a symbol — numeric values land as a constant
     // override (microsim-style timer-driven load curve); lambda /
@@ -1211,7 +1211,7 @@ fn register_time_helpers(ctx: &mut TulispContext) {
     });
 }
 
-fn register_runtime_modes(ctx: &mut TulispContext, world: World) {
+fn register_runtime_modes(ctx: &mut TulispContext, world: MicrogridSite) {
     use crate::sim::runtime::{CommandMode, Health, TelemetryMode};
 
     let w = world.clone();
@@ -1299,8 +1299,8 @@ fn add_log_functions(ctx: &mut TulispContext) {
         });
 }
 
-fn register_reset(ctx: &mut TulispContext, world: World) {
-    // Rust-side: clear the World registry. The Lisp-side `reset-state`
+fn register_reset(ctx: &mut TulispContext, world: MicrogridSite) {
+    // Rust-side: clear the MicrogridSite registry. The Lisp-side `reset-state`
     // (in sim/common.lisp) wraps this and also cancels any
     // outstanding tulisp-async timers so the next config load doesn't
     // double-fire `every` callbacks.
@@ -1310,7 +1310,7 @@ fn register_reset(ctx: &mut TulispContext, world: World) {
     });
 }
 
-fn register_grid_state(ctx: &mut TulispContext, world: World) {
+fn register_grid_state(ctx: &mut TulispContext, world: MicrogridSite) {
     let w = world.clone();
     ctx.defun("set-frequency", move |hz: f64| -> Result<bool, Error> {
         let mut state = w.grid_state();
@@ -1372,7 +1372,7 @@ mod tests {
     /// `Config::new` returns Err on lisp eval failure rather than
     /// silently logging — the binary panics with a useful message
     /// and tests get a clear assertion target rather than a
-    /// half-built World.
+    /// half-built MicrogridSite.
     #[test]
     fn config_new_returns_err_on_bad_lisp() {
         let mut dir = std::env::temp_dir();
@@ -1409,13 +1409,13 @@ mod tests {
              (setq fired 0)
              (run-with-timer 0 nil (lambda () (setq fired 1)))",
         );
-        cfg.world()
+        cfg.site()
             .tick_once(chrono::Utc::now(), Duration::from_millis(100));
         assert_eq!(cfg.eval_silent("fired").unwrap(), "1");
     }
 
     /// set-active-power applies a setpoint and arms the timeout tracker.
-    /// We can verify both by checking that World registers a deadline
+    /// We can verify both by checking that MicrogridSite registers a deadline
     /// for the targeted component after the call.
     #[test]
     fn set_active_power_applies_setpoint_and_arms_timeout() {
@@ -1428,11 +1428,11 @@ mod tests {
         // 30-second lifetime — applies the setpoint and arms the
         // tracker; nothing should be expired yet.
         cfg.eval("(set-active-power 2 1500.0 30000)").unwrap();
-        assert_eq!(cfg.world().drain_expired_timeouts(), Vec::<u64>::new());
+        assert_eq!(cfg.site().drain_expired_timeouts(), Vec::<u64>::new());
         // Lifetime 0 → instantly elapses; the next drain returns id.
         cfg.eval("(set-active-power 2 1500.0 0)").unwrap();
         std::thread::sleep(std::time::Duration::from_millis(2));
-        assert_eq!(cfg.world().drain_expired_timeouts(), vec![2]);
+        assert_eq!(cfg.site().drain_expired_timeouts(), vec![2]);
     }
 
     /// set-active-power on an unknown id surfaces an error, and a setpoint
@@ -1472,7 +1472,7 @@ mod tests {
     }
 
     /// `(set-meter-power id (lambda () X))` installs a dynamic
-    /// source. The next physics tick — or `World::tick_once` driven
+    /// source. The next physics tick — or `MicrogridSite::tick_once` driven
     /// from a test — runs the pre-tick hook, refresh_inputs
     /// resolves the lambda, and aggregate_power_w reflects it.
     #[test]
@@ -1485,10 +1485,10 @@ mod tests {
         // tick_once runs the Config-installed pre-tick hook, which
         // locks the interpreter and calls refresh_inputs on every
         // component before the tick pass.
-        cfg.world()
+        cfg.site()
             .tick_once(chrono::Utc::now(), std::time::Duration::from_millis(100));
-        let m = cfg.world().get(7).unwrap();
-        assert!((m.aggregate_power_w(&cfg.world()) - 1234.5).abs() < 1e-3);
+        let m = cfg.site().get(7).unwrap();
+        assert!((m.aggregate_power_w(&cfg.site()) - 1234.5).abs() < 1e-3);
     }
 
     /// `(set-meter-power id 'symbol)` derefs the symbol's variable
@@ -1502,15 +1502,15 @@ mod tests {
              (%make-meter :id 7)",
         );
         cfg.eval("(set-meter-power 7 'consumer-power)").unwrap();
-        cfg.world()
+        cfg.site()
             .tick_once(chrono::Utc::now(), std::time::Duration::from_millis(100));
-        let m = cfg.world().get(7).unwrap();
-        assert!((m.aggregate_power_w(&cfg.world()) - 1500.0).abs() < 1e-3);
+        let m = cfg.site().get(7).unwrap();
+        assert!((m.aggregate_power_w(&cfg.site()) - 1500.0).abs() < 1e-3);
         // Mutate the bound variable; next tick picks up the new value.
         cfg.eval("(setq consumer-power 2750.0)").unwrap();
-        cfg.world()
+        cfg.site()
             .tick_once(chrono::Utc::now(), std::time::Duration::from_millis(100));
-        assert!((m.aggregate_power_w(&cfg.world()) - 2750.0).abs() < 1e-3);
+        assert!((m.aggregate_power_w(&cfg.site()) - 2750.0).abs() < 1e-3);
     }
 
     /// `(set-solar-sunlight id (lambda () X))` mirrors
@@ -1523,16 +1523,16 @@ mod tests {
              (%make-solar-inverter :id 8 :rated-lower -8000.0 :rated-upper 0.0)",
         );
         cfg.eval("(set-solar-sunlight 8 (lambda () 25.0))").unwrap();
-        cfg.world()
+        cfg.site()
             .tick_once(chrono::Utc::now(), std::time::Duration::from_millis(100));
-        let inv = cfg.world().get(8).unwrap();
+        let inv = cfg.site().get(8).unwrap();
         // Issue a setpoint below sunlight-derated min_avail so the
         // ramp clips — observable through telemetry's active_power.
         inv.set_active_setpoint(-5000.0).expect("within rated");
-        cfg.world()
+        cfg.site()
             .tick_once(chrono::Utc::now(), std::time::Duration::from_millis(100));
         let p = inv
-            .telemetry(&cfg.world())
+            .telemetry(&cfg.site())
             .active_power_w
             .expect("active power present");
         // 25% of -8000 = -2000 W floor.
@@ -1588,7 +1588,7 @@ mod tests {
         assert_eq!(opened, 2);
         // Three snapshots → three rows + header.
         for _ in 0..3 {
-            cfg.world().record_history_snapshot(Utc::now());
+            cfg.site().record_history_snapshot(Utc::now());
         }
         cfg.eval("(scenario-stop-csv)").unwrap();
 
@@ -1647,7 +1647,7 @@ mod tests {
     fn scenario_lifecycle_round_trips_through_lisp() {
         let (cfg, _dir) = config_with("(set-microgrid-id 9)");
         cfg.eval("(scenario-start \"warmup\")").unwrap();
-        let summary = cfg.world().scenario_summary(chrono::Utc::now());
+        let summary = cfg.site().scenario_summary(chrono::Utc::now());
         assert_eq!(summary.name.as_deref(), Some("warmup"));
         assert!(summary.started_at.is_some());
         assert!(summary.ended_at.is_none());
@@ -1657,11 +1657,11 @@ mod tests {
         cfg.eval("(scenario-event 'outage \"bat-1003\")").unwrap();
         cfg.eval("(scenario-event \"note\" \"warming up\")")
             .unwrap();
-        let summary = cfg.world().scenario_summary(chrono::Utc::now());
+        let summary = cfg.site().scenario_summary(chrono::Utc::now());
         assert_eq!(summary.event_count, 2);
         assert_eq!(summary.next_event_id, 2);
 
-        let events = cfg.world().scenario_events_since(0, 100);
+        let events = cfg.site().scenario_events_since(0, 100);
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].kind, "outage");
         assert_eq!(events[1].kind, "note");
@@ -1669,9 +1669,9 @@ mod tests {
         // Stop freezes elapsed; a subsequent (scenario-elapsed)
         // returns the frozen value rather than continuing to grow.
         cfg.eval("(scenario-stop)").unwrap();
-        let frozen = cfg.world().scenario_summary(chrono::Utc::now());
+        let frozen = cfg.site().scenario_summary(chrono::Utc::now());
         std::thread::sleep(std::time::Duration::from_millis(20));
-        let later = cfg.world().scenario_summary(chrono::Utc::now());
+        let later = cfg.site().scenario_summary(chrono::Utc::now());
         assert_eq!(frozen.elapsed_s, later.elapsed_s);
         assert!(frozen.ended_at.is_some());
     }
@@ -1739,16 +1739,16 @@ mod tests {
         // Advance physics enough to settle the ramp; default ramp
         // is infinity so one tick is enough.
         let mut now = Utc::now();
-        cfg.world()
+        cfg.site()
             .tick_once(now, std::time::Duration::from_millis(100));
         // Snapshot pass at t0 — first one just seeds the cursor
         // (dt from start is small but non-zero — ignore the result).
-        cfg.world().record_history_snapshot(now);
+        cfg.site().record_history_snapshot(now);
         now += ChronoDuration::seconds(10);
-        cfg.world()
+        cfg.site()
             .tick_once(now, std::time::Duration::from_secs(10));
-        cfg.world().record_history_snapshot(now);
-        let r = cfg.world().scenario_report(now);
+        cfg.site().record_history_snapshot(now);
+        let r = cfg.site().scenario_report(now);
         // 3600 W for 10 s = 10 Wh. Allow some slop for the seed
         // sample's dt at start.
         assert!(
@@ -1760,13 +1760,13 @@ mod tests {
 
         // Now flip to discharging.
         cfg.eval("(set-active-power 200 -7200.0 60000)").unwrap();
-        cfg.world()
+        cfg.site()
             .tick_once(now, std::time::Duration::from_millis(100));
         now += ChronoDuration::seconds(5);
-        cfg.world()
+        cfg.site()
             .tick_once(now, std::time::Duration::from_secs(5));
-        cfg.world().record_history_snapshot(now);
-        let r = cfg.world().scenario_report(now);
+        cfg.site().record_history_snapshot(now);
+        let r = cfg.site().scenario_report(now);
         // 7200 W * 5 s / 3600 = 10 Wh discharged.
         assert!(
             r.total_battery_discharged_wh > 8.0 && r.total_battery_discharged_wh < 12.0,
@@ -1789,32 +1789,32 @@ mod tests {
         );
         // Pre-start, sampling shouldn't update the peak — the
         // scenario hasn't begun.
-        cfg.world().record_history_snapshot(Utc::now());
+        cfg.site().record_history_snapshot(Utc::now());
         assert_eq!(
-            cfg.world().scenario_report(Utc::now()).peak_main_meter_w,
+            cfg.site().scenario_report(Utc::now()).peak_main_meter_w,
             0.0,
         );
 
         cfg.eval("(scenario-start \"power\")").unwrap();
         cfg.eval("(set-meter-power 1 2500.0)").unwrap();
-        cfg.world().record_history_snapshot(Utc::now());
-        let r = cfg.world().scenario_report(Utc::now());
+        cfg.site().record_history_snapshot(Utc::now());
+        let r = cfg.site().scenario_report(Utc::now());
         assert!((r.peak_main_meter_w - 2500.0).abs() < 1e-3);
 
         // A higher value lifts the peak; a later lower one
         // doesn't.
         cfg.eval("(set-meter-power 1 7800.0)").unwrap();
-        cfg.world().record_history_snapshot(Utc::now());
+        cfg.site().record_history_snapshot(Utc::now());
         cfg.eval("(set-meter-power 1 1100.0)").unwrap();
-        cfg.world().record_history_snapshot(Utc::now());
-        let r = cfg.world().scenario_report(Utc::now());
+        cfg.site().record_history_snapshot(Utc::now());
+        let r = cfg.site().scenario_report(Utc::now());
         assert!((r.peak_main_meter_w - 7800.0).abs() < 1e-3);
 
         // scenario-start resets the peak.
         cfg.eval("(scenario-start \"again\")").unwrap();
         cfg.eval("(set-meter-power 1 500.0)").unwrap();
-        cfg.world().record_history_snapshot(Utc::now());
-        assert!((cfg.world().scenario_report(Utc::now()).peak_main_meter_w - 500.0).abs() < 1e-3,);
+        cfg.site().record_history_snapshot(Utc::now());
+        assert!((cfg.site().scenario_report(Utc::now()).peak_main_meter_w - 500.0).abs() < 1e-3,);
     }
 
     /// Two meters with `:main t` is a config error. The first one
@@ -1842,13 +1842,13 @@ mod tests {
         cfg.eval("(scenario-event 'a \"\")").unwrap();
         cfg.eval("(scenario-event 'b \"\")").unwrap();
         assert_eq!(
-            cfg.world()
+            cfg.site()
                 .scenario_summary(chrono::Utc::now())
                 .next_event_id,
             2
         );
         cfg.eval("(scenario-start \"second\")").unwrap();
-        let summary = cfg.world().scenario_summary(chrono::Utc::now());
+        let summary = cfg.site().scenario_summary(chrono::Utc::now());
         assert_eq!(summary.event_count, 0);
         assert_eq!(summary.next_event_id, 2);
         let id = cfg

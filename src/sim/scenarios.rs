@@ -31,7 +31,7 @@ use parking_lot::Mutex;
 use serde::Serialize;
 use tulisp::{SharedMut, TulispContext, TulispObject};
 
-use crate::sim::World;
+use crate::sim::MicrogridSite;
 use crate::sim::clock::{Clock, SharedClock};
 
 #[derive(Clone, Debug)]
@@ -182,7 +182,7 @@ fn funcall_lambda(ctx: &SharedMut<TulispContext>, lam: &TulispObject) -> Result<
 pub fn start(
     reg: &SharedScenarios,
     ctx: &SharedMut<TulispContext>,
-    world: &World,
+    world: &MicrogridSite,
     clock: &Clock,
     name: &str,
     now: DateTime<Utc>,
@@ -211,13 +211,13 @@ pub fn start(
 }
 
 /// Stop the scenario. Clears runtime state and records a
-/// `scenario-stop` event. World state (component setpoints, timers
+/// `scenario-stop` event. MicrogridSite state (component setpoints, timers
 /// installed by previous stage lambdas) is NOT rolled back — callers
 /// that need a clean slate follow this with `(reset-state)` or load
 /// a fresh snapshot.
 pub fn stop(
     reg: &SharedScenarios,
-    world: &World,
+    world: &MicrogridSite,
     name: &str,
     now: DateTime<Utc>,
 ) -> Result<(), String> {
@@ -239,7 +239,7 @@ pub fn stop(
 pub fn jump(
     reg: &SharedScenarios,
     ctx: &SharedMut<TulispContext>,
-    world: &World,
+    world: &MicrogridSite,
     name: &str,
     idx: usize,
     now: DateTime<Utc>,
@@ -279,7 +279,7 @@ pub fn jump(
 pub fn step(
     reg: &SharedScenarios,
     ctx: &SharedMut<TulispContext>,
-    world: &World,
+    world: &MicrogridSite,
     name: &str,
     delta: isize,
     now: DateTime<Utc>,
@@ -308,7 +308,7 @@ pub fn step(
 pub fn auto_advance_tick(
     reg: &SharedScenarios,
     ctx: &SharedMut<TulispContext>,
-    world: &World,
+    world: &MicrogridSite,
     clock: &Clock,
     now: DateTime<Utc>,
 ) -> Vec<String> {
@@ -357,7 +357,7 @@ pub fn auto_advance_tick(
 pub fn spawn_auto_advance(
     reg: SharedScenarios,
     ctx: SharedMut<TulispContext>,
-    world: World,
+    world: MicrogridSite,
     clock: SharedClock,
 ) {
     tokio::spawn(async move {
@@ -445,7 +445,7 @@ mod tests {
             },
         );
         let ctx = SharedMut::new(TulispContext::new());
-        let world = World::new();
+        let world = MicrogridSite::new();
         let clock = Clock::default();
         // 15:30 local. Wallclock-current stage = 1; we should
         // transition.

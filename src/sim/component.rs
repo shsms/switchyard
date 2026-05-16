@@ -3,7 +3,7 @@ use std::{fmt, sync::Arc, time::Duration};
 use chrono::{DateTime, Utc};
 use tulisp::TulispContext;
 
-use crate::sim::{bounds::VecBounds, dynamic_scalar::DynamicScalar, world::World};
+use crate::sim::{bounds::VecBounds, dynamic_scalar::DynamicScalar, microgrid_site::MicrogridSite};
 
 /// High-level kind of a component, mirroring the proto category enum but
 /// kept Rust-side so non-gRPC code does not need to depend on protobuf.
@@ -151,7 +151,7 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
         0.0
     }
 
-    /// Refresh externally-driven inputs from Lisp. The World
+    /// Refresh externally-driven inputs from Lisp. The MicrogridSite
     /// scheduler holds the interpreter lock and calls this on every
     /// component, in registration order, *before* the tick pass.
     /// Components carrying a [`DynamicScalar`] (lambda- or symbol-
@@ -167,16 +167,16 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
     fn refresh_inputs(&self, _ctx: &mut TulispContext) {}
 
     /// Advance internal state by `dt`. Called once per physics tick
-    /// from `World::tick_once` in registration order (children before
+    /// from `MicrogridSite::tick_once` in registration order (children before
     /// parents). Components that aggregate from successors read them
     /// here via `world.get(child_id)`. Must not call back into the
     /// Lisp interpreter — see [`Self::refresh_inputs`] for that.
-    fn tick(&self, world: &World, now: DateTime<Utc>, dt: Duration);
+    fn tick(&self, world: &MicrogridSite, now: DateTime<Utc>, dt: Duration);
 
     /// Snapshot the component's observable state for streaming. Pure
     /// — should not mutate. `world` is for components that read AC
     /// environment (per-phase voltage, frequency) at sample time.
-    fn telemetry(&self, world: &World) -> Telemetry;
+    fn telemetry(&self, world: &MicrogridSite) -> Telemetry;
 
     // ── setpoints (control surface) ──────────────────────────────────
 
@@ -270,12 +270,12 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
     /// inverters) sum this across their successors. `world` lets
     /// nesting components recurse — a nested meter calls into its
     /// inverter, which reads from its batteries.
-    fn aggregate_power_w(&self, _world: &World) -> f32 {
+    fn aggregate_power_w(&self, _world: &MicrogridSite) -> f32 {
         0.0
     }
 
     /// Total reactive power flowing at this component.
-    fn aggregate_reactive_var(&self, _world: &World) -> f32 {
+    fn aggregate_reactive_var(&self, _world: &MicrogridSite) -> f32 {
         0.0
     }
 

@@ -6,7 +6,7 @@
 //! empty cells where a component doesn't publish that field — so a
 //! downstream loader doesn't need per-category dispatch.
 //!
-//! Each row is written from inside `World::record_history_snapshot`
+//! Each row is written from inside `MicrogridSite::record_history_snapshot`
 //! so the cadence matches the existing history sampler (1 Hz). The
 //! sink is a `BufWriter<File>`; `(scenario-stop-csv)` and
 //! `(scenario-stop)` drop the writers, which flushes and closes
@@ -71,6 +71,6 @@ fn category_slug(c: Category) -> &'static str {
 }
 
 /// Bundle of active CSV sinks keyed by component id. Mutated under
-/// `World::scenario_csv` lock; the lock pattern is "open for the
+/// `MicrogridSite::scenario_csv` lock; the lock pattern is "open for the
 /// lifetime of the scenario, drop on stop".
 pub(crate) type CsvSinks = HashMap<u64, CsvSink>;

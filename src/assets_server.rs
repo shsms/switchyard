@@ -1,6 +1,6 @@
 //! gRPC server: implements the Frequenz Assets API
 //! (`frequenz.api.assets.v1.PlatformAssets`) on top of switchyard's
-//! `World` + `Config`.
+//! `MicrogridSite` + `Config`.
 //!
 //! Exposes the same topology data as `MicrogridServer`, just under the
 //! assets API surface. All three RPCs validate the request's
@@ -78,7 +78,7 @@ impl platform_assets_server::PlatformAssets for AssetsServer {
 
         let components: Vec<_> = self
             .config
-            .world()
+            .site()
             .components()
             .iter()
             .filter(|c| !c.is_hidden())
@@ -106,7 +106,7 @@ impl platform_assets_server::PlatformAssets for AssetsServer {
 
         let connections: Vec<_> = self
             .config
-            .world()
+            .site()
             .connections()
             .into_iter()
             .map(|(from, to)| ElectricalComponentConnection {

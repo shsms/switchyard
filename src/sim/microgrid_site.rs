@@ -1,6 +1,6 @@
 //! The simulation registry, scheduler, and shared environment.
 //!
-//! `World` owns every component, the parent → child topology, and the
+//! `MicrogridSite` owns every component, the parent → child topology, and the
 //! external grid state (per-phase voltage, frequency) that components
 //! query when computing AC quantities.
 //!
@@ -24,7 +24,7 @@ use parking_lot::RwLock;
 use tokio::sync::broadcast;
 
 use crate::sim::component::{ComponentHandle, FIRST_AUTO_ID, SimulatedComponent};
-use crate::sim::events::{EVENT_BUS_CAPACITY, WorldEvent};
+use crate::sim::events::{EVENT_BUS_CAPACITY, SiteEvent};
 use crate::sim::history::{ComponentHistory, History, Metric, Sample};
 use crate::sim::runtime::{CommandMode, ComponentRuntime, Health, TelemetryMode};
 use crate::sim::scenario::{ScenarioEvent, ScenarioJournal};
@@ -73,17 +73,17 @@ impl Default for GridState {
 }
 
 #[derive(Clone)]
-pub struct World {
-    inner: Arc<WorldInner>,
+pub struct MicrogridSite {
+    inner: Arc<MicrogridSiteInner>,
 }
 
-struct WorldInner {
+struct MicrogridSiteInner {
     components: RwLock<Vec<Arc<dyn SimulatedComponent>>>,
     by_id: RwLock<HashMap<u64, Arc<dyn SimulatedComponent>>>,
     connections: RwLock<Vec<(u64, u64)>>,
     grid_state: RwLock<GridState>,
     physics_tick_ms: AtomicU64,
-    /// Per-World id allocator. Reset on `reset()` so a hot-reload
+    /// Per-MicrogridSite id allocator. Reset on `reset()` so a hot-reload
     /// reuses the same id range microsim would (1000+) — clients
     /// caching component IDs across reloads see them stay stable.
     next_id: AtomicU64,
@@ -111,12 +111,12 @@ struct WorldInner {
     version: AtomicU64,
     /// Broadcast bus for live UI subscribers. Senders are cheap to
     /// clone; receivers are obtained via `subscribe_events`.
-    events: broadcast::Sender<WorldEvent>,
+    events: broadcast::Sender<SiteEvent>,
     /// Per-component setpoint expiry deadlines. Both the gRPC
     /// `SetElectricalComponentPower` handler and the `(set-power …)`
     /// Lisp defun add to this; a single tokio task in
     /// `Config::start_timeout_loop` polls for expirations and calls
-    /// `reset_setpoint` on each. Living on World means the loop runs
+    /// `reset_setpoint` on each. Living on MicrogridSite means the loop runs
     /// once per process regardless of which call sites schedule.
     timeout_tracker: TimeoutTracker,
     /// Optional callback invoked at the start of every `tick_once`,
@@ -124,13 +124,13 @@ struct WorldInner {
     /// closure that locks the interpreter and calls
     /// `SimulatedComponent::refresh_inputs` on every registered
     /// component, so lambda-bound `:power` / `:sunlight%` / … values
-    /// resolve once per tick. World stays interpreter-agnostic at
+    /// resolve once per tick. MicrogridSite stays interpreter-agnostic at
     /// the type level.
     pre_tick: RwLock<Option<PreTickHook>>,
-    /// Scenario lifecycle + event journal. Scoped to the World
+    /// Scenario lifecycle + event journal. Scoped to the MicrogridSite
     /// rather than the Config because long-running scenarios
     /// outlive an `eval_file` call and the gRPC server reads from
-    /// it via `World::scenario_*`.
+    /// it via `MicrogridSite::scenario_*`.
     scenario: RwLock<ScenarioJournal>,
     /// Id of the meter flagged with `:main t` at construction. The
     /// scenario reporter tracks its active-power peak, and the
@@ -146,8 +146,8 @@ struct WorldInner {
 }
 
 /// Callback invoked at the start of every `tick_once`. Held behind an
-/// `Arc<dyn Fn>` so World's API doesn't depend on tulisp.
-pub(crate) type PreTickHook = Arc<dyn Fn(&World) + Send + Sync + 'static>;
+/// `Arc<dyn Fn>` so MicrogridSite's API doesn't depend on tulisp.
+pub(crate) type PreTickHook = Arc<dyn Fn(&MicrogridSite) + Send + Sync + 'static>;
 
 /// Compute mean / median / integer-bucketed mode over a battery
 /// SoC sample set. Returns `None` for an empty input.
@@ -254,10 +254,10 @@ pub(crate) struct WindowAverageEntry {
     pub avg_w: f64,
 }
 
-impl World {
+impl MicrogridSite {
     pub fn new() -> Self {
         Self {
-            inner: Arc::new(WorldInner {
+            inner: Arc::new(MicrogridSiteInner {
                 components: RwLock::new(Vec::new()),
                 by_id: RwLock::new(HashMap::new()),
                 connections: RwLock::new(Vec::new()),
@@ -508,11 +508,11 @@ impl World {
         let _ = self
             .inner
             .events
-            .send(WorldEvent::TopologyChanged { version: v });
+            .send(SiteEvent::TopologyChanged { version: v });
         v
     }
 
-    pub fn subscribe_events(&self) -> broadcast::Receiver<WorldEvent> {
+    pub fn subscribe_events(&self) -> broadcast::Receiver<SiteEvent> {
         self.inner.events.subscribe()
     }
 
@@ -522,7 +522,7 @@ impl World {
     /// empty world without explanation. Fire-and-forget — a send
     /// error means there are no live subscribers, which is fine.
     pub fn broadcast_config_error(&self, message: String) {
-        let _ = self.inner.events.send(WorldEvent::ConfigError {
+        let _ = self.inner.events.send(SiteEvent::ConfigError {
             ts_ms: chrono::Utc::now().timestamp_millis(),
             message,
         });
@@ -542,7 +542,7 @@ impl World {
         ts_ms: i64,
         value: Option<f32>,
     ) {
-        let _ = self.inner.events.send(WorldEvent::MicrogridSample {
+        let _ = self.inner.events.send(SiteEvent::MicrogridSample {
             stream,
             quantity,
             unit,
@@ -854,7 +854,7 @@ impl World {
     }
 
     /// Spawn the physics loop. Returns immediately. The loop holds an
-    /// `Arc` clone of the World, so the World cannot drop until the
+    /// `Arc` clone of the MicrogridSite, so the MicrogridSite cannot drop until the
     /// task exits — and right now there is no exit path. That's fine
     /// for the long-running binary but means tests that need a clean
     /// shutdown should call `tick_once` directly instead.
@@ -915,7 +915,7 @@ impl World {
     /// push to its history rings. Extracted so tests can drive sampling
     /// deterministically without spawning the periodic task.
     ///
-    /// Each pushed metric also fans out as a `WorldEvent::Sample` on
+    /// Each pushed metric also fans out as a `SiteEvent::Sample` on
     /// the broadcast bus, after the histories lock is released — so
     /// WS subscribers see live samples but can't deadlock against
     /// each other or against /api/history readers.
@@ -983,7 +983,7 @@ impl World {
         }
         let ts_ms = now.timestamp_millis();
         for (id, metric, value) in emitted {
-            let _ = self.inner.events.send(WorldEvent::Sample {
+            let _ = self.inner.events.send(SiteEvent::Sample {
                 id,
                 metric: metric.as_str(),
                 ts_ms,
@@ -1043,7 +1043,7 @@ impl World {
             .entry(id)
             .or_insert_with(|| SetpointLog::new(SETPOINT_LOG_CAPACITY))
             .push(event);
-        let _ = self.inner.events.send(WorldEvent::Setpoint {
+        let _ = self.inner.events.send(SiteEvent::Setpoint {
             id,
             ts_ms,
             setpoint_kind: kind,
@@ -1067,7 +1067,7 @@ impl World {
     }
 }
 
-impl Default for World {
+impl Default for MicrogridSite {
     fn default() -> Self {
         Self::new()
     }
@@ -1110,7 +1110,7 @@ mod tests {
     /// layer.
     #[test]
     fn shared_child_under_two_parents() {
-        let w = World::new();
+        let w = MicrogridSite::new();
         w.connect(2, 100);
         w.connect(3, 100);
         let conns = w.connections();
@@ -1131,7 +1131,7 @@ mod tests {
     /// aggregation paths that need to include hidden children.
     #[test]
     fn children_of_returns_every_edge_from_parent() {
-        let w = World::new();
+        let w = MicrogridSite::new();
         w.connect(2, 100);
         w.connect(2, 101);
         assert_eq!(w.children_of(2), vec![100, 101]);
@@ -1145,7 +1145,7 @@ mod tests {
     /// each.
     #[test]
     fn parent_count_reports_edge_count() {
-        let w = World::new();
+        let w = MicrogridSite::new();
         assert_eq!(w.parent_count(100), 0); // unconnected
         w.connect(2, 100);
         assert_eq!(w.parent_count(100), 1);
@@ -1186,15 +1186,15 @@ mod tests {
             fn stream_interval(&self) -> Duration {
                 Duration::from_secs(1)
             }
-            fn tick(&self, _: &World, _: DateTime<Utc>, _: Duration) {
+            fn tick(&self, _: &MicrogridSite, _: DateTime<Utc>, _: Duration) {
                 self.order.lock().push("tick");
             }
-            fn telemetry(&self, _: &World) -> Telemetry {
+            fn telemetry(&self, _: &MicrogridSite) -> Telemetry {
                 Telemetry::default()
             }
         }
 
-        let w = World::new();
+        let w = MicrogridSite::new();
         let order: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
         let order_for_hook = order.clone();
         w.set_pre_tick(Arc::new(move |_| {
@@ -1236,8 +1236,8 @@ mod tests {
             fn stream_interval(&self) -> Duration {
                 Duration::from_secs(1)
             }
-            fn tick(&self, _: &World, _: DateTime<Utc>, _: Duration) {}
-            fn telemetry(&self, _: &World) -> Telemetry {
+            fn tick(&self, _: &MicrogridSite, _: DateTime<Utc>, _: Duration) {}
+            fn telemetry(&self, _: &MicrogridSite) -> Telemetry {
                 Telemetry {
                     active_power_w: Some(2500.0),
                     soc_pct: Some(72.5),
@@ -1246,7 +1246,7 @@ mod tests {
             }
         }
 
-        let w = World::new();
+        let w = MicrogridSite::new();
         w.register(FixedFlow { id: 7 });
         let t0 = Utc.timestamp_opt(1_000, 0).unwrap();
         let t1 = Utc.timestamp_opt(1_001, 0).unwrap();
@@ -1274,7 +1274,7 @@ mod tests {
     #[tokio::test]
     async fn record_history_snapshot_emits_sample_events() {
         use crate::sim::Telemetry;
-        use crate::sim::events::WorldEvent;
+        use crate::sim::events::SiteEvent;
         use chrono::TimeZone;
         struct PVStub;
         impl std::fmt::Display for PVStub {
@@ -1295,8 +1295,8 @@ mod tests {
             fn stream_interval(&self) -> Duration {
                 Duration::from_secs(1)
             }
-            fn tick(&self, _: &World, _: DateTime<Utc>, _: Duration) {}
-            fn telemetry(&self, _: &World) -> Telemetry {
+            fn tick(&self, _: &MicrogridSite, _: DateTime<Utc>, _: Duration) {}
+            fn telemetry(&self, _: &MicrogridSite) -> Telemetry {
                 Telemetry {
                     active_power_w: Some(-12345.0),
                     soc_pct: Some(60.0),
@@ -1304,7 +1304,7 @@ mod tests {
                 }
             }
         }
-        let w = World::new();
+        let w = MicrogridSite::new();
         w.register(PVStub);
         let mut rx = w.subscribe_events();
         let now = Utc.timestamp_opt(1_000, 0).unwrap();
@@ -1316,7 +1316,7 @@ mod tests {
         let mut seen: std::collections::HashSet<&'static str> = std::collections::HashSet::new();
         for _ in 0..2 {
             match rx.recv().await.unwrap() {
-                WorldEvent::Sample {
+                SiteEvent::Sample {
                     id,
                     metric,
                     ts_ms,
@@ -1338,14 +1338,14 @@ mod tests {
     /// `Config::eval` after every eval so UI tabs refetch.
     #[tokio::test]
     async fn bump_version_broadcasts_event() {
-        let w = World::new();
+        let w = MicrogridSite::new();
         let mut rx = w.subscribe_events();
         assert_eq!(w.version(), 0);
         let v = w.bump_version();
         assert_eq!(v, 1);
         assert_eq!(w.version(), 1);
         match rx.recv().await.unwrap() {
-            crate::sim::events::WorldEvent::TopologyChanged { version } => {
+            crate::sim::events::SiteEvent::TopologyChanged { version } => {
                 assert_eq!(version, 1);
             }
             other => panic!("unexpected event: {other:?}"),
@@ -1384,15 +1384,15 @@ mod tests {
         fn stream_interval(&self) -> Duration {
             Duration::from_secs(1)
         }
-        fn tick(&self, _: &World, _: DateTime<Utc>, _: Duration) {}
-        fn telemetry(&self, _: &World) -> crate::sim::Telemetry {
+        fn tick(&self, _: &MicrogridSite, _: DateTime<Utc>, _: Duration) {}
+        fn telemetry(&self, _: &MicrogridSite) -> crate::sim::Telemetry {
             crate::sim::Telemetry::default()
         }
     }
 
     #[test]
     fn remove_component_drops_registry_and_edges() {
-        let w = World::new();
+        let w = MicrogridSite::new();
         w.register(Stub::new(1));
         w.register(Stub::new(2));
         w.register(Stub::new(3));
@@ -1412,7 +1412,7 @@ mod tests {
 
     #[test]
     fn disconnect_drops_one_edge_keeps_endpoints() {
-        let w = World::new();
+        let w = MicrogridSite::new();
         w.register(Stub::new(1));
         w.register(Stub::new(2));
         w.connect(1, 2);
@@ -1428,7 +1428,7 @@ mod tests {
 
     #[test]
     fn rename_overrides_display_name_only() {
-        let w = World::new();
+        let w = MicrogridSite::new();
         w.register(Stub::new(7));
         assert_eq!(w.display_name(7).as_deref(), Some("stub-7"));
         w.rename(7, "frontside-meter".into());
@@ -1437,12 +1437,12 @@ mod tests {
         assert_eq!(w.get(7).unwrap().name(), "stub-7");
     }
 
-    /// `reset()` clears history alongside the rest of the World so a
+    /// `reset()` clears history alongside the rest of the MicrogridSite so a
     /// hot-reload starts charts fresh — old component-id histories
     /// don't linger as orphan entries.
     #[test]
     fn reset_clears_history() {
-        let w = World::new();
+        let w = MicrogridSite::new();
         // Push directly via the public API by way of a minimal stub.
         w.inner.histories.write().insert(
             42,
@@ -1460,7 +1460,7 @@ mod tests {
     #[test]
     fn reset_clears_scenario_and_main_meter() {
         use crate::sim::setpoints::{SetpointEvent, SetpointKind, SetpointOutcome};
-        let w = World::new();
+        let w = MicrogridSite::new();
         w.register(Stub::new(1));
         w.set_main_meter(1).unwrap();
         w.log_setpoint(

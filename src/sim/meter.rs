@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use parking_lot::RwLock;
 use tulisp::TulispContext;
 
-use crate::sim::{Category, SimulatedComponent, Telemetry, World, dynamic_scalar::DynamicScalar};
+use crate::sim::{Category, SimulatedComponent, Telemetry, MicrogridSite, dynamic_scalar::DynamicScalar};
 
 /// A power meter sums its successors' active and reactive power, then
 /// voltage-splits the totals across the three phases. If the parent
@@ -25,7 +25,7 @@ pub struct Meter {
     power_source: RwLock<Option<DynamicScalar>>,
     stream_jitter_pct: f32,
     /// Excluded from gRPC component / connection listings, but still
-    /// aggregated by parent meters via World::get. Used for synthetic
+    /// aggregated by parent meters via MicrogridSite::get. Used for synthetic
     /// loads / generators that present as a power flow without being
     /// a discrete addressable component.
     hidden: bool,
@@ -49,7 +49,7 @@ impl Meter {
         }
     }
 
-    fn aggregate_active(&self, world: &World) -> f32 {
+    fn aggregate_active(&self, world: &MicrogridSite) -> f32 {
         if let Some(scalar) = self.power_source.read().as_ref() {
             return scalar.get();
         }
@@ -70,7 +70,7 @@ impl Meter {
             .sum()
     }
 
-    fn aggregate_reactive(&self, world: &World) -> f32 {
+    fn aggregate_reactive(&self, world: &MicrogridSite) -> f32 {
         // No reactive override on power-driven meters — those model
         // pure-real loads (consumer kW, CHP). If we ever need a
         // synthetic reactive load, add a `reactive_source` knob.
@@ -124,9 +124,9 @@ impl SimulatedComponent for Meter {
             scalar.refresh(ctx);
         }
     }
-    fn tick(&self, _world: &World, _now: DateTime<Utc>, _dt: Duration) {}
+    fn tick(&self, _world: &MicrogridSite, _now: DateTime<Utc>, _dt: Duration) {}
 
-    fn telemetry(&self, world: &World) -> Telemetry {
+    fn telemetry(&self, world: &MicrogridSite) -> Telemetry {
         let grid = world.grid_state();
         let total_p = self.aggregate_active(world);
         let total_q = self.aggregate_reactive(world);
@@ -150,11 +150,11 @@ impl SimulatedComponent for Meter {
         }
     }
 
-    fn aggregate_power_w(&self, world: &World) -> f32 {
+    fn aggregate_power_w(&self, world: &MicrogridSite) -> f32 {
         self.aggregate_active(world)
     }
 
-    fn aggregate_reactive_var(&self, world: &World) -> f32 {
+    fn aggregate_reactive_var(&self, world: &MicrogridSite) -> f32 {
         self.aggregate_reactive(world)
     }
 
@@ -233,14 +233,14 @@ mod tests {
         fn stream_interval(&self) -> Duration {
             Duration::from_secs(1)
         }
-        fn tick(&self, _: &World, _: chrono::DateTime<chrono::Utc>, _: Duration) {}
-        fn telemetry(&self, _: &World) -> Telemetry {
+        fn tick(&self, _: &MicrogridSite, _: chrono::DateTime<chrono::Utc>, _: Duration) {}
+        fn telemetry(&self, _: &MicrogridSite) -> Telemetry {
             Telemetry::default()
         }
-        fn aggregate_power_w(&self, _: &World) -> f32 {
+        fn aggregate_power_w(&self, _: &MicrogridSite) -> f32 {
             self.p
         }
-        fn aggregate_reactive_var(&self, _: &World) -> f32 {
+        fn aggregate_reactive_var(&self, _: &MicrogridSite) -> f32 {
             self.q
         }
     }
@@ -258,7 +258,7 @@ mod tests {
     /// inverter's actual flow (10 kW), not 20 kW.
     #[test]
     fn parallel_paths_share_one_inverter() {
-        let w = World::new();
+        let w = MicrogridSite::new();
 
         // Register an inverter that publishes 10 kW active, 0 VAR.
         let inverter = std::sync::Arc::new(FixedFlow {
@@ -297,7 +297,7 @@ mod tests {
     /// cached its full successor list and ignored disconnects.
     #[test]
     fn world_disconnect_after_make_drops_child() {
-        let w = World::new();
+        let w = MicrogridSite::new();
         let inverter = std::sync::Arc::new(FixedFlow {
             id: 100,
             p: 2_000.0,
@@ -321,7 +321,7 @@ mod tests {
     /// internal successor list isn't the only source of truth.
     #[test]
     fn world_connect_after_make_aggregates() {
-        let w = World::new();
+        let w = MicrogridSite::new();
 
         // Inverter publishes 2 kW; meter starts with no successors.
         let inverter = std::sync::Arc::new(FixedFlow {
@@ -347,7 +347,7 @@ mod tests {
     /// with a fresh constant.
     #[test]
     fn constant_power_source_reads_through() {
-        let w = World::new();
+        let w = MicrogridSite::new();
         let m = Meter::new(
             2,
             Duration::from_secs(1),
@@ -374,7 +374,7 @@ mod tests {
         let scalar = DynamicScalar::from_lisp(&lambda, 0.0).expect("lambda → dynamic");
         assert!(scalar.is_dynamic());
 
-        let w = World::new();
+        let w = MicrogridSite::new();
         let m = Meter::new(2, Duration::from_secs(1), Some(scalar), 0.0, false);
         w.register(m);
         let m = w.get(2).unwrap();
@@ -394,7 +394,7 @@ mod tests {
     /// boundary that drives gRPC and the UI.
     #[test]
     fn hidden_child_aggregates_into_visible_parent() {
-        let w = World::new();
+        let w = MicrogridSite::new();
         // Hidden meter consumer with a constant 1500 W draw.
         let hidden_meter = Meter::new(
             9000,

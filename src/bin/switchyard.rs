@@ -12,7 +12,7 @@ use switchyard::{
     proto::assets::platform_assets_server::PlatformAssetsServer as AssetsGrpcServer,
     proto::microgrid::microgrid_server::MicrogridServer as MicrogridGrpcServer,
     server::MicrogridServer,
-    sim::World,
+    sim::MicrogridSite,
     ui, ui_log,
 };
 use tonic::transport::Server;
@@ -71,15 +71,15 @@ async fn main() {
         log::error!("Failed to load config:\n{e}");
         std::process::exit(1);
     });
-    let world = config.world();
+    let world = config.site();
     log::info!(
         "Loaded {} components, {} connections",
         world.components().len(),
         world.connections().len()
     );
 
-    World::clone(&world).spawn_physics();
-    World::clone(&world).spawn_history_sampler();
+    MicrogridSite::clone(&world).spawn_physics();
+    MicrogridSite::clone(&world).spawn_history_sampler();
 
     let socket_addr_str = config.socket_addr();
     let socket_addr = socket_addr_str

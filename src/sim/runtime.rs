@@ -3,7 +3,7 @@
 //!
 //! These three orthogonal flags let a config (or a runtime caller via
 //! `(set-component-* …)` defuns) drive faulty behaviour without
-//! touching the simulated state. They live in the World, not on the
+//! touching the simulated state. They live in the MicrogridSite, not on the
 //! component, because the things they control (gRPC stream pacing,
 //! request handling) are server-facing concerns the components
 //! shouldn't know about.

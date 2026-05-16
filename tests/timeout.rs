@@ -39,12 +39,12 @@ async fn short_lifetime_setpoint_resets_after_expiry() {
 
     // Step 1: confirm the setpoint took effect by ticking once and
     // reading active power back from the inverter's telemetry.
-    let inv = s.config.world().get(200).unwrap();
+    let inv = s.config.site().get(200).unwrap();
     s.config
-        .world()
+        .site()
         .tick_once(chrono::Utc::now(), Duration::from_millis(100));
     let p_before = inv
-        .telemetry(&s.config.world())
+        .telemetry(&s.config.site())
         .active_power_w
         .expect("active power present");
     assert!(
@@ -61,10 +61,10 @@ async fn short_lifetime_setpoint_resets_after_expiry() {
     // value the inverter reverts to). With infinite default
     // ramp-rate, one tick is enough.
     s.config
-        .world()
+        .site()
         .tick_once(chrono::Utc::now(), Duration::from_millis(100));
     let p_after = inv
-        .telemetry(&s.config.world())
+        .telemetry(&s.config.site())
         .active_power_w
         .expect("active power present");
     assert!(

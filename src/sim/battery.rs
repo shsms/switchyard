@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
 
 use crate::sim::{
-    Category, SimulatedComponent, Telemetry, World,
+    Category, SimulatedComponent, Telemetry, MicrogridSite,
     bounds::VecBounds,
     decay::{SocProtect, soc_protected_bounds as decay_soc_bounds},
 };
@@ -143,7 +143,7 @@ impl SimulatedComponent for Battery {
         self.cfg.stream_jitter_pct
     }
 
-    fn tick(&self, _world: &World, _now: DateTime<Utc>, dt: Duration) {
+    fn tick(&self, _world: &MicrogridSite, _now: DateTime<Utc>, dt: Duration) {
         let mut s = self.state.lock();
 
         // 1. Refresh SoC-derated bounds from current SoC.
@@ -172,7 +172,7 @@ impl SimulatedComponent for Battery {
         }
     }
 
-    fn telemetry(&self, _world: &World) -> Telemetry {
+    fn telemetry(&self, _world: &MicrogridSite) -> Telemetry {
         let s = self.state.lock().clone();
         // Apparent DC magnitude with sign of P. Reactive load
         // doesn't move net energy (so SoC integrates on `power_w`
@@ -210,7 +210,7 @@ impl SimulatedComponent for Battery {
     /// joules. The split is deliberate; a control app comparing
     /// the two values via /api/telemetry vs /api/topology will see
     /// the gap whenever Q ≠ 0.
-    fn aggregate_power_w(&self, _world: &World) -> f32 {
+    fn aggregate_power_w(&self, _world: &MicrogridSite) -> f32 {
         self.state.lock().power_w
     }
 
@@ -232,7 +232,7 @@ impl SimulatedComponent for Battery {
         s.pending_q += q;
     }
 
-    fn aggregate_reactive_var(&self, _world: &World) -> f32 {
+    fn aggregate_reactive_var(&self, _world: &MicrogridSite) -> f32 {
         self.state.lock().reactive_var
     }
 

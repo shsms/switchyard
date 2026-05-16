@@ -21,7 +21,7 @@ async fn editing_config_lisp_rebuilds_the_world() {
     // we rewrite. Without this the rewrite races the .watch() call.
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let v0 = s.config.world().version();
+    let v0 = s.config.site().version();
     let path = s.config_path();
 
     // Append a meter under the grid by replacing the file. The
@@ -36,7 +36,7 @@ async fn editing_config_lisp_rebuilds_the_world() {
     // loudly rather than hanging if the watcher misfires.
     let mut versioned = false;
     for _ in 0..50 {
-        if s.config.world().version() > v0 {
+        if s.config.site().version() > v0 {
             versioned = true;
             break;
         }

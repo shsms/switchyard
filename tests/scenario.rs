@@ -87,9 +87,9 @@ async fn lambda_meter_power_resolves_through_http_eval() {
 
     let mut now = chrono::Utc::now();
     s.config
-        .world()
+        .site()
         .tick_once(now, std::time::Duration::from_millis(100));
-    s.config.world().record_history_snapshot(now);
+    s.config.site().record_history_snapshot(now);
 
     let topo = topology(&client, &s).await;
     // Telemetry isn't on /api/topology; assert via the report's
@@ -105,9 +105,9 @@ async fn lambda_meter_power_resolves_through_http_eval() {
     eval_or_panic(&client, &s, "(setq curve 4321.0)").await;
     now += chrono::Duration::seconds(1);
     s.config
-        .world()
+        .site()
         .tick_once(now, std::time::Duration::from_millis(100));
-    s.config.world().record_history_snapshot(now);
+    s.config.site().record_history_snapshot(now);
     let r = report(&client, &s).await;
     let peak = r["peak_main_meter_w"].as_f64().unwrap();
     assert!(
@@ -120,9 +120,9 @@ async fn lambda_meter_power_resolves_through_http_eval() {
     eval_or_panic(&client, &s, "(set-meter-power 2 (lambda () 9999.0))").await;
     now += chrono::Duration::seconds(1);
     s.config
-        .world()
+        .site()
         .tick_once(now, std::time::Duration::from_millis(100));
-    s.config.world().record_history_snapshot(now);
+    s.config.site().record_history_snapshot(now);
     let r = report(&client, &s).await;
     let peak = r["peak_main_meter_w"].as_f64().unwrap();
     assert!(
@@ -155,11 +155,11 @@ async fn driver_run_aggregates_peak_charge_and_soc_stats() {
     // explicit timestamps. 10 sim-seconds at +3600 W = 10 Wh
     // charged into the battery.
     let mut now = chrono::Utc::now();
-    s.config.world().tick_once(now, Duration::from_millis(100));
-    s.config.world().record_history_snapshot(now);
+    s.config.site().tick_once(now, Duration::from_millis(100));
+    s.config.site().record_history_snapshot(now);
     now += chrono::Duration::seconds(10);
-    s.config.world().tick_once(now, Duration::from_secs(10));
-    s.config.world().record_history_snapshot(now);
+    s.config.site().tick_once(now, Duration::from_secs(10));
+    s.config.site().record_history_snapshot(now);
 
     let r = report(&client, &s).await;
 

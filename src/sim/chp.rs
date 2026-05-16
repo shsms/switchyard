@@ -6,7 +6,7 @@ use std::{fmt, time::Duration};
 
 use chrono::{DateTime, Utc};
 
-use crate::sim::{Category, SimulatedComponent, Telemetry, World};
+use crate::sim::{Category, SimulatedComponent, Telemetry, MicrogridSite};
 
 pub struct Chp {
     id: u64,
@@ -46,8 +46,8 @@ impl SimulatedComponent for Chp {
     fn stream_jitter_pct(&self) -> f32 {
         self.stream_jitter_pct
     }
-    fn tick(&self, _w: &World, _n: DateTime<Utc>, _d: Duration) {}
-    fn telemetry(&self, _w: &World) -> Telemetry {
+    fn tick(&self, _w: &MicrogridSite, _n: DateTime<Utc>, _d: Duration) {}
+    fn telemetry(&self, _w: &MicrogridSite) -> Telemetry {
         Telemetry {
             id: self.id,
             category: Some(Category::Chp),

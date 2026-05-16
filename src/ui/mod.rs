@@ -31,7 +31,7 @@ use std::time::Duration;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::task::JoinHandle;
 
-use crate::sim::{World, events::WorldEvent};
+use crate::sim::{MicrogridSite, events::SiteEvent};
 
 use crate::{
     lisp::Config,
@@ -39,7 +39,7 @@ use crate::{
         Category,
         history::Metric,
         setpoints::SetpointEvent,
-        world::{ScenarioReport, ScenarioSummary},
+        microgrid_site::{ScenarioReport, ScenarioSummary},
     },
 };
 
@@ -53,7 +53,7 @@ struct Assets;
 
 /// One forwarded sample, cached so the SPA can paint immediately
 /// on page load instead of waiting up to a full second for the
-/// next WS tick. Mirrors the [`WorldEvent::MicrogridSample`]
+/// next WS tick. Mirrors the [`SiteEvent::MicrogridSample`]
 /// payload minus the `kind` discriminator.
 #[derive(Clone, Debug, Serialize)]
 pub struct MicrogridSampleSnapshot {
@@ -133,11 +133,11 @@ pub fn new_microgrid_slot() -> SharedMicrogrid {
 /// slot fills.
 ///
 /// `world` is the sink the forwarders publish to via
-/// [`World::broadcast_microgrid_sample`]; the existing `/ws/events`
+/// [`MicrogridSite::broadcast_microgrid_sample`]; the existing `/ws/events`
 /// stream then carries the samples to the SPA without any extra
-/// wiring — they ride the same `WorldEvent` discriminator the
+/// wiring — they ride the same `SiteEvent` discriminator the
 /// per-component samples already use.
-pub fn spawn_microgrid_loopback(grpc_url: String, slot: SharedMicrogrid, world: World) {
+pub fn spawn_microgrid_loopback(grpc_url: String, slot: SharedMicrogrid, world: MicrogridSite) {
     tokio::spawn(async move {
         if !build_microgrid(&grpc_url, &slot, &world).await {
             return;
@@ -174,7 +174,7 @@ pub fn spawn_microgrid_loopback(grpc_url: String, slot: SharedMicrogrid, world: 
 /// Returns false if the gRPC connect or graph build fails outright
 /// (which the crate normally retries through; a hard failure means
 /// something like a malformed URL).
-async fn build_microgrid(grpc_url: &str, slot: &SharedMicrogrid, world: &World) -> bool {
+async fn build_microgrid(grpc_url: &str, slot: &SharedMicrogrid, world: &MicrogridSite) -> bool {
     // Lazy client init. `MicrogridClientHandle::try_new` doesn't
     // contact the server — the connection is established lazily on
     // the first RPC — so this is cheap to call. It does validate
@@ -219,15 +219,15 @@ async fn build_microgrid(grpc_url: &str, slot: &SharedMicrogrid, world: &World) 
     true
 }
 
-/// Subscribe to World events and rebuild the Microgrid handle on
+/// Subscribe to MicrogridSite events and rebuild the Microgrid handle on
 /// every TopologyChanged. Lagged-receiver and dropped-sender
 /// events also trigger a rebuild (defensive — a missed event
 /// might have been a topology change).
-async fn run_supervisor(grpc_url: String, slot: SharedMicrogrid, world: World) {
+async fn run_supervisor(grpc_url: String, slot: SharedMicrogrid, world: MicrogridSite) {
     let mut events = world.subscribe_events();
     loop {
         match events.recv().await {
-            Ok(WorldEvent::TopologyChanged { .. }) => {
+            Ok(SiteEvent::TopologyChanged { .. }) => {
                 debounce_topology_burst(&mut events).await;
                 rebuild(&grpc_url, &slot, &world).await;
             }
@@ -251,7 +251,7 @@ async fn run_supervisor(grpc_url: String, slot: SharedMicrogrid, world: World) {
 /// events that arrive within `DEBOUNCE` so a hot-reload that
 /// registers 12 components in rapid succession only triggers one
 /// rebuild instead of 12.
-async fn debounce_topology_burst(events: &mut tokio::sync::broadcast::Receiver<WorldEvent>) {
+async fn debounce_topology_burst(events: &mut tokio::sync::broadcast::Receiver<SiteEvent>) {
     const DEBOUNCE: Duration = Duration::from_millis(300);
     let deadline = tokio::time::Instant::now() + DEBOUNCE;
     loop {
@@ -273,7 +273,7 @@ async fn debounce_topology_burst(events: &mut tokio::sync::broadcast::Receiver<W
 /// Only the `LogicalMeterHandle` inside the new Microgrid is
 /// rebuilt; the `MicrogridClientHandle` cached in `slot.client` is
 /// reused. See the field doc for why the client is long-lived.
-async fn rebuild(grpc_url: &str, slot: &SharedMicrogrid, world: &World) {
+async fn rebuild(grpc_url: &str, slot: &SharedMicrogrid, world: &MicrogridSite) {
     log::info!("microgrid loopback: topology changed — rebuilding handle");
     build_microgrid(grpc_url, slot, world).await;
 }
@@ -282,7 +282,7 @@ async fn rebuild(grpc_url: &str, slot: &SharedMicrogrid, world: &World) {
 /// tier-1 (grid), tier-2 (battery pool), tier-3 (PV), and tier-4
 /// (consumer + producer aggregates) read from, and spawn one tokio
 /// task per surviving subscription to forward samples onto the
-/// World event bus.
+/// MicrogridSite event bus.
 ///
 /// Each `formula.subscribe().await` is run on the caller's task so
 /// that, when this function returns, the new LM has already
@@ -297,7 +297,7 @@ async fn rebuild(grpc_url: &str, slot: &SharedMicrogrid, world: &World) {
 /// unavailable" until that category appears.
 async fn subscribe_power_forwarders(
     microgrid: &mut Microgrid,
-    world: &World,
+    world: &MicrogridSite,
     state: SharedMicrogrid,
 ) -> Vec<JoinHandle<()>> {
     let mut handles = Vec::new();
@@ -359,7 +359,7 @@ async fn subscribe_power_forwarders(
 /// developer-facing dashboard isn't designed around.
 fn spawn_bounds_forwarder(
     mut rx: tokio::sync::broadcast::Receiver<Vec<frequenz_microgrid::Bounds<Power>>>,
-    world: &World,
+    world: &MicrogridSite,
     state: SharedMicrogrid,
 ) -> JoinHandle<()> {
     let world = world.clone();
@@ -415,7 +415,7 @@ fn outer_bound(
 }
 
 /// Subscribe to one Power-valued formula and spawn a forwarder that
-/// pushes each `Sample<Power>` onto the World event bus as a
+/// pushes each `Sample<Power>` onto the MicrogridSite event bus as a
 /// `MicrogridSample { stream, quantity: "Power", unit: "W", ... }`
 /// event. The `formula.subscribe().await` runs on the caller's task
 /// so the LM has actually registered for the component samples by
@@ -426,7 +426,7 @@ fn outer_bound(
 async fn subscribe_power_forwarder(
     stream: &'static str,
     formula: Result<frequenz_microgrid::Formula<Power>, frequenz_microgrid::Error>,
-    world: &World,
+    world: &MicrogridSite,
     state: SharedMicrogrid,
 ) -> Option<JoinHandle<()>> {
     let formula = match formula {
@@ -460,7 +460,7 @@ async fn subscribe_power_forwarder(
     }))
 }
 
-fn publish_power(stream: &'static str, sample: Sample<Power>, world: &World, state: &SharedMicrogrid) {
+fn publish_power(stream: &'static str, sample: Sample<Power>, world: &MicrogridSite, state: &SharedMicrogrid) {
     let value = sample.value().map(|p| p.as_watts());
     let ts_ms = sample.timestamp().timestamp_millis();
     publish_scalar(stream, "Power", "W", value, ts_ms, world, state);
@@ -477,7 +477,7 @@ fn publish_scalar(
     unit: &'static str,
     value: Option<f32>,
     ts_ms: i64,
-    world: &World,
+    world: &MicrogridSite,
     state: &SharedMicrogrid,
 ) {
     let snapshot = MicrogridSampleSnapshot {
@@ -607,7 +607,7 @@ async fn scenarios_start(
         crate::sim::scenarios::start(
             &cfg.scenarios(),
             &cfg.interpreter(),
-            &cfg.world(),
+            &cfg.site(),
             &clock,
             &name,
             now,
@@ -621,7 +621,7 @@ async fn scenarios_stop(
     Path(name): Path<String>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     run_scenario_op(config, move |cfg, now| {
-        crate::sim::scenarios::stop(&cfg.scenarios(), &cfg.world(), &name, now)
+        crate::sim::scenarios::stop(&cfg.scenarios(), &cfg.site(), &name, now)
     })
     .await
 }
@@ -634,7 +634,7 @@ async fn scenarios_next(
         crate::sim::scenarios::step(
             &cfg.scenarios(),
             &cfg.interpreter(),
-            &cfg.world(),
+            &cfg.site(),
             &name,
             1,
             now,
@@ -651,7 +651,7 @@ async fn scenarios_prev(
         crate::sim::scenarios::step(
             &cfg.scenarios(),
             &cfg.interpreter(),
-            &cfg.world(),
+            &cfg.site(),
             &name,
             -1,
             now,
@@ -668,7 +668,7 @@ async fn scenarios_jump(
         crate::sim::scenarios::jump(
             &cfg.scenarios(),
             &cfg.interpreter(),
-            &cfg.world(),
+            &cfg.site(),
             &name,
             idx,
             now,
@@ -895,7 +895,7 @@ struct ComponentSummary {
 }
 
 async fn topology(State(config): State<Config>) -> Json<TopologySnapshot> {
-    let world = config.world();
+    let world = config.site();
     let components = world
         .components()
         .iter()
@@ -1046,7 +1046,7 @@ async fn history(
     let since: DateTime<Utc> = Utc::now() - window;
 
     let samples = config
-        .world()
+        .site()
         .history_window(q.id, metric, since)
         .unwrap_or_default()
         .into_iter()
@@ -1083,7 +1083,7 @@ async fn setpoints(
 ) -> Json<SetpointsResponse> {
     let window = ChronoDuration::seconds(q.window_s.unwrap_or(600));
     let since = Utc::now() - window;
-    let events = config.world().setpoints_window(q.id, since);
+    let events = config.site().setpoints_window(q.id, since);
     Json(SetpointsResponse { id: q.id, events })
 }
 
@@ -1272,7 +1272,7 @@ async fn logs_backfill() -> Json<Vec<crate::ui_log::LogEvent>> {
 /// null`, zero counts) before any `(scenario-start)`; freezes
 /// `elapsed_s` once `(scenario-stop)` fires.
 async fn scenario_summary(State(config): State<Config>) -> Json<ScenarioSummary> {
-    Json(config.world().scenario_summary(Utc::now()))
+    Json(config.site().scenario_summary(Utc::now()))
 }
 
 #[derive(Deserialize)]
@@ -1305,8 +1305,8 @@ async fn scenario_events(
 ) -> Json<ScenarioEventsResponse> {
     let since = q.since.unwrap_or(0);
     let limit = q.limit.unwrap_or(200).min(1000);
-    let events = config.world().scenario_events_since(since, limit);
-    let summary = config.world().scenario_summary(Utc::now());
+    let events = config.site().scenario_events_since(since, limit);
+    let summary = config.site().scenario_summary(Utc::now());
     Json(ScenarioEventsResponse {
         events,
         next_event_id: summary.next_event_id,
@@ -1319,10 +1319,10 @@ async fn scenario_events(
 /// `/api/scenario/events` so a dashboard can poll metrics
 /// frequently without scanning the whole event log.
 async fn scenario_report(State(config): State<Config>) -> Json<ScenarioReport> {
-    Json(config.world().scenario_report(Utc::now()))
+    Json(config.site().scenario_report(Utc::now()))
 }
 
-/// WebSocket event push. Subscribers receive WorldEvent JSON for
+/// WebSocket event push. Subscribers receive SiteEvent JSON for
 /// every TopologyChanged + Sample broadcast. Client-sent frames are
 /// drained but ignored — the channel is server-push only for v1; an
 /// upcoming change adds a /api/eval-style RPC over the same socket
@@ -1332,7 +1332,7 @@ async fn events_ws(ws: WebSocketUpgrade, State(config): State<Config>) -> impl I
 }
 
 async fn event_pump(mut socket: WebSocket, config: Config) {
-    let mut rx = config.world().subscribe_events();
+    let mut rx = config.site().subscribe_events();
     // Optional: log tap. Only set when running through the binary;
     // tests hit this path with no tap initialised, so subscribe via
     // `Option<broadcast::Receiver>` and skip the branch when absent.
@@ -1371,7 +1371,7 @@ async fn event_pump(mut socket: WebSocket, config: Config) {
                 }
             } => match log {
                 Ok(line) => {
-                    let event = crate::sim::events::WorldEvent::Log {
+                    let event = crate::sim::events::SiteEvent::Log {
                         ts_ms: line.ts_ms,
                         level: line.level,
                         target: line.target,

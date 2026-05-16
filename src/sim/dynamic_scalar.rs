@@ -10,7 +10,7 @@
 //!
 //! `DynamicScalar` is the storage shape that lets a component carry
 //! such an input without violating the architectural rule that
-//! `tick()` must not call back into the interpreter. The World
+//! `tick()` must not call back into the interpreter. The MicrogridSite
 //! scheduler holds the interpreter lock once per tick, calls
 //! [`SimulatedComponent::refresh_inputs`], which re-resolves the
 //! source and stores the resulting `f32` in an atomic. `tick()`

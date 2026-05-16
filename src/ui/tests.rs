@@ -5,7 +5,7 @@ use std::io::Write;
 use tower::ServiceExt;
 
 /// Boots a `Config` against a freshly-written tiny config file
-/// holding `body`, so the live tulisp ctx + World are wired up the
+/// holding `body`, so the live tulisp ctx + MicrogridSite are wired up the
 /// same way the binary wires them. Returns the Config; caller
 /// composes a router with it.
 ///
@@ -167,7 +167,7 @@ async fn history_endpoint_returns_recent_samples() {
     // synchronously so the rings have content to query. Battery
     // publishes soc_pct in its telemetry; that's what we query.
     let cfg = config_with("(%make-battery :id 1000)").await;
-    let world = cfg.world();
+    let world = cfg.site();
     let now = chrono::Utc::now();
     world.record_history_snapshot(now - chrono::Duration::seconds(2));
     world.record_history_snapshot(now - chrono::Duration::seconds(1));
@@ -425,7 +425,7 @@ async fn scenario_report_endpoint_returns_main_meter_peak() {
     )
     .await;
     // Drive the sampler so the reporter sees a peak.
-    cfg.world().record_history_snapshot(Utc::now());
+    cfg.site().record_history_snapshot(Utc::now());
 
     let (status, body) = call(cfg, get("/api/scenario/report")).await;
     assert_eq!(status, StatusCode::OK);

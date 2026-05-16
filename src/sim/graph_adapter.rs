@@ -10,7 +10,7 @@
 //! identity fields into plain `GraphNode` / `GraphEdge` structs at
 //! snapshot time. The snapshot is what gets handed to
 //! [`ComponentGraph::try_new`]; we hold the resulting graph next to
-//! the World so its `predecessors` / `successors` iterators and its
+//! the MicrogridSite so its `predecessors` / `successors` iterators and its
 //! `*_formula` methods are reachable from the UI server without
 //! re-snapshotting on every request.
 //!
@@ -29,7 +29,7 @@
 //! switchyard models them as aggregating off-graph — a parent
 //! meter sums their power even though no explicit connection edge
 //! ties them in. To the graph crate that looks like an orphan
-//! node. `World::connections()` already filters hidden endpoints
+//! node. `MicrogridSite::connections()` already filters hidden endpoints
 //! out of the edge list; the node-list filter here matches.
 //! Net effect: the validator sees the gRPC-visible topology, which
 //! is what a downstream control app sees too.
@@ -39,7 +39,7 @@ use frequenz_microgrid_component_graph::{
     InverterType, Node,
 };
 
-use crate::sim::{component::Category, world::World};
+use crate::sim::{component::Category, microgrid_site::MicrogridSite};
 
 /// Plain-data view of one switchyard component, sized for the graph
 /// crate's `Node` trait. Cloned cheaply (two scalars).
@@ -60,7 +60,7 @@ impl Node for GraphNode {
 }
 
 /// Plain-data view of one switchyard connection. The graph crate
-/// owns the storage; switchyard's `World` keeps its
+/// owns the storage; switchyard's `MicrogridSite` keeps its
 /// `Vec<(u64, u64)>` parent/child shape for the rest of the codebase.
 #[derive(Debug, Clone, Copy)]
 pub struct GraphEdge {
@@ -111,8 +111,8 @@ fn lift_category(category: Category, subtype: Option<&str>) -> ComponentCategory
 /// Build the lists of nodes + edges the graph crate's
 /// `ComponentGraph::try_new` consumes. Hidden components are
 /// excluded so the validation graph mirrors what
-/// `World::connections()` (the gRPC + UI surface) shows.
-pub fn snapshot(world: &World) -> (Vec<GraphNode>, Vec<GraphEdge>) {
+/// `MicrogridSite::connections()` (the gRPC + UI surface) shows.
+pub fn snapshot(world: &MicrogridSite) -> (Vec<GraphNode>, Vec<GraphEdge>) {
     let nodes = world
         .components()
         .iter()
@@ -133,12 +133,12 @@ pub fn snapshot(world: &World) -> (Vec<GraphNode>, Vec<GraphEdge>) {
     (nodes, edges)
 }
 
-/// Build a validated [`ComponentGraph`] from the live `World`.
+/// Build a validated [`ComponentGraph`] from the live `MicrogridSite`.
 /// Returns the graph crate's `Error` if any category-rule, root, or
 /// connectivity check fails. The caller decides how to surface the
 /// failure (log + keep running for a hot-reload; abort for boot).
 pub fn build(
-    world: &World,
+    world: &MicrogridSite,
 ) -> Result<ComponentGraph<GraphNode, GraphEdge>, frequenz_microgrid_component_graph::Error> {
     let (nodes, edges) = snapshot(world);
     build_from(nodes, edges)
@@ -146,7 +146,7 @@ pub fn build(
 
 /// Validation core, split out from [`build`] so tests can drive the
 /// graph crate against hand-rolled node + edge lists without going
-/// through `World`'s real component constructors.
+/// through `MicrogridSite`'s real component constructors.
 pub fn build_from(
     nodes: Vec<GraphNode>,
     edges: Vec<GraphEdge>,

@@ -99,7 +99,7 @@ pub struct ScenarioJournal {
     /// Wall-clock timestamp of the previous integration sample —
     /// used to compute `dt` for the energy integrals. `None` until
     /// `start` runs; updated at the end of each
-    /// `World::record_history_snapshot` pass.
+    /// `MicrogridSite::record_history_snapshot` pass.
     prev_sample_ts: Option<DateTime<Utc>>,
 }
 

@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
 
 use crate::sim::{
-    Category, SetpointError, SimulatedComponent, Telemetry, World,
+    Category, SetpointError, SimulatedComponent, Telemetry, MicrogridSite,
     bounds::ComponentBounds,
     meter::{per_phase_apparent_current, split_per_phase},
     ramp::{CommandDelay, Ramp},
@@ -110,7 +110,7 @@ impl SimulatedComponent for BatteryInverter {
         self.interval
     }
 
-    fn tick(&self, world: &World, now: DateTime<Utc>, dt: Duration) {
+    fn tick(&self, world: &MicrogridSite, now: DateTime<Utc>, dt: Duration) {
         self.bounds.lock().drop_expired(now);
 
         // Active path: clamp the pending command against our OWN
@@ -168,7 +168,7 @@ impl SimulatedComponent for BatteryInverter {
         }
     }
 
-    fn telemetry(&self, world: &World) -> Telemetry {
+    fn telemetry(&self, world: &MicrogridSite) -> Telemetry {
         let grid = world.grid_state();
         // Report the measured AC output, not the internal ramp state —
         // those diverge when a battery clips downstream.
@@ -199,7 +199,7 @@ impl SimulatedComponent for BatteryInverter {
     }
 
     fn set_active_setpoint(&self, power_w: f32) -> Result<(), SetpointError> {
-        // We don't have a `&World` here (the trait method is per-component),
+        // We don't have a `&MicrogridSite` here (the trait method is per-component),
         // so children-summing happens in tick(). Validation here uses our
         // own (post-augmentation) bounds — anything beyond that is a hard
         // protocol error; the SoC clamp is enforced silently via tick().
@@ -234,11 +234,11 @@ impl SimulatedComponent for BatteryInverter {
         self.bounds.lock().add_augmentation(ts, bounds, lifetime);
     }
 
-    fn aggregate_power_w(&self, _world: &World) -> f32 {
+    fn aggregate_power_w(&self, _world: &MicrogridSite) -> f32 {
         *self.measured_w.lock()
     }
 
-    fn aggregate_reactive_var(&self, _world: &World) -> f32 {
+    fn aggregate_reactive_var(&self, _world: &MicrogridSite) -> f32 {
         self.reactive.published()
     }
 
@@ -288,8 +288,8 @@ mod tests {
     use crate::sim::bounds::VecBounds;
     use crate::sim::{Battery, battery::BatteryConfig};
 
-    fn setup_inverter_with_battery() -> (World, u64, u64) {
-        let w = World::new();
+    fn setup_inverter_with_battery() -> (MicrogridSite, u64, u64) {
+        let w = MicrogridSite::new();
         let bat = Battery::new(
             100,
             Duration::from_secs(1),
@@ -326,7 +326,7 @@ mod tests {
     #[test]
     fn out_of_bounds_error_reports_augmented_envelope() {
         let (_w, _bat_id, inv_id) = setup_inverter_with_battery();
-        let w = World::new();
+        let w = MicrogridSite::new();
         let inv = BatteryInverter::new(
             inv_id,
             Duration::from_secs(1),

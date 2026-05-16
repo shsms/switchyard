@@ -6,7 +6,7 @@
 //! requested* and *what the sim did with it*. This module keeps a
 //! bounded ring per component holding exactly that.
 //!
-//! Wired into `World` and populated by the gRPC server's setpoint
+//! Wired into `MicrogridSite` and populated by the gRPC server's setpoint
 //! handlers in subsequent commits. Pure data structures here.
 
 use std::collections::VecDeque;

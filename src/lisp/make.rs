@@ -15,7 +15,7 @@ use tulisp::{AsPlist, Error, Plist, TulispContext};
 
 use crate::lisp::value::LispValue;
 use crate::sim::{
-    Battery, BatteryInverter, Chp, ComponentHandle, EvCharger, Grid, Meter, SolarInverter, World,
+    Battery, BatteryInverter, Chp, ComponentHandle, EvCharger, Grid, Meter, SolarInverter, MicrogridSite,
     battery::BatteryConfig,
     dynamic_scalar::DynamicScalar,
     ev_charger::EvChargerConfig,
@@ -202,7 +202,7 @@ AsPlist! {
 // Registration
 // -----------------------------------------------------------------------------
 
-pub fn register(ctx: &mut TulispContext, world: World) {
+pub fn register(ctx: &mut TulispContext, world: MicrogridSite) {
     let w = world.clone();
     ctx.defun(
         "%make-grid",
@@ -507,10 +507,10 @@ pub fn register(ctx: &mut TulispContext, world: World) {
     );
 }
 
-fn connect_successors(world: &World, parent: u64, successors: &Option<Vec<ComponentHandle>>) {
+fn connect_successors(world: &MicrogridSite, parent: u64, successors: &Option<Vec<ComponentHandle>>) {
     if let Some(list) = successors {
         for child in list {
-            // Every edge — hidden or not — lands in `World::connections`.
+            // Every edge — hidden or not — lands in `MicrogridSite::connections`.
             // Visibility filtering happens at the `connections()` /
             // `hidden_connections()` boundary that drives gRPC and the
             // UI; the aggregation paths walk the unfiltered graph.
@@ -524,10 +524,10 @@ fn ms_to_duration(ms: Option<i64>, default_ms: u64) -> Duration {
 }
 
 /// Resolve the component id from an `:id` plist value, falling back to
-/// `World::next_id()` when omitted. Centralized so casts stay one
+/// `MicrogridSite::next_id()` when omitted. Centralized so casts stay one
 /// place — each make-* used to inline the same `as u64 / next_id()`
 /// pattern.
-fn id_or_next(world: &World, explicit: Option<i64>) -> u64 {
+fn id_or_next(world: &MicrogridSite, explicit: Option<i64>) -> u64 {
     explicit
         .map(|x| x as u64)
         .unwrap_or_else(|| world.next_id())
@@ -541,7 +541,7 @@ fn id_or_next(world: &World, explicit: Option<i64>) -> u64 {
 /// same order (health, then telemetry, then command) right after
 /// registration — before any tick or subscriber runs.
 fn register_with_modes<C: crate::sim::SimulatedComponent + 'static>(
-    world: &World,
+    world: &MicrogridSite,
     component: C,
     health: Option<Health>,
     telemetry: Option<TelemetryMode>,
@@ -557,7 +557,7 @@ fn register_with_modes<C: crate::sim::SimulatedComponent + 'static>(
 /// display-name override so the gRPC `ListElectricalComponents`
 /// response and the UI's topology endpoint both pick it up. No-op
 /// when the user didn't pass `:name`.
-fn apply_initial_name(world: &World, id: u64, name: Option<String>) {
+fn apply_initial_name(world: &MicrogridSite, id: u64, name: Option<String>) {
     if let Some(n) = name {
         world.rename(id, n);
     }
@@ -570,7 +570,7 @@ fn apply_initial_name(world: &World, id: u64, name: Option<String>) {
 /// (`src/lisp/runtime_modes.rs`); by the time we get here the values
 /// are typed.
 fn apply_initial_modes(
-    world: &World,
+    world: &MicrogridSite,
     id: u64,
     health: Option<Health>,
     telemetry: Option<TelemetryMode>,
@@ -591,17 +591,17 @@ fn apply_initial_modes(
 mod tests {
     use super::*;
 
-    /// Builds a context wired to a fresh World, evaluates `src`, and
-    /// returns the World so the test can introspect what got registered.
-    fn run(src: &str) -> World {
+    /// Builds a context wired to a fresh MicrogridSite, evaluates `src`, and
+    /// returns the MicrogridSite so the test can introspect what got registered.
+    fn run(src: &str) -> MicrogridSite {
         run_with_ctx(src).0
     }
 
     /// Like [`run`] but also surfaces the context — needed for tests
     /// that drive `refresh_inputs` (lambda / symbol `:power` etc.)
     /// after the components have registered.
-    fn run_with_ctx(src: &str) -> (World, TulispContext) {
-        let world = World::new();
+    fn run_with_ctx(src: &str) -> (MicrogridSite, TulispContext) {
+        let world = MicrogridSite::new();
         let mut ctx = TulispContext::new();
         crate::lisp::handle::register(&mut ctx);
         register(&mut ctx, world.clone());

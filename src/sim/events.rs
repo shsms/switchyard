@@ -1,4 +1,4 @@
-//! World-level event stream — fans out telemetry samples and topology
+//! MicrogridSite-level event stream — fans out telemetry samples and topology
 //! version bumps to UI subscribers (the WebSocket endpoint, future
 //! command-line monitors, anything else that wants live notifications).
 //!
@@ -22,7 +22,7 @@ pub const EVENT_BUS_CAPACITY: usize = 4096;
 /// `tag` + `flatten`-equivalent via per-variant struct shape).
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum WorldEvent {
+pub enum SiteEvent {
     /// Mutation occurred (eval, reload, …). Subscribers should
     /// refetch /api/topology if they care about structure or
     /// metadata changes. Cheap signal — sent on every accepted eval

@@ -8,7 +8,7 @@
 //! The fixture is in-process rather than out-of-process because:
 //! - cargo runs each `tests/<file>.rs` as its own binary already,
 //!   so OS-level isolation is overkill.
-//! - In-process tests can poke at `cfg.world()` directly when the
+//! - In-process tests can poke at `cfg.site()` directly when the
 //!   black-box gRPC / HTTP surface isn't enough.
 //! - LOG_TAP and other process-level globals stay un-initialised in
 //!   tests, so the `/api/logs` endpoint just returns empty —
@@ -24,7 +24,7 @@ use switchyard::{
     proto::assets::platform_assets_server::PlatformAssetsServer as AssetsGrpcServer,
     proto::microgrid::microgrid_server::MicrogridServer as MicrogridGrpcServer,
     server::MicrogridServer,
-    sim::World,
+    sim::MicrogridSite,
     ui,
 };
 use tempfile::TempDir;
@@ -66,8 +66,8 @@ impl TestServer {
 
         let config = Config::new(path.to_str().unwrap()).expect("config eval");
         // Physics + history sampler match the prod boot sequence.
-        World::clone(&config.world()).spawn_physics();
-        World::clone(&config.world()).spawn_history_sampler();
+        MicrogridSite::clone(&config.site()).spawn_physics();
+        MicrogridSite::clone(&config.site()).spawn_history_sampler();
 
         // Bind both servers to OS-assigned ports so parallel tests
         // don't collide. local_addr() reads back the chosen port
@@ -94,7 +94,7 @@ impl TestServer {
         ui::spawn_microgrid_loopback(
             format!("http://{grpc_addr}"),
             microgrid.clone(),
-            config.world(),
+            config.site(),
         );
         handles.push(tokio::spawn(async move {
             let _ = ui::serve_with_listener(ui_listener, ui_config, microgrid).await;

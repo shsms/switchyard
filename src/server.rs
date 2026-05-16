@@ -1,5 +1,5 @@
 //! gRPC server: implements the Frequenz Microgrid API on top of
-//! switchyard's `World` + `Config`.
+//! switchyard's `MicrogridSite` + `Config`.
 //!
 //! Streaming telemetry is one tokio task per subscription; each task
 //! samples its component at the component's own `stream_interval` and
@@ -82,7 +82,7 @@ impl MicrogridServer {
         tonic::Response<<Self as microgrid_server::Microgrid>::SetElectricalComponentPowerStream>,
         tonic::Status,
     > {
-        let world = self.config.world();
+        let world = self.config.site();
         let component = world.get(req.electrical_component_id).ok_or_else(|| {
             tonic::Status::not_found(format!(
                 "component {} not found",
@@ -208,7 +208,7 @@ impl microgrid_server::Microgrid for MicrogridServer {
         let req = request.into_inner();
         let comps: Vec<_> = self
             .config
-            .world()
+            .site()
             .components()
             .iter()
             .filter(|c| !c.is_hidden())
@@ -232,7 +232,7 @@ impl microgrid_server::Microgrid for MicrogridServer {
         let req = request.into_inner();
         let conns: Vec<_> = self
             .config
-            .world()
+            .site()
             .connections()
             .into_iter()
             .map(|(from, to)| ElectricalComponentConnection {
@@ -282,7 +282,7 @@ impl microgrid_server::Microgrid for MicrogridServer {
             PowerType::Reactive => SetpointKind::ReactivePower,
             PowerType::Unspecified => unreachable!("rejected above"),
         };
-        let world = self.config.world();
+        let world = self.config.site();
         let response = self.do_set_power(req, power_type).await;
 
         let outcome = match &response {
@@ -312,7 +312,7 @@ impl microgrid_server::Microgrid for MicrogridServer {
     {
         let req = request.into_inner();
         let id = req.electrical_component_id;
-        let world = self.config.world();
+        let world = self.config.site();
 
         let component = world
             .get(id)
@@ -431,7 +431,7 @@ impl microgrid_server::Microgrid for MicrogridServer {
         let now = chrono::Utc::now();
         let id = req.electrical_component_id;
 
-        let world = self.config.world();
+        let world = self.config.site();
         let response = match world.get(id) {
             Some(component) => {
                 component.augment_active_bounds(now, VecBounds::new(req.bounds), lifetime);

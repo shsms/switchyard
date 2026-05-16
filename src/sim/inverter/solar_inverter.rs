@@ -11,7 +11,7 @@ use parking_lot::{Mutex, RwLock};
 use tulisp::TulispContext;
 
 use crate::sim::{
-    Category, SetpointError, SimulatedComponent, Telemetry, World,
+    Category, SetpointError, SimulatedComponent, Telemetry, MicrogridSite,
     bounds::ComponentBounds,
     dynamic_scalar::DynamicScalar,
     meter::{per_phase_apparent_current, split_per_phase},
@@ -151,7 +151,7 @@ impl SimulatedComponent for SolarInverter {
         self.sunlight_source.read().refresh(ctx);
     }
 
-    fn tick(&self, _world: &World, now: DateTime<Utc>, dt: Duration) {
+    fn tick(&self, _world: &MicrogridSite, now: DateTime<Utc>, dt: Duration) {
         self.bounds.lock().drop_expired(now);
         if let Some(target) = self.delay.poll(now) {
             self.ramp.set_target(target.max(self.min_avail_w()));
@@ -164,7 +164,7 @@ impl SimulatedComponent for SolarInverter {
         self.reactive.step(p, now, dt);
     }
 
-    fn telemetry(&self, world: &World) -> Telemetry {
+    fn telemetry(&self, world: &MicrogridSite) -> Telemetry {
         let grid = world.grid_state();
         let p = self.ramp.actual();
         let pp = split_per_phase(p, grid.voltage_per_phase);
@@ -220,11 +220,11 @@ impl SimulatedComponent for SolarInverter {
         self.bounds.lock().add_augmentation(ts, bounds, lifetime);
     }
 
-    fn aggregate_power_w(&self, _world: &World) -> f32 {
+    fn aggregate_power_w(&self, _world: &MicrogridSite) -> f32 {
         self.ramp.actual()
     }
 
-    fn aggregate_reactive_var(&self, _world: &World) -> f32 {
+    fn aggregate_reactive_var(&self, _world: &MicrogridSite) -> f32 {
         self.reactive.published()
     }
 

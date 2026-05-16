@@ -19,7 +19,7 @@ pub(crate) mod scenario;
 pub(crate) mod scenario_csv;
 pub mod scenarios;
 pub mod setpoints;
-pub mod world;
+pub mod microgrid_site;
 
 pub use battery::Battery;
 pub use chp::Chp;
@@ -28,4 +28,4 @@ pub use ev_charger::EvCharger;
 pub use grid::Grid;
 pub use inverter::{BatteryInverter, SolarInverter};
 pub use meter::Meter;
-pub use world::World;
+pub use microgrid_site::MicrogridSite;

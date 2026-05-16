@@ -187,7 +187,7 @@ enum ScenariosCmd {
     /// Start NAME at the wallclock-current stage. Runs that
     /// stage's :on lambda immediately.
     Start { name: String },
-    /// Stop NAME. World state (component setpoints, installed
+    /// Stop NAME. MicrogridSite state (component setpoints, installed
     /// timers) is NOT rolled back automatically.
     Stop { name: String },
     /// Advance NAME by one stage. Pins manual_override = true.

@@ -9,7 +9,7 @@ use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
 
 use crate::sim::{
-    Category, SetpointError, SimulatedComponent, Telemetry, World,
+    Category, SetpointError, SimulatedComponent, Telemetry, MicrogridSite,
     bounds::{ComponentBounds, VecBounds},
     decay::{SocProtect, soc_protected_bounds},
     ramp::{CommandDelay, Ramp},
@@ -137,7 +137,7 @@ impl SimulatedComponent for EvCharger {
         self.cfg.stream_jitter_pct
     }
 
-    fn tick(&self, _world: &World, now: DateTime<Utc>, dt: Duration) {
+    fn tick(&self, _world: &MicrogridSite, now: DateTime<Utc>, dt: Duration) {
         // 1. Drop any expired augmentations before recomputing
         //    bounds — otherwise a just-elapsed narrowing would clip
         //    the ramp for one extra tick.
@@ -195,7 +195,7 @@ impl SimulatedComponent for EvCharger {
         }
     }
 
-    fn telemetry(&self, world: &World) -> Telemetry {
+    fn telemetry(&self, world: &MicrogridSite) -> Telemetry {
         let grid = world.grid_state();
         let p = self.ramp.actual();
         let s = self.state.lock().clone();
@@ -246,7 +246,7 @@ impl SimulatedComponent for EvCharger {
         self.ramp.snap_to(0.0);
     }
 
-    fn aggregate_power_w(&self, _world: &World) -> f32 {
+    fn aggregate_power_w(&self, _world: &MicrogridSite) -> f32 {
         self.ramp.actual()
     }
 
@@ -290,7 +290,7 @@ mod tests {
     /// a setpoint they thought they'd narrowed go through.
     #[test]
     fn augment_active_bounds_narrows_validation_and_telemetry() {
-        let w = World::new();
+        let w = MicrogridSite::new();
         let ev = charger();
         ev.augment_active_bounds(
             Utc::now(),
@@ -324,7 +324,7 @@ mod tests {
     /// the rated bounds come back in full.
     #[test]
     fn augmentation_expires_and_rated_returns() {
-        let w = World::new();
+        let w = MicrogridSite::new();
         let ev = charger();
         let t0 = Utc::now();
         ev.augment_active_bounds(

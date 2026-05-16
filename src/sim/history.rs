@@ -1,6 +1,6 @@
 //! Per-component telemetry history — bounded ring buffers feeding the
 //! UI's time-series charts. Sampled by an independent task per
-//! component (see `World::spawn_history_samplers` in the next commit)
+//! component (see `MicrogridSite::spawn_history_samplers` in the next commit)
 //! at the component's `stream_interval`, so the UI works even with
 //! zero gRPC subscribers.
 //!
@@ -9,7 +9,7 @@
 //! for metrics each component actually publishes.
 //!
 //! Pure data structures — no async, no I/O. Integration with the
-//! World registry lands in the next commit.
+//! MicrogridSite registry lands in the next commit.
 
 use std::collections::{HashMap, VecDeque};
 
@@ -191,7 +191,7 @@ impl ComponentHistory {
     /// produces 5–6.
     ///
     /// Returns the list of `(metric, value)` pairs that were actually
-    /// recorded — the caller (typically `World::record_history_snapshot`)
+    /// recorded — the caller (typically `MicrogridSite::record_history_snapshot`)
     /// uses this to fan out per-sample broadcast events without
     /// re-walking the snapshot.
     pub fn push_snapshot(&mut self, ts: DateTime<Utc>, snapshot: &Telemetry) -> Vec<(Metric, f32)> {
