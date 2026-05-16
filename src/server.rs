@@ -234,8 +234,7 @@ impl microgrid_server::Microgrid for MicrogridServer {
     ) -> Result<tonic::Response<ListElectricalComponentsResponse>, tonic::Status> {
         let req = request.into_inner();
         let comps: Vec<_> = self
-            .config
-            .site()
+            .site
             .components()
             .iter()
             .filter(|c| !c.is_hidden())
@@ -258,8 +257,7 @@ impl microgrid_server::Microgrid for MicrogridServer {
     ) -> Result<tonic::Response<ListElectricalComponentConnectionsResponse>, tonic::Status> {
         let req = request.into_inner();
         let conns: Vec<_> = self
-            .config
-            .site()
+            .site
             .connections()
             .into_iter()
             .map(|(from, to)| ElectricalComponentConnection {
