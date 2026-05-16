@@ -180,41 +180,6 @@ vs function-call distinction in the overlay. What's left are
 correctness gaps where the simple "first symbol after =(= is a
 function head" model misclassifies things.
 
-*** TODO G1. Form-aware token classification
-
-=rainbowHighlight= in =ui-assets/app.js= colours every symbol
-immediately after =(= as either special-form-head or function-
-call-head. That's wrong for sub-lists that aren't function calls:
-
-- *=let= / =let*= bindings.* In =(let ((a 1) (b 2)) body)=, the
-  =a= and =b= are bound names, not callables, but they currently
-  light up as =repl-function-head=. Same for =letrec= and
-  =if-let= / =when-let= bindings.
-- *=cond= clause heads.* In =(cond ((null xs) ...) ((numberp x)
-  ...))=, the =null= / =numberp= predicates *are* function
-  calls, so the current colouring is accidentally correct — but
-  the same pattern in =case= / =pcase= clauses (where the head
-  of each clause is a literal pattern, not a call) would mis-
-  light.
-- *Parameter lists.* In =(defun foo (x y) ...)=, the =x= in the
-  param list reads as if it were a function-head. Harmless but
-  noisy.
-- *Quoted lists.* =(quote (foo bar))= or =`(,foo bar)= shouldn't
-  highlight =foo= as anything — it's data, not a call.
-
-The fix means teaching the walker about a small set of
-context-sensitive forms (=let=, =let*=, =letrec=, =if-let=,
-=when-let=, =defun=, =defmacro=, =lambda=, =case=, =pcase=,
-=quote=, the unquote / quasi-quote operators) and tracking
-whether the *next* sub-list is a head-bearing call or a binding
-/ pattern / data list. Same kind of state machine =tulisp-fmt='s
-=SpecialKind= drives, just at the highlighter layer.
-
-Cheaper alternative if the state machine feels heavy: leave the
-heuristic alone but quiet the function-head class so a wrong
-classification is less visually loud (e.g. weight only, no
-hue). Loses some of the "shape pops at a glance" benefit.
-
 *** TODO G3. =Enter=-on-empty-line outdent
 
 =indentForNewline= always indents at the innermost open paren's
