@@ -747,10 +747,11 @@ const visOptions = {
         callback(null);
         return;
       }
-      fetch(mgPath("eval"), {
-        method: "POST",
-        body: `(connect ${data.from} ${data.to})`,
-      })
+      undoMgr.record()
+        .then(() => fetch(mgPath("eval"), {
+          method: "POST",
+          body: `(connect ${data.from} ${data.to})`,
+        }))
         .then((r) => r.json())
         .then((res) => {
           if (!res.ok) notify(`Connect failed: ${res.error}`);
@@ -911,6 +912,7 @@ function jsToLispString(s) {
 }
 
 async function evalQuoted(expr) {
+  await undoMgr.record();
   const res = await fetch(mgPath("eval"), { method: "POST", body: expr });
   // res.json() can throw "JSON.parse: unexpected character" if the
   // server returned an empty / non-JSON body (e.g. a 5xx with HTML
@@ -1091,6 +1093,107 @@ const clipboard = (() => {
   };
 })();
 
+// Per-microgrid undo / redo stacks over the overrides file. Each
+// canvas-driven mutation snapshots the file BEFORE the eval; Ctrl-Z
+// restores the snapshot via POST /api/mg/{id}/overrides/text, which
+// rewrites + reloads in one shot. Stacks are keyed by mg id so
+// switching microgrids doesn't lose either side's history.
+const undoMgr = (() => {
+  const undoStacks = new Map(); // mgId -> string[]
+  const redoStacks = new Map(); // mgId -> string[]
+  const MAX_DEPTH = 50;
+
+  function stackFor(map, mgId) {
+    let s = map.get(mgId);
+    if (!s) { s = []; map.set(mgId, s); }
+    return s;
+  }
+
+  async function fetchText(mgId) {
+    const res = await fetch(`/api/mg/${mgId}/overrides/text`);
+    if (!res.ok) throw new Error(`GET ${res.status}`);
+    return await res.text();
+  }
+
+  async function postText(mgId, text) {
+    const res = await fetch(`/api/mg/${mgId}/overrides/text`, {
+      method: "POST",
+      body: text,
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`POST ${res.status}: ${body}`);
+    }
+  }
+
+  // Snapshot the overrides file before a mutation. Pushes onto the
+  // current mg's undo stack and clears its redo stack (the standard
+  // editor rule — a fresh edit invalidates the redo history).
+  async function record() {
+    const mgId = readSelectedMg();
+    if (mgId == null) return;
+    try {
+      const snap = await fetchText(mgId);
+      const u = stackFor(undoStacks, mgId);
+      u.push(snap);
+      while (u.length > MAX_DEPTH) u.shift();
+      redoStacks.set(mgId, []);
+    } catch (e) {
+      console.warn("undoMgr.record failed:", e);
+    }
+  }
+
+  async function undo() {
+    const mgId = readSelectedMg();
+    if (mgId == null) return;
+    const u = stackFor(undoStacks, mgId);
+    if (!u.length) {
+      notify("Nothing to undo on this microgrid.");
+      return;
+    }
+    let current;
+    try { current = await fetchText(mgId); } catch (e) {
+      notify(`Undo failed: ${e.message}`);
+      return;
+    }
+    const target = u.pop();
+    try {
+      await postText(mgId, target);
+    } catch (e) {
+      u.push(target);
+      notify(`Undo failed: ${e.message}`);
+      return;
+    }
+    stackFor(redoStacks, mgId).push(current);
+  }
+
+  async function redo() {
+    const mgId = readSelectedMg();
+    if (mgId == null) return;
+    const r = stackFor(redoStacks, mgId);
+    if (!r.length) {
+      notify("Nothing to redo on this microgrid.");
+      return;
+    }
+    let current;
+    try { current = await fetchText(mgId); } catch (e) {
+      notify(`Redo failed: ${e.message}`);
+      return;
+    }
+    const target = r.pop();
+    try {
+      await postText(mgId, target);
+    } catch (e) {
+      r.push(target);
+      notify(`Redo failed: ${e.message}`);
+      return;
+    }
+    stackFor(undoStacks, mgId).push(current);
+  }
+
+  return { record, undo, redo };
+})();
+
 function snapshotSelection(selectedIds) {
   const mainId = topology.mainMeterId();
   const components = selectedIds
@@ -1161,6 +1264,7 @@ async function pasteClipboard() {
   const src = reconnects
     ? `(let* (${bindings}) ${reconnects})`
     : `(let* (${bindings}) t)`;
+  await undoMgr.record();
   const res = await fetch(mgPath("eval"), { method: "POST", body: src });
   const data = await res.json();
   if (!data.ok) notify(`Paste failed: ${data.error}`);
@@ -1174,6 +1278,7 @@ async function deleteSelection() {
   }
   const removes = ids.map((id) => `(remove-component ${id})`).join(" ");
   const src = `(progn ${removes})`;
+  await undoMgr.record();
   const res = await fetch(mgPath("eval"), { method: "POST", body: src });
   const data = await res.json();
   if (!data.ok) notify(`Delete failed: ${data.error}`);
@@ -1261,6 +1366,7 @@ function setupAddForm() {
     const fn = sel.value;
     btn.disabled = true;
     try {
+      await undoMgr.record();
       const res = await fetch(mgPath("eval"), {
         method: "POST",
         body: `(${fn})`,
@@ -4272,7 +4378,17 @@ async function init() {
     if (inEditable) return;
     const meta = e.metaKey || e.ctrlKey;
     const key = e.key.toLowerCase();
-    if (meta && key === "c") {
+    if (meta && e.shiftKey && key === "z") {
+      e.preventDefault();
+      undoMgr.redo();
+    } else if (meta && key === "z") {
+      e.preventDefault();
+      undoMgr.undo();
+    } else if (meta && key === "y") {
+      // Common Windows-style redo alias.
+      e.preventDefault();
+      undoMgr.redo();
+    } else if (meta && key === "c") {
       e.preventDefault();
       copySelection();
     } else if (meta && key === "v") {

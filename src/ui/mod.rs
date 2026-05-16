@@ -658,6 +658,10 @@ fn router(
             "/api/mg/{mg_id}/microgrid/formulas",
             get(microgrid_formulas_for_mg),
         )
+        .route(
+            "/api/mg/{mg_id}/overrides/text",
+            get(overrides_text_for_mg).post(overrides_text_replace_for_mg),
+        )
         .route("/ws/events", get(events_ws))
         .layer(Extension(microgrid))
         .layer(Extension(loopbacks))
@@ -1627,6 +1631,75 @@ async fn persisted_bulk_remove(
             format!("write failed: {e}"),
         )),
     }
+}
+
+/// Return the raw text of a microgrid's overrides file, or empty
+/// string if it doesn't exist yet. The undo stack on the canvas
+/// snapshots this before each mutating eval so Ctrl-Z can restore
+/// the prior shape verbatim.
+async fn overrides_text_for_mg(
+    State(config): State<Config>,
+    Path(mg_id): Path<u64>,
+) -> Result<String, (StatusCode, String)> {
+    if !config.microgrids().lock().contains_key(&mg_id) {
+        return Err((
+            StatusCode::NOT_FOUND,
+            format!("microgrid {mg_id} not registered"),
+        ));
+    }
+    tokio::task::spawn_blocking(move || {
+        crate::sim::microgrids::with_microgrid(&config.current_microgrid_handle(), mg_id, || {
+            config.overrides_text()
+        })
+    })
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("task panicked: {e}"),
+        )
+    })?
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("read failed: {e}"),
+        )
+    })
+}
+
+/// Overwrite a microgrid's overrides file with the body and reload.
+/// Used by the canvas undo stack to restore a prior snapshot — the
+/// body is the full file contents, not a delta.
+async fn overrides_text_replace_for_mg(
+    State(config): State<Config>,
+    Path(mg_id): Path<u64>,
+    body: String,
+) -> Result<StatusCode, (StatusCode, String)> {
+    if !config.microgrids().lock().contains_key(&mg_id) {
+        return Err((
+            StatusCode::NOT_FOUND,
+            format!("microgrid {mg_id} not registered"),
+        ));
+    }
+    tokio::task::spawn_blocking(move || {
+        crate::sim::microgrids::with_microgrid(&config.current_microgrid_handle(), mg_id, || {
+            config.replace_overrides_text(&body)
+        })
+    })
+    .await
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("task panicked: {e}"),
+        )
+    })?
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("write failed: {e}"),
+        )
+    })?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Backfill recent log lines from the LogTap ring buffer. Returns

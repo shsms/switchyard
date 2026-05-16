@@ -747,6 +747,55 @@ impl Config {
         Ok(dropped)
     }
 
+    /// Read the raw text of the active microgrid's overrides file.
+    /// Empty string when the file doesn't exist yet (no edits have
+    /// been persisted) or the scope can't resolve. Used by the
+    /// canvas-undo handler to snapshot state before each mutation.
+    pub fn overrides_text(&self) -> std::io::Result<String> {
+        let Some(path) = self.overrides_path() else {
+            return Ok(String::new());
+        };
+        match fs::read_to_string(&path) {
+            Ok(s) => Ok(s),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Replace the overrides file with `content` and reload. The
+    /// canvas-undo handler restores a snapshot of the file taken
+    /// before a mutation; redo replays the snapshot taken after.
+    /// Atomic rewrite (temp + rename) so an interruption mid-write
+    /// can't corrupt the file.
+    pub fn replace_overrides_text(&self, content: &str) -> std::io::Result<()> {
+        let Some(path) = self.overrides_path() else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "no resolvable microgrid scope; can't rewrite overrides",
+            ));
+        };
+        if let Some(dir) = path.parent() {
+            fs::create_dir_all(dir)?;
+        }
+        let tmp = path.with_extension("lisp.tmp");
+        {
+            let mut file = fs::OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .write(true)
+                .open(&tmp)?;
+            file.write_all(content.as_bytes())?;
+            file.flush()?;
+        }
+        fs::rename(&tmp, &path)?;
+        if let Err(msg) = self.reload() {
+            return Err(std::io::Error::other(format!(
+                "reload after override-text replace failed: {msg}"
+            )));
+        }
+        Ok(())
+    }
+
     /// Resolve the per-microgrid overrides file path. Keyed off the
     /// active microgrid id (set by /api/mg/{id}/eval and the
     /// scenarios per-mg replay), falling back to the first registry

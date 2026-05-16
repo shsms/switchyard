@@ -1,4 +1,5 @@
 #+TITLE: Switchyard — roadmap and deferred work
+#+TODO: TODO IN-PROGRESS WAIT | DONE CANCELLED
 
 Forward-looking residue. The reactive-input + scenario framework
 + integration-test + CI tracks all landed; what's left are smaller
@@ -195,7 +196,7 @@ addition to =indentForNewline=, no server roundtrip.
 
 ** H. Navigation + editor history
 
-*** TODO H1. Back / forward navigation across screens
+*** DONE H1. Back / forward navigation across screens
 
 Browser back / forward should walk the user's mode + microgrid +
 subview history: e.g. Microgrids list → per-mg Dashboard →
@@ -217,7 +218,7 @@ Acceptance: dashboard-of-mg-2200 → Scenarios → back puts the user
 back on dashboard-of-mg-2200 with the same subview; same for
 =switchyard.html#microgrids/2200/dashboard= deep-links.
 
-*** TODO H2. Undo in the topology editing canvas
+*** DONE H2. Undo in the topology editing canvas
 
 Cut / copy / paste land via =/api/mg/{id}/eval= and update the
 override file. There's no undo for the canvas-level operations
@@ -242,7 +243,7 @@ Acceptance: Ctrl-Z after a paste removes the pasted subgraph;
 Ctrl-Z after a rename restores the previous name; Ctrl-Shift-Z
 re-applies the undone step.
 
-*** TODO H3. Topology canvas: keep the graph centered
+*** DONE H3. Topology canvas: keep the graph centered
 
 Switching into the Topology subview often shows only half the
 graph — the user has to pan to see the full diagram. Small
@@ -255,7 +256,7 @@ Acceptance: switching into Topology always lands with the graph
 visible end-to-end; no follow-on action moves it off center
 unless the user pans / zooms themselves.
 
-*** TODO H4. Bottom splitter wedges the layout
+*** DONE H4. Bottom splitter wedges the layout
 
 Dragging the bottom splitter (REPL drawer vs. main pane) past a
 threshold appears to take up the whole vertical space and the
