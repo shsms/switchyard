@@ -218,6 +218,21 @@ impl Config {
         self.scenarios.clone()
     }
 
+    /// Configured display-zone clock handle. The scenarios HTTP
+    /// layer calls this to derive `local_hour(now)` so `start` /
+    /// `auto_advance` agree on which stage wallclock-NOW maps to.
+    pub fn clock_handle(&self) -> crate::sim::clock::SharedClock {
+        self.clock.clone()
+    }
+
+    /// Clone of the tulisp interpreter handle. Exposed so the
+    /// scenarios state machine can funcall stage `:on` lambdas from
+    /// outside `lisp::Config::eval`; everything else inside the
+    /// crate should reach for `eval` / `eval_silent` instead.
+    pub fn interpreter(&self) -> SharedMut<TulispContext> {
+        self.ctx.clone()
+    }
+
     fn start_timeout_loop(world: World) {
         tokio::spawn(async move {
             loop {

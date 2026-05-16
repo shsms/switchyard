@@ -524,6 +524,12 @@ fn router(config: Config, microgrid: SharedMicrogrid) -> Router {
         .route("/api/snapshots", get(snapshots_list))
         .route("/api/snapshots/save", post(snapshots_save))
         .route("/api/snapshots/load", post(snapshots_load))
+        .route("/api/scenarios", get(scenarios_list))
+        .route("/api/scenarios/{name}/start", post(scenarios_start))
+        .route("/api/scenarios/{name}/stop", post(scenarios_stop))
+        .route("/api/scenarios/{name}/next", post(scenarios_next))
+        .route("/api/scenarios/{name}/prev", post(scenarios_prev))
+        .route("/api/scenarios/{name}/jump/{idx}", post(scenarios_jump))
         .route("/ws/events", get(events_ws))
         .layer(Extension(microgrid))
         .with_state(config)
@@ -539,6 +545,110 @@ struct MicrogridStatusResp {
     /// confirms switchyard's gRPC server returned what the
     /// graph crate accepted.
     component_count: Option<usize>,
+}
+
+async fn scenarios_list(
+    State(config): State<Config>,
+) -> Json<Vec<crate::sim::scenarios::ScenarioView>> {
+    Json(crate::sim::scenarios::snapshot(&config.scenarios()))
+}
+
+/// Common shim for the mutate endpoints. Runs the closure on a
+/// blocking thread so the tulisp funcall path (which holds the
+/// interpreter lock) doesn't pin a tokio worker. Maps the
+/// `Result<(), String>` from the helpers into an HTTP 4xx with the
+/// helper's error string verbatim.
+async fn run_scenario_op(
+    config: Config,
+    op: impl FnOnce(Config, chrono::DateTime<chrono::Utc>) -> Result<(), String>
+        + Send
+        + 'static,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let now = chrono::Utc::now();
+    let res = tokio::task::spawn_blocking(move || op(config, now))
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("join: {e}")))?;
+    res.map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+async fn scenarios_start(
+    State(config): State<Config>,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    run_scenario_op(config, move |cfg, now| {
+        let clock = cfg.clock_handle().read().clone();
+        crate::sim::scenarios::start(
+            &cfg.scenarios(),
+            &cfg.interpreter(),
+            &cfg.world(),
+            &clock,
+            &name,
+            now,
+        )
+    })
+    .await
+}
+
+async fn scenarios_stop(
+    State(config): State<Config>,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    run_scenario_op(config, move |cfg, now| {
+        crate::sim::scenarios::stop(&cfg.scenarios(), &cfg.world(), &name, now)
+    })
+    .await
+}
+
+async fn scenarios_next(
+    State(config): State<Config>,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    run_scenario_op(config, move |cfg, now| {
+        crate::sim::scenarios::step(
+            &cfg.scenarios(),
+            &cfg.interpreter(),
+            &cfg.world(),
+            &name,
+            1,
+            now,
+        )
+    })
+    .await
+}
+
+async fn scenarios_prev(
+    State(config): State<Config>,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    run_scenario_op(config, move |cfg, now| {
+        crate::sim::scenarios::step(
+            &cfg.scenarios(),
+            &cfg.interpreter(),
+            &cfg.world(),
+            &name,
+            -1,
+            now,
+        )
+    })
+    .await
+}
+
+async fn scenarios_jump(
+    State(config): State<Config>,
+    Path((name, idx)): Path<(String, usize)>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    run_scenario_op(config, move |cfg, now| {
+        crate::sim::scenarios::jump(
+            &cfg.scenarios(),
+            &cfg.interpreter(),
+            &cfg.world(),
+            &name,
+            idx,
+            now,
+        )
+    })
+    .await
 }
 
 #[derive(Serialize)]
