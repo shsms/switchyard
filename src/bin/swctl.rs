@@ -147,6 +147,20 @@ enum Cmd {
     /// touched.
     #[command(subcommand)]
     Snapshot(SnapshotCmd),
+
+    /// Terminal-resident pulse bar — one line per second showing
+    /// component health, the grid / PV / battery readouts, and the
+    /// loopback Microgrid status. Useful in a tmux pane next to
+    /// the editor. Polls the UI HTTP surface; gRPC isn't touched.
+    Dashboard {
+        /// Stream forever instead of printing a single snapshot
+        /// and exiting.
+        #[arg(long)]
+        tail: bool,
+        /// Polling cadence in seconds (only with --tail).
+        #[arg(long, default_value_t = 1.0)]
+        interval: f64,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -255,6 +269,9 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     if let Cmd::Snapshot(s) = cli.cmd {
         return run_snapshot(s, &cli.ui_addr, cli.json).await;
     }
+    if let Cmd::Dashboard { tail, interval } = cli.cmd {
+        return run_dashboard(&cli.ui_addr, tail, interval).await;
+    }
     let mut client = MicrogridClient::connect(cli.addr.clone()).await?;
     match cli.cmd {
         Cmd::Info => cmd_info(&mut client, cli.json).await,
@@ -278,9 +295,109 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             upper,
             lifetime,
         } => cmd_augment(&mut client, id, lower, upper, lifetime).await,
-        // Scenario + Snapshot handled before the gRPC connect above.
-        Cmd::Scenario(_) | Cmd::Snapshot(_) => unreachable!(),
+        // Scenario, Snapshot, Dashboard handled before the gRPC
+        // connect above.
+        Cmd::Scenario(_) | Cmd::Snapshot(_) | Cmd::Dashboard { .. } => unreachable!(),
     }
+}
+
+/// Polls /api/topology + /api/microgrid/latest at `interval`
+/// seconds and prints a one-line pulse summary per tick. With
+/// `tail=false` (single snapshot mode) the loop runs once and
+/// exits, matching `swctl dashboard` without a flag.
+async fn run_dashboard(
+    ui_addr: &str,
+    tail: bool,
+    interval: f64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let http = reqwest::Client::new();
+    let dt = std::time::Duration::from_secs_f64(interval.max(0.1));
+    loop {
+        let line = build_dashboard_line(&http, ui_addr).await?;
+        println!("{line}");
+        if !tail {
+            return Ok(());
+        }
+        tokio::time::sleep(dt).await;
+    }
+}
+
+async fn build_dashboard_line(
+    http: &reqwest::Client,
+    ui_addr: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let topo: serde_json::Value = http
+        .get(format!("{ui_addr}/api/topology"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let latest: serde_json::Value = http
+        .get(format!("{ui_addr}/api/microgrid/latest"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let now = chrono::Local::now().format("%H:%M:%S");
+    let components = topo
+        .get("components")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut ok = 0u32;
+    let mut err = 0u32;
+    let mut bat_socs: Vec<f64> = Vec::new();
+    for c in &components {
+        match c.get("health").and_then(|h| h.as_str()) {
+            Some("ok") => ok += 1,
+            Some(_) => err += 1,
+            None => {}
+        }
+        if c.get("category").and_then(|v| v.as_str()) == Some("battery") {
+            // SoC isn't on /api/topology; the histogram column lands
+            // when J5's pool stream gets folded in. Keep the field
+            // for forward compatibility.
+            if let Some(soc) = c.get("soc").and_then(|v| v.as_f64()) {
+                bat_socs.push(soc);
+            }
+        }
+    }
+    let total = components.len();
+    let pick = |stream| {
+        latest
+            .get(stream)
+            .and_then(|v| v.get("value"))
+            .and_then(|v| v.as_f64())
+    };
+    let grid = pick("grid_power");
+    let pv = pick("pv_power");
+    let bat = pick("battery_pool_power");
+    let loopback = latest
+        .as_object()
+        .map(|m| !m.is_empty())
+        .unwrap_or(false);
+    let fmt = |watts: Option<f64>| match watts {
+        None => "—".to_owned(),
+        Some(v) if v.abs() >= 1e6 => format!("{:.2}MW", v / 1e6),
+        Some(v) if v.abs() >= 1e3 => format!("{:.1}kW", v / 1e3),
+        Some(v) => format!("{:.0}W", v),
+    };
+    let bat_summary = if bat_socs.is_empty() {
+        String::new()
+    } else {
+        let min = bat_socs.iter().cloned().fold(f64::INFINITY, f64::min);
+        let max = bat_socs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        format!(" soc=[{:.0}-{:.0}%]", min, max)
+    };
+    Ok(format!(
+        "{now}  comp={total} ok={ok} err={err}  grid={} pv={} bat={}{bat_summary}  loopback={}",
+        fmt(grid),
+        fmt(pv),
+        fmt(bat),
+        if loopback { "connected" } else { "off" },
+    ))
 }
 
 async fn run_scenario(
