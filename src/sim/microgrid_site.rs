@@ -83,10 +83,20 @@ struct MicrogridSiteInner {
     connections: RwLock<Vec<(u64, u64)>>,
     grid_state: RwLock<GridState>,
     physics_tick_ms: AtomicU64,
-    /// Per-MicrogridSite id allocator. Reset on `reset()` so a hot-reload
-    /// reuses the same id range microsim would (1000+) — clients
-    /// caching component IDs across reloads see them stay stable.
-    next_id: AtomicU64,
+    /// *Process-wide* component-id allocator, cloned across every
+    /// `MicrogridSite` in the enterprise so component ids stay
+    /// globally unique across microgrids (the spec choice in
+    /// gridpool-support.org). Two sites in the same registry
+    /// share the same `Arc<AtomicU64>`; calling `next_id` on
+    /// either advances the same counter.
+    ///
+    /// Single-site / legacy paths construct a fresh allocator
+    /// per `MicrogridSite::new()` so they keep the prior
+    /// per-site numbering behaviour without coordination — only
+    /// the multi-microgrid path (`(make-microgrid …)` via the
+    /// registry) wires sites to a shared allocator via
+    /// `MicrogridSite::with_id_allocator`.
+    next_id: Arc<AtomicU64>,
     /// Per-component runtime mode flags (health, telemetry mode,
     /// command mode). Defaulted on register, mutated via the
     /// `set-component-*` Lisp defuns or directly from server.rs.
@@ -256,6 +266,16 @@ pub(crate) struct WindowAverageEntry {
 
 impl MicrogridSite {
     pub fn new() -> Self {
+        Self::with_id_allocator(Arc::new(AtomicU64::new(FIRST_AUTO_ID)))
+    }
+
+    /// Build a `MicrogridSite` that shares the supplied id
+    /// allocator with whichever other sites already hold a clone.
+    /// `(make-microgrid …)` uses this so every site in the
+    /// registry draws auto-ids from one process-wide counter and
+    /// the global-uniqueness invariant from gridpool-support.org
+    /// holds without coordination on the lisp side.
+    pub fn with_id_allocator(next_id: Arc<AtomicU64>) -> Self {
         Self {
             inner: Arc::new(MicrogridSiteInner {
                 components: RwLock::new(Vec::new()),
@@ -263,7 +283,7 @@ impl MicrogridSite {
                 connections: RwLock::new(Vec::new()),
                 grid_state: RwLock::new(GridState::default()),
                 physics_tick_ms: AtomicU64::new(100),
-                next_id: AtomicU64::new(FIRST_AUTO_ID),
+                next_id,
                 runtime: RwLock::new(HashMap::new()),
                 name_overrides: RwLock::new(HashMap::new()),
                 histories: RwLock::new(HashMap::new()),

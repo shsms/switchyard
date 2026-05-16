@@ -107,6 +107,15 @@ pub struct Config {
     /// scenario per-microgrid replay. `None` defers to the
     /// router's fallback (first registry entry).
     pub(crate) current_microgrid: CurrentMicrogrid,
+    /// Process-wide component-id allocator shared by every
+    /// `MicrogridSite` registered through `(make-microgrid …)`,
+    /// so auto-allocated component ids stay globally unique
+    /// across microgrids. The bootstrap site allocated in
+    /// `Config::new` uses the same allocator, so single-site
+    /// configs see no behavioural change from the legacy
+    /// per-site counter — only the multi-microgrid path gains
+    /// cross-site uniqueness.
+    pub(crate) enterprise_id_allocator: Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// One top-level form found in the per-microgrid override file. The
@@ -129,8 +138,12 @@ impl Config {
     /// rather than partially built; the caller is expected to retry
     /// or abort.
     pub fn new(filename: &str) -> Result<Self, String> {
+        use std::sync::atomic::AtomicU64;
         let mut ctx = TulispContext::new();
-        let world = MicrogridSite::new();
+        let enterprise_id_allocator = Arc::new(AtomicU64::new(
+            crate::sim::component::FIRST_AUTO_ID,
+        ));
+        let world = MicrogridSite::with_id_allocator(enterprise_id_allocator.clone());
         let metadata = Arc::new(RwLock::new(Metadata::default()));
         let extra_watches = Arc::new(Mutex::new(HashSet::new()));
         let graph_status: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));
@@ -160,6 +173,7 @@ impl Config {
             microgrids.clone(),
             router.clone(),
             current_microgrid.clone(),
+            enterprise_id_allocator.clone(),
             metadata.clone(),
         );
 
@@ -247,6 +261,7 @@ impl Config {
             microgrids,
             router,
             current_microgrid,
+            enterprise_id_allocator,
         })
     }
 
@@ -657,8 +672,16 @@ impl Config {
     /// left in its post-reset (empty) state in that case so the
     /// next reload starts from a known baseline.
     pub fn reload(&self) -> Result<(), String> {
+        use std::sync::atomic::Ordering;
         let start = std::time::Instant::now();
         self.site.reset();
+        // Reset the enterprise-wide id allocator too — every site
+        // is about to be rebuilt by the re-eval of config.lisp,
+        // and we want auto-allocated ids to keep starting at
+        // FIRST_AUTO_ID across reloads (the comment on
+        // MicrogridSite.next_id justifies why).
+        self.enterprise_id_allocator
+            .store(crate::sim::component::FIRST_AUTO_ID, Ordering::Relaxed);
         // Drop the registry so make-microgrid forms re-evaluating
         // during the reload start from a clean slate; the default-
         // entry seed below re-creates the single-microgrid case
@@ -1006,6 +1029,7 @@ fn register_microgrids(
     registry: crate::sim::microgrids::SharedMicrogrids,
     router: SharedSiteRouter,
     current: crate::sim::microgrids::CurrentMicrogrid,
+    id_allocator: Arc<std::sync::atomic::AtomicU64>,
     metadata: Arc<RwLock<Metadata>>,
 ) {
     use crate::sim::microgrids::{
@@ -1046,11 +1070,11 @@ fn register_microgrids(
                 grpc_port,
                 tso: a.tso.clone(),
             };
-            // Fresh site per microgrid. Inserting under the new
-            // id makes it visible to the router (which the
-            // topology lambda's nested make-* calls will hit on
-            // their next site() lookup).
-            let site = MicrogridSite::new();
+            // Fresh site per microgrid that shares the enterprise's
+            // id allocator with the bootstrap site + every other
+            // microgrid — component ids stay globally unique across
+            // the registry without per-site coordination.
+            let site = MicrogridSite::with_id_allocator(id_allocator.clone());
             registry
                 .lock()
                 .insert(id, MicrogridEntry { def, site: site.clone() });
@@ -2013,6 +2037,43 @@ mod tests {
             e.site.get(1).is_some(),
             "grid-connection-point id=1 should be on the new site",
         );
+    }
+
+    /// Auto-allocated component ids stay globally unique across
+    /// microgrids: each `(make-meter)` consumes the next entry on
+    /// the enterprise-wide allocator, regardless of which site
+    /// receives the component.
+    #[test]
+    fn auto_ids_are_globally_unique_across_microgrids() {
+        let (cfg, _dir) = config_with("(set-microgrid-id 0)");
+        let ids: String = cfg
+            .eval(
+                r#"
+                (let (a b c)
+                  (make-microgrid :name "alpha" :id 2200
+                                  :topology (lambda ()
+                                              (setq a (component-id (%make-meter)))))
+                  (make-microgrid :name "beta"  :id 2201
+                                  :topology (lambda ()
+                                              (setq b (component-id (%make-meter)))))
+                  (make-microgrid :name "gamma" :id 2202
+                                  :topology (lambda ()
+                                              (setq c (component-id (%make-meter)))))
+                  (format "%d/%d/%d" a b c))
+                "#,
+            )
+            .unwrap()
+            .trim_matches('"')
+            .to_string();
+        let parts: Vec<u64> = ids.split('/').map(|s| s.parse().unwrap()).collect();
+        assert_eq!(parts.len(), 3);
+        // Distinct values, all >= FIRST_AUTO_ID.
+        assert_ne!(parts[0], parts[1]);
+        assert_ne!(parts[1], parts[2]);
+        assert_ne!(parts[0], parts[2]);
+        for p in &parts {
+            assert!(*p >= crate::sim::component::FIRST_AUTO_ID);
+        }
     }
 
     /// Two microgrids end up with isolated sites — adding a grid
