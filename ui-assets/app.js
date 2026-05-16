@@ -3163,14 +3163,21 @@ function parseFormula(src) {
 // long arg lists; everything else stays inline so a short formula
 // like `#2` doesn't expand to four lines for one ref.
 function formulaToHtml(node) {
-  const escape = (s) =>
-    String(s).replace(/[&<>"']/g, (c) => ({
-      "&": "&amp;",
-      "<": "&lt;",
-      ">": "&gt;",
-      '"': "&quot;",
-      "'": "&#39;",
-    })[c]);
+  // Local rather than the file-level `escapeHtml` so the formula
+  // panel stays self-contained; named `escapeText` rather than
+  // `escape` to avoid shadowing the global escape() function.
+  const escapeText = (s) =>
+    String(s).replace(
+      /[&<>"']/g,
+      (c) =>
+        ({
+          "&": "&amp;",
+          "<": "&lt;",
+          ">": "&gt;",
+          '"': "&quot;",
+          "'": "&#39;",
+        })[c],
+    );
   function rec(n) {
     switch (n.kind) {
       case "ref":
@@ -3178,14 +3185,14 @@ function formulaToHtml(node) {
       case "num":
         return `<span class="formula-num">${n.value}</span>`;
       case "ident":
-        return `<span class="formula-ident">${escape(n.name)}</span>`;
+        return `<span class="formula-ident">${escapeText(n.name)}</span>`;
       case "paren":
         return `(${rec(n.inner)})`;
       case "op":
         return `${rec(n.left)} <span class="formula-op">${n.op}</span> ${rec(n.right)}`;
       case "call": {
         const args = n.args.map(rec);
-        const head = `<span class="formula-call">${escape(n.name)}</span>`;
+        const head = `<span class="formula-call">${escapeText(n.name)}</span>`;
         if (args.length <= 2 && n.args.every((a) => a.kind === "ref" || a.kind === "num")) {
           return `${head}(${args.join(", ")})`;
         }
@@ -3195,7 +3202,7 @@ function formulaToHtml(node) {
         return `${head}(\n${indented})`;
       }
       default:
-        return `<span class="formula-raw">${escape(n.text || "")}</span>`;
+        return `<span class="formula-raw">${escapeText(n.text || "")}</span>`;
     }
   }
   return rec(node);
@@ -3553,9 +3560,7 @@ const scenariosPanel = (() => {
   }
   function repaint() {
     const sc = selected();
-    const sig = sc
-      ? JSON.stringify(sc.runtime) + "|" + sc.stages.length
-      : "";
+    const sig = sc ? `${JSON.stringify(sc.runtime)}|${sc.stages.length}` : "";
     if (sig === lastSig) {
       // Cheap path: still nudge the now marker so it tracks time
       // even when no transition happened.
@@ -3679,7 +3684,7 @@ const clockState = (() => {
           timeZoneName: kind,
         }).formatToParts(new Date());
         const tag = parts.find((p) => p.type === "timeZoneName");
-        if (tag && !/^GMT[+\-]/i.test(tag.value) && !/\s/.test(tag.value)) {
+        if (tag && !/^GMT[+-]/i.test(tag.value) && !/\s/.test(tag.value)) {
           return tag.value;
         }
       } catch (_) {
@@ -4069,8 +4074,8 @@ function setupModeToggle() {
   document.addEventListener("keydown", (ev) => {
     if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
     const t = ev.target;
-    const tag = t && t.tagName;
-    if (tag === "INPUT" || tag === "TEXTAREA" || (t && t.isContentEditable)) return;
+    const tag = t?.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || t?.isContentEditable) return;
     let mode = null;
     if (ev.key === "1") mode = "microgrids";
     else if (ev.key === "2") mode = "scenarios";
