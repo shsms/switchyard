@@ -278,8 +278,13 @@ Acceptance:
   batteries have reported their first sample, because the pool
   stream =COALESCE='s missing values.
 
-** TODO Z5. Import topology from frequenz-microgrid's
+** WAITING Z5. Import topology from frequenz-microgrid's
    ComponentGraphConfig format
+   - Upstream ~ComponentGraphConfig~ is construction-time flags
+     only; no on-disk topology format. Holding Z5 until a concrete
+     external format (real deployment YAML / proto-text / etc.)
+     lands so the importer translates *to* something, not invents
+     a new shape from scratch.
 
 A developer who already targets a specific deployment has a
 config — typically YAML or proto-text — that the production
@@ -772,7 +777,7 @@ a bug report against their app for comparison.
 
 * Help dialog
 
-** TODO K1. Expand the help dialog content
+** DONE K1. Expand the help dialog content
 
 With the new modes + panels, the existing help dialog grows
 three sections:
