@@ -662,8 +662,8 @@ body[data-mg-empty="1"][data-mg-view="selected"][data-subview="topology"] #topol
   color: var(--accent);
   overflow: visible;
 }
-.dash-spark .baseline { stroke: var(--border); stroke-width: 0.3; stroke-dasharray: 2 2; }
-.dash-spark .trace    { fill: none; stroke: currentColor; stroke-width: 0.4; }
+.dash-spark .baseline { stroke: var(--border); stroke-width: 0.4; stroke-dasharray: 2 2; }
+.dash-spark .trace    { fill: none; stroke: currentColor; stroke-width: 0.7; }
 .dash-meta {
   font-size: 11px;
   color: var(--muted);
