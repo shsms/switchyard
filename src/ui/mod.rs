@@ -869,6 +869,9 @@ struct TopologySnapshot {
     /// human-readable error string. The pulse-bar graph pill
     /// flips between ✓ and ⚠ on this field.
     graph_status: Option<String>,
+    /// Id of the meter flagged `:main t` in the topology, if any.
+    /// The SPA's Grid-frequency tile pulls history from this id.
+    main_meter_id: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -919,6 +922,7 @@ async fn topology(State(config): State<Config>) -> Json<TopologySnapshot> {
         connections: world.connections(),
         hidden_connections: world.hidden_connections(),
         graph_status: config.graph_status(),
+        main_meter_id: world.main_meter_id(),
     })
 }
 
