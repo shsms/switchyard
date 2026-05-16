@@ -59,6 +59,15 @@ struct Cli {
     #[arg(long, global = true)]
     json: bool,
 
+    /// Target microgrid id for per-microgrid HTTP-routed subcommands
+    /// (`pool`, `dashboard --tail`, `snapshot`). When set, swctl
+    /// reads from `/api/mg/{id}/...` instead of the legacy
+    /// single-microgrid `/api/...` paths. Default = the lowest id
+    /// reported by `GET /api/microgrids`, which matches the
+    /// behaviour of the legacy paths in a single-microgrid binary.
+    #[arg(long, global = true)]
+    microgrid_id: Option<u64>,
+
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -318,13 +327,13 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         return run_scenario(s, &cli.ui_addr, cli.json).await;
     }
     if let Cmd::Snapshot(s) = cli.cmd {
-        return run_snapshot(s, &cli.ui_addr, cli.json).await;
+        return run_snapshot(s, &cli.ui_addr, cli.microgrid_id, cli.json).await;
     }
     if let Cmd::Dashboard { tail, interval } = cli.cmd {
-        return run_dashboard(&cli.ui_addr, tail, interval).await;
+        return run_dashboard(&cli.ui_addr, cli.microgrid_id, tail, interval).await;
     }
     if let Cmd::Pool { cmd } = cli.cmd {
-        return run_pool(cmd, &cli.ui_addr, cli.json).await;
+        return run_pool(cmd, &cli.ui_addr, cli.microgrid_id, cli.json).await;
     }
     if let Cmd::Scenarios(s) = cli.cmd {
         return run_scenarios(s, &cli.ui_addr, cli.json).await;
@@ -464,15 +473,17 @@ fn print_scenarios(resp: &serde_json::Value) {
 async fn run_pool(
     cmd: PoolCmd,
     ui_addr: &str,
+    microgrid_id: Option<u64>,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let http = reqwest::Client::new();
+    let mg = resolve_microgrid_id(&http, ui_addr, microgrid_id).await?;
     let (kind, stream) = match cmd {
         PoolCmd::Battery { stream } => ("battery", stream),
         PoolCmd::Pv { stream } => ("pv", stream),
     };
     loop {
-        let line = build_pool_line(&http, ui_addr, kind, json).await?;
+        let line = build_pool_line(&http, ui_addr, mg, kind, json).await?;
         println!("{line}");
         if !stream {
             return Ok(());
@@ -481,14 +492,40 @@ async fn run_pool(
     }
 }
 
+/// Resolve the microgrid id swctl should hit for per-mg HTTP
+/// endpoints. Honours an explicit `--microgrid-id N` if supplied,
+/// otherwise queries `/api/microgrids` and returns the lowest
+/// registered id — matches the legacy "first registry entry"
+/// fallback the server-side router uses.
+async fn resolve_microgrid_id(
+    http: &reqwest::Client,
+    ui_addr: &str,
+    explicit: Option<u64>,
+) -> Result<u64, Box<dyn std::error::Error>> {
+    if let Some(id) = explicit {
+        return Ok(id);
+    }
+    let list: serde_json::Value = http
+        .get(format!("{ui_addr}/api/microgrids"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    list.as_array()
+        .and_then(|a| a.iter().filter_map(|m| m.get("id")?.as_u64()).min())
+        .ok_or_else(|| "no microgrids registered".into())
+}
+
 async fn build_pool_line(
     http: &reqwest::Client,
     ui_addr: &str,
+    mg_id: u64,
     kind: &str,
     json: bool,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let latest: serde_json::Value = http
-        .get(format!("{ui_addr}/api/microgrid/latest"))
+        .get(format!("{ui_addr}/api/mg/{mg_id}/microgrid/latest"))
         .send()
         .await?
         .error_for_status()?
@@ -549,13 +586,15 @@ async fn build_pool_line(
 /// exits, matching `swctl dashboard` without a flag.
 async fn run_dashboard(
     ui_addr: &str,
+    microgrid_id: Option<u64>,
     tail: bool,
     interval: f64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let http = reqwest::Client::new();
+    let mg = resolve_microgrid_id(&http, ui_addr, microgrid_id).await?;
     let dt = std::time::Duration::from_secs_f64(interval.max(0.1));
     loop {
-        let line = build_dashboard_line(&http, ui_addr).await?;
+        let line = build_dashboard_line(&http, ui_addr, mg).await?;
         println!("{line}");
         if !tail {
             return Ok(());
@@ -567,16 +606,17 @@ async fn run_dashboard(
 async fn build_dashboard_line(
     http: &reqwest::Client,
     ui_addr: &str,
+    mg_id: u64,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let topo: serde_json::Value = http
-        .get(format!("{ui_addr}/api/topology"))
+        .get(format!("{ui_addr}/api/mg/{mg_id}/topology"))
         .send()
         .await?
         .error_for_status()?
         .json()
         .await?;
     let latest: serde_json::Value = http
-        .get(format!("{ui_addr}/api/microgrid/latest"))
+        .get(format!("{ui_addr}/api/mg/{mg_id}/microgrid/latest"))
         .send()
         .await?
         .error_for_status()?
@@ -716,8 +756,13 @@ async fn run_scenario(
 async fn run_snapshot(
     cmd: SnapshotCmd,
     ui_addr: &str,
+    _microgrid_id: Option<u64>,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Snapshots route through the legacy /api/snapshots/* endpoint
+    // for now (per-mg /api/mg/{id}/snapshots/* lands when the
+    // override-path migration finishes). --microgrid-id is
+    // accepted for forward-compat but unused.
     let http = reqwest::Client::new();
     match cmd {
         SnapshotCmd::Save { name } => {
