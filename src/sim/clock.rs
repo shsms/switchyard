@@ -12,6 +12,7 @@
 
 use std::sync::Arc;
 
+use chrono::{DateTime, Timelike, Utc};
 use chrono_tz::Tz;
 use parking_lot::RwLock;
 
@@ -35,6 +36,16 @@ impl Clock {
     /// `timeZone`; "UTC" is the other.
     pub fn tz_name(&self) -> &'static str {
         self.tz.name()
+    }
+
+    /// Fractional hour of day (0.0..24.0) in the configured zone.
+    /// `now` is UTC because that's what physics + Utc::now produce.
+    /// Used by the scenario auto-advance task to pick the matching
+    /// stage and by the UI to place the "now" marker on the
+    /// scenario timeline.
+    pub fn local_hour(&self, now: DateTime<Utc>) -> f64 {
+        let local = now.with_timezone(&self.tz);
+        local.hour() as f64 + local.minute() as f64 / 60.0 + local.second() as f64 / 3600.0
     }
 }
 
