@@ -17,6 +17,7 @@ pub mod reactive;
 pub mod runtime;
 pub(crate) mod scenario;
 pub(crate) mod scenario_csv;
+pub mod scenarios;
 pub mod setpoints;
 pub mod world;
 

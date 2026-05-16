@@ -85,6 +85,10 @@ pub struct Config {
     /// `(set-timezone "…")` in config.lisp; default Europe/Berlin
     /// matches the canonical European-intraday demo target.
     clock: crate::sim::clock::SharedClock,
+    /// Multi-stage scenario registry — what `(define-scenario …)`
+    /// writes to and what the UI's Scenarios mode + /api/scenarios
+    /// read from. See `crate::sim::scenarios` for the data model.
+    pub(crate) scenarios: crate::sim::scenarios::SharedScenarios,
 }
 
 /// One top-level form found in the per-microgrid override file. The
@@ -113,6 +117,7 @@ impl Config {
         let extra_watches = Arc::new(Mutex::new(HashSet::new()));
         let graph_status: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));
         let clock = crate::sim::clock::new_clock();
+        let scenarios = crate::sim::scenarios::new_registry();
 
         // `Path::parent()` returns `Some("")` for bare filenames like
         // "config.lisp" — tulisp rejects empty paths, so fall back to
@@ -128,6 +133,7 @@ impl Config {
         register_runtime(&mut ctx, &world, metadata.clone(), load_dir.clone());
         register_clock(&mut ctx, clock.clone());
         register_watches(&mut ctx, load_dir.clone(), extra_watches.clone());
+        register_scenarios(&mut ctx, scenarios.clone());
 
         // tulisp-async gives the config DSL access to run-with-timer,
         // cancel-timer, sleep-for and friends, used to drive
@@ -189,7 +195,15 @@ impl Config {
             extra_watches,
             graph_status,
             clock,
+            scenarios,
         })
+    }
+
+    /// Shared scenarios registry — `(define-scenario …)` writes
+    /// here, the UI Scenarios mode + /api/scenarios read here, and
+    /// the auto-advance task mutates the per-entry runtime state.
+    pub fn scenarios(&self) -> crate::sim::scenarios::SharedScenarios {
+        self.scenarios.clone()
     }
 
     fn start_timeout_loop(world: World) {
@@ -721,6 +735,108 @@ fn register_clock(ctx: &mut TulispContext, clock: crate::sim::clock::SharedClock
                 .map_err(|_| tulisp::Error::os_error(format!("unknown timezone: {name:?}")))?;
             clock.write().tz = tz;
             Ok(name)
+        },
+    );
+}
+
+/// Newtype around `TulispObject` so `Vec<RawStage>` satisfies the
+/// AsPlist field bound (which needs `TryFrom<TulispObject, Error =
+/// tulisp::Error>`; the blanket impl on `TulispObject` is `Error =
+/// Infallible`). Mirrors tradingsim's same-named helper.
+pub struct RawStage(tulisp::TulispObject);
+
+impl TryFrom<tulisp::TulispObject> for RawStage {
+    type Error = tulisp::Error;
+    fn try_from(v: tulisp::TulispObject) -> Result<Self, tulisp::Error> {
+        Ok(RawStage(v))
+    }
+}
+
+impl From<RawStage> for tulisp::TulispObject {
+    fn from(v: RawStage) -> tulisp::TulispObject {
+        v.0
+    }
+}
+
+tulisp::AsPlist! {
+    pub struct DefineScenarioArgs {
+        name: String,
+        description: Option<String> {= None},
+        /// Calendar date the scenario is treated as taking place
+        /// on, ISO `YYYY-MM-DD`. Optional — `None` falls back to
+        /// wallclock-today.
+        date: Option<String> {= None},
+        stages: Vec<RawStage>,
+    }
+}
+
+tulisp::AsPlist! {
+    pub struct StageArgs {
+        name: String,
+        hour_from<":hour-from">: f64,
+        hour_to<":hour-to">: f64,
+        /// Optional tulisp lambda funcalled on stage entry by the
+        /// auto-advance task. Receives no args; side-effects via
+        /// the existing setter defuns (`set-active-power`,
+        /// `set-meter-power`, `(every …)`, …) drive whatever the
+        /// stage represents. Wrapped via `LispValue` so the raw
+        /// lambda rides through `AsPlist!` (the bare `TulispObject`
+        /// has `TryFrom::Error = Infallible`, which doesn't fit the
+        /// macro's expected error shape).
+        on: Option<crate::lisp::value::LispValue> {= None},
+    }
+}
+
+fn register_scenarios(
+    ctx: &mut TulispContext,
+    scenarios: crate::sim::scenarios::SharedScenarios,
+) {
+    use crate::sim::scenarios::{ScenarioDef, ScenarioEntry, ScenarioRuntime, Stage};
+    use tulisp::Plistable as _;
+    ctx.defun(
+        "define-scenario",
+        move |ctx: &mut TulispContext,
+              args: tulisp::Plist<DefineScenarioArgs>|
+              -> Result<String, tulisp::Error> {
+            let a = args.into_inner();
+            let mut stages = Vec::new();
+            for raw in a.stages {
+                let s = StageArgs::from_plist(ctx, &raw.0)?;
+                let on = s
+                    .on
+                    .map(crate::lisp::value::LispValue::into_inner)
+                    .filter(|o| !o.null());
+                stages.push(Stage {
+                    name: s.name,
+                    hour_from: s.hour_from,
+                    hour_to: s.hour_to,
+                    on,
+                });
+            }
+            let date = match a.date.as_deref() {
+                None => None,
+                Some(s) => Some(chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(
+                    |e| {
+                        tulisp::Error::os_error(format!(
+                            "define-scenario: :date must be YYYY-MM-DD; got {s:?} ({e})"
+                        ))
+                    },
+                )?),
+            };
+            let def = ScenarioDef {
+                name: a.name.clone(),
+                description: a.description.unwrap_or_default(),
+                date,
+                stages,
+            };
+            scenarios.lock().insert(
+                a.name.clone(),
+                ScenarioEntry {
+                    def,
+                    runtime: ScenarioRuntime::default(),
+                },
+            );
+            Ok(a.name)
         },
     );
 }
@@ -1531,6 +1647,46 @@ mod tests {
         let later = cfg.world().scenario_summary(chrono::Utc::now());
         assert_eq!(frozen.elapsed_s, later.elapsed_s);
         assert!(frozen.ended_at.is_some());
+    }
+
+    /// `(define-scenario)` parses a multi-stage definition into the
+    /// shared registry. Stage windows + the optional :on lambda
+    /// round-trip; missing :on leaves `Stage::on = None` so the
+    /// auto-advance task knows to skip the funcall step.
+    #[test]
+    fn define_scenario_registers_with_stages() {
+        let (cfg, _dir) = config_with("(set-microgrid-id 9)");
+        cfg.eval(
+            r#"
+            (define-scenario
+              :name "evening-peak"
+              :description "Consumer ramp 17:00 → 21:00"
+              :date "2026-01-15"
+              :stages
+              '((:name "ramp" :hour-from 17 :hour-to 18
+                 :on (lambda () (set-active-power 1001 5000)))
+                (:name "peak" :hour-from 18 :hour-to 20
+                 :on (lambda () (set-active-power 1001 25000)))
+                (:name "wind-down" :hour-from 20 :hour-to 21)))
+            "#,
+        )
+        .unwrap();
+        let regs = cfg.scenarios();
+        let r = regs.lock();
+        let e = r.get("evening-peak").expect("registered");
+        assert_eq!(e.def.description, "Consumer ramp 17:00 → 21:00");
+        assert_eq!(
+            e.def.date,
+            Some(chrono::NaiveDate::from_ymd_opt(2026, 1, 15).unwrap())
+        );
+        assert_eq!(e.def.stages.len(), 3);
+        assert_eq!(e.def.stages[0].name, "ramp");
+        assert_eq!(e.def.stages[0].hour_from, 17.0);
+        assert_eq!(e.def.stages[0].hour_to, 18.0);
+        assert!(e.def.stages[0].on.is_some());
+        assert!(e.def.stages[1].on.is_some());
+        // Third stage has no :on -> Stage::on stays None.
+        assert!(e.def.stages[2].on.is_none());
     }
 
     /// Battery DC power integrates into the journal's per-battery
