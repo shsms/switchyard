@@ -17,6 +17,7 @@
       <nav id="mode-toggle" aria-label="view mode">
         <button class="mode-btn" data-mode="dashboard">Dashboard</button>
         <button class="mode-btn" data-mode="topology">Topology</button>
+        <button class="mode-btn" data-mode="scenarios">Scenarios</button>
       </nav>
       <span class="spacer"></span>
       <button id="help-btn" class="hdr-btn" title="Keyboard + mouse shortcuts">?</button>
@@ -52,6 +53,29 @@
     </section>
     <main id="app">
       <div id="topology"></div>
+      <div id="scenarios" hidden>
+        <header class="scenarios-header">
+          <label class="scenarios-picker">
+            <span class="muted">Scenario</span>
+            <select id="scenarios-select"></select>
+          </label>
+          <div class="scenarios-controls">
+            <button type="button" id="sc-start" class="hdr-btn">Start</button>
+            <button type="button" id="sc-prev" class="hdr-btn">Prev</button>
+            <button type="button" id="sc-next" class="hdr-btn">Next</button>
+            <button type="button" id="sc-stop" class="hdr-btn">Stop</button>
+            <span id="sc-manual-badge" class="sc-badge" hidden>manual override</span>
+          </div>
+        </header>
+        <section id="sc-description" class="sc-description muted"></section>
+        <section class="sc-timeline" aria-label="24-hour scenario timeline">
+          <div id="sc-timeline-track" class="sc-timeline-track"></div>
+          <div class="sc-timeline-axis">
+            <span>00</span><span>06</span><span>12</span><span>18</span><span>24</span>
+          </div>
+        </section>
+        <section id="sc-stage-list" class="sc-stage-list" aria-label="stage list"></section>
+      </div>
       <div id="dashboard" hidden>
         <section class="dash-tile">
           <h2>Grid power</h2>
