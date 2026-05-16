@@ -26,6 +26,18 @@
 (set-physics-tick-ms 100)
 (set-enterprise-id 1)
 
+;; Grid frequency — one Ornstein-Uhlenbeck process per process,
+;; shared by every microgrid in the registry (frequency is a
+;; property of the AC grid, not the microgrid). Defaults below pick
+;; a healthy synchronous-grid shape: ~47 mHz equilibrium std dev
+;; (σ / sqrt(2k) with σ = 0.015 Hz/√s and k = 0.05 /s), ~20-second
+;; correlation time. Scenarios pin a specific value via
+;; `(set-frequency-override F)` / `(clear-frequency-override)`.
+(set-frequency-model
+ :nominal       50.0
+ :mean-rev-rate  0.05
+ :sigma          0.015)
+
 ;; -----------------------------------------------------------------------------
 ;; Time-driven animation. `every` runs the callback every :milliseconds
 ;; (no synchronous first call), so these blocks can sit alongside the
