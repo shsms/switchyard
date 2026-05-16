@@ -3,6 +3,7 @@
 // respond to clicks / WS pushes by re-fetching + re-rendering.
 
 import { escapeHtml, selectMicrogrid } from "./app.js";
+import { clockState } from "./chrome.js";
 
 export const microgridsPanel = (() => {
   let cached = []; // last /api/microgrids snapshot
@@ -286,6 +287,27 @@ export const scenariosPanel = (() => {
     repaint();
     schedulePoll();
   }
+  // List every scenario whose runtime says it's running. Drives the
+  // header chip alongside the Scenarios mode toggle so the operator
+  // sees which scenarios are live without flipping into Scenarios
+  // mode first.
+  function updateActiveChip() {
+    const chip = document.getElementById("active-scenarios");
+    if (!chip) return;
+    const running = cached.filter(
+      (s) => s.runtime && s.runtime.current_stage != null,
+    );
+    if (running.length === 0) {
+      chip.hidden = true;
+      chip.textContent = "";
+      return;
+    }
+    chip.hidden = false;
+    const names = running.map((s) => s.name).join(", ");
+    chip.textContent = `running: ${names}`;
+    chip.title = `Click to view ${running.length === 1 ? "it" : "them"} in Scenarios mode`;
+  }
+
   function repaint() {
     const sc = selected();
     const sig = sc ? `${JSON.stringify(sc.runtime)}|${sc.stages.length}` : "";
@@ -294,6 +316,7 @@ export const scenariosPanel = (() => {
     // changed, which would otherwise leave the buttons stuck on
     // their initial HTML state when no transition has happened.
     renderButtons();
+    updateActiveChip();
     if (sig === lastSig) {
       // Cheap path: still nudge the now marker so it tracks time
       // even when no transition happened.
@@ -306,14 +329,12 @@ export const scenariosPanel = (() => {
     renderStageList();
   }
   function schedulePoll() {
-    if (pollTimer) clearInterval(pollTimer);
-    if (document.body.dataset.mode !== "scenarios") return;
+    // Always run — the active-scenarios chip in the header needs to
+    // stay current even when the user is in Microgrids mode, and a
+    // 5 s poll is cheap. Inside Scenarios mode, repaint() also keeps
+    // the timeline / stage list / buttons in sync.
+    if (pollTimer) return;
     pollTimer = setInterval(async () => {
-      if (document.body.dataset.mode !== "scenarios") {
-        clearInterval(pollTimer);
-        pollTimer = null;
-        return;
-      }
       try {
         const res = await fetch("/api/scenarios");
         if (res.ok) cached = await res.json();
@@ -346,6 +367,20 @@ export const scenariosPanel = (() => {
     document.getElementById("sc-stop")?.addEventListener("click", () => post("stop"));
     document.getElementById("sc-next")?.addEventListener("click", () => post("next"));
     document.getElementById("sc-prev")?.addEventListener("click", () => post("prev"));
+    // Header chip → jump to Scenarios mode. Clicking is the natural
+    // next step when the user notices something's running.
+    document
+      .getElementById("active-scenarios")
+      ?.addEventListener("click", () => {
+        const btn = document.querySelector(
+          "#mode-toggle .mode-btn[data-mode='scenarios']",
+        );
+        btn?.click();
+      });
+    // Kick the polling loop + first chip paint immediately so the
+    // header chip shows the right thing even before the user enters
+    // Scenarios mode for the first time.
+    refresh();
   }
   return { setup, refresh };
 })();

@@ -254,6 +254,7 @@ export const batteryPairs = (() => {
       batCell.dataset.id = id;
       batCell.innerHTML = `
         <span class="tier2-name">${b.name}</span>
+        <span class="tier2-subtype">—</span>
         <span class="tier2-health ${bhCls}">${b.health}</span>
         <span class="tier2-soc-wrap">
           <span class="tier2-soc-bar ${socClass(b.soc)}" style="width:${socPct.toFixed(1)}%"></span>

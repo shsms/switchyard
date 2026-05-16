@@ -89,6 +89,23 @@ header strong {
 .pending-pill[hidden] { display: none; }
 .pending-pill:hover { border-color: var(--fg); }
 
+/* Live indicator alongside the Scenarios mode toggle: lists every
+   currently-running scenario by name. Hidden when nothing's
+   running, so the chip only shows up when there's something
+   meaningful to say. */
+.active-scenarios {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--good, #6bd97b);
+  background: rgba(96, 200, 120, 0.12);
+  padding: 2px 8px;
+  border-radius: 10px;
+  border: 1px solid rgba(96, 200, 120, 0.35);
+  cursor: pointer;
+}
+.active-scenarios[hidden] { display: none; }
+.active-scenarios:hover { border-color: var(--good, #6bd97b); }
+
 dialog#pending-dialog,
 dialog#help-dialog {
   background: var(--bg-elev);
@@ -744,7 +761,13 @@ body.compact .dash-envelope { font-size: 11px; margin-top: 2px; }
 }
 .tier2-row {
   display: grid;
-  grid-template-columns: minmax(140px, 1.5fr) 80px minmax(160px, 3fr) minmax(100px, 1fr);
+  /* Shared 5-column template with tier3 / tier5 so the health pill
+     in column 3 lines up vertically across every dashboard row.
+     Batteries don't have a subtype, so column 2 holds an `—`
+     placeholder that keeps the alignment without claiming the slot
+     means anything. */
+  grid-template-columns:
+    minmax(140px, 1.5fr) 80px 80px minmax(160px, 3fr) minmax(100px, 1fr);
   align-items: center;
   gap: 12px;
   padding: 8px 12px;
@@ -756,6 +779,13 @@ body.compact .dash-envelope { font-size: 11px; margin-top: 2px; }
 }
 .tier2-row:hover { border-color: var(--accent); }
 .tier2-name { font-weight: 500; }
+.tier2-subtype {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  text-align: center;
+}
 .tier2-health {
   font-size: 11px;
   padding: 2px 8px;
@@ -800,7 +830,12 @@ body.compact .tier2-soc-text { font-size: 10px; }
 
 .tier3-row {
   display: grid;
-  grid-template-columns: minmax(140px, 1.5fr) 80px 80px minmax(180px, 3fr);
+  /* Same template as tier2 / tier5 so the health pill aligns
+     vertically across the dashboard. The envelope fills cols 4-5
+     since the row has no separate power readout — see the
+     .tier3-row .envelope rule below. */
+  grid-template-columns:
+    minmax(140px, 1.5fr) 80px 80px minmax(160px, 3fr) minmax(100px, 1fr);
   align-items: center;
   gap: 12px;
   padding: 8px 12px;
@@ -809,6 +844,9 @@ body.compact .tier2-soc-text { font-size: 10px; }
   border-radius: 6px;
   cursor: pointer;
   font-variant-numeric: tabular-nums;
+}
+.tier3-row .envelope {
+  grid-column: 4 / -1;
 }
 .tier3-row:hover { border-color: var(--accent); }
 .tier3-row.pinned {
@@ -1063,7 +1101,11 @@ body.compact .envelope-marker { width: 10px; height: 10px; margin-left: -5px; ma
 
 .tier5-row {
   display: grid;
-  grid-template-columns: minmax(140px, 1.5fr) 90px 80px minmax(160px, 3fr) minmax(100px, 1fr);
+  /* Matches tier2 / tier3 so the health pill in column 3 stays
+     vertically aligned with the rows in the Batteries + PV
+     sections above. */
+  grid-template-columns:
+    minmax(140px, 1.5fr) 80px 80px minmax(160px, 3fr) minmax(100px, 1fr);
   align-items: center;
   gap: 12px;
   padding: 8px 12px;
