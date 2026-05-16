@@ -141,6 +141,28 @@ enum Cmd {
     /// surface, not gRPC.
     #[command(subcommand)]
     Scenario(ScenarioCmd),
+
+    /// Save / load / list snapshots of the persisted-overrides
+    /// file. Routes through the UI HTTP surface; gRPC isn't
+    /// touched.
+    #[command(subcommand)]
+    Snapshot(SnapshotCmd),
+}
+
+#[derive(Subcommand, Debug)]
+enum SnapshotCmd {
+    /// Copy the current overrides file to snapshots/NAME.lisp.
+    Save {
+        /// Snapshot name (file-name component only; no slashes).
+        name: String,
+    },
+    /// Replace the current overrides with snapshots/NAME.lisp and
+    /// reload.
+    Load {
+        name: String,
+    },
+    /// List existing snapshots, alphabetical.
+    List,
 }
 
 #[derive(Subcommand, Debug)]
@@ -230,6 +252,9 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     if let Cmd::Scenario(s) = cli.cmd {
         return run_scenario(s, &cli.ui_addr, cli.json).await;
     }
+    if let Cmd::Snapshot(s) = cli.cmd {
+        return run_snapshot(s, &cli.ui_addr, cli.json).await;
+    }
     let mut client = MicrogridClient::connect(cli.addr.clone()).await?;
     match cli.cmd {
         Cmd::Info => cmd_info(&mut client, cli.json).await,
@@ -253,8 +278,8 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             upper,
             lifetime,
         } => cmd_augment(&mut client, id, lower, upper, lifetime).await,
-        // Scenario handled before the gRPC connect above.
-        Cmd::Scenario(_) => unreachable!(),
+        // Scenario + Snapshot handled before the gRPC connect above.
+        Cmd::Scenario(_) | Cmd::Snapshot(_) => unreachable!(),
     }
 }
 
@@ -324,6 +349,75 @@ async fn run_scenario(
                 .json()
                 .await?;
             print_events(&e, json);
+        }
+    }
+    Ok(())
+}
+
+async fn run_snapshot(
+    cmd: SnapshotCmd,
+    ui_addr: &str,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let http = reqwest::Client::new();
+    match cmd {
+        SnapshotCmd::Save { name } => {
+            let resp: serde_json::Value = http
+                .post(format!("{ui_addr}/api/snapshots/save"))
+                .json(&serde_json::json!({ "name": name }))
+                .send()
+                .await?
+                .error_for_status()?
+                .json()
+                .await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&resp)?);
+            } else {
+                println!(
+                    "saved {} -> {}",
+                    name,
+                    resp.get("path").and_then(|v| v.as_str()).unwrap_or("?"),
+                );
+            }
+        }
+        SnapshotCmd::Load { name } => {
+            http.post(format!("{ui_addr}/api/snapshots/load"))
+                .json(&serde_json::json!({ "name": name }))
+                .send()
+                .await?
+                .error_for_status()?;
+            if json {
+                println!("{{\"ok\":true,\"loaded\":{}}}", serde_json::to_string(&name)?);
+            } else {
+                println!("loaded {name}");
+            }
+        }
+        SnapshotCmd::List => {
+            let resp: serde_json::Value = http
+                .get(format!("{ui_addr}/api/snapshots"))
+                .send()
+                .await?
+                .error_for_status()?
+                .json()
+                .await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&resp)?);
+            } else {
+                let names = resp
+                    .get("snapshots")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                if names.is_empty() {
+                    println!("(no snapshots)");
+                } else {
+                    for n in names {
+                        if let Some(s) = n.as_str() {
+                            println!("{s}");
+                        }
+                    }
+                }
+            }
         }
     }
     Ok(())

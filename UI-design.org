@@ -708,7 +708,12 @@ DONE.
 
 * Snapshots / save-state
 
-** TODO G1. Snapshot save/load
+** DONE G1. Snapshot save/load
+   - First pass: snapshot = frozen copy of the persisted-overrides
+     file. UI dialog (Snapshots button) saves / lists / loads;
+     load atomically rewrites overrides + reloads. Live physics
+     state (ramp, SoC) re-derives from baseline — capturing that
+     too is a follow-up if the bug-repro flow needs it.
 
 Build on the existing overrides file. Add:
 
