@@ -4005,6 +4005,104 @@ function readSubview() {
   return VALID_SUBVIEWS.has(v) ? v : "dashboard";
 }
 
+// ─── URL routing ────────────────────────────────────────────────────────────
+//
+// SPA state — mode / selected microgrid / subview — round-trips
+// through the URL hash so the browser's back / forward buttons
+// walk the user's actual navigation history (not just whatever
+// page-loads happened to land on this origin). Shapes:
+//
+//   #scenarios                       scenarios mode
+//   #microgrids                      microgrids list view
+//   #microgrids/2200                 mg 2200 selected (default subview = dashboard)
+//   #microgrids/2200/topology        mg 2200, topology subview
+//
+// `localStorage` still carries the same keys so a fresh tab
+// without a hash falls back to "wherever the user was last."
+// The hash wins when both are set — explicit deep-links shouldn't
+// be overridden by stale storage.
+
+function currentRoute() {
+  return {
+    mode: localStorage.getItem(MODE_KEY) || "microgrids",
+    selectedMg: readSelectedMg(),
+    subview: readSubview(),
+  };
+}
+
+function routeToHash({ mode, selectedMg, subview }) {
+  if (mode === "scenarios") return "#scenarios";
+  if (selectedMg == null) return "#microgrids";
+  if (subview === "topology") return `#microgrids/${selectedMg}/topology`;
+  return `#microgrids/${selectedMg}`;
+}
+
+function parseHash(hash) {
+  // `#x` strips to `x`; an empty hash returns null so the caller
+  // falls through to localStorage / defaults.
+  const raw = (hash || "").replace(/^#/, "");
+  if (!raw) return null;
+  const parts = raw.split("/").filter(Boolean);
+  if (parts[0] === "scenarios") return { mode: "scenarios", selectedMg: null, subview: "dashboard" };
+  if (parts[0] === "microgrids") {
+    const idRaw = parts[1];
+    const id = idRaw == null ? null : Number(idRaw);
+    const selectedMg = Number.isFinite(id) ? id : null;
+    let subview = "dashboard";
+    if (parts[2] && VALID_SUBVIEWS.has(parts[2])) subview = parts[2];
+    return { mode: "microgrids", selectedMg, subview };
+  }
+  return null;
+}
+
+function writeRouteToStorage({ mode, selectedMg, subview }) {
+  if (VALID_MODES.has(mode)) localStorage.setItem(MODE_KEY, mode);
+  if (selectedMg == null) localStorage.removeItem(MG_SELECTED_KEY);
+  else localStorage.setItem(MG_SELECTED_KEY, String(selectedMg));
+  if (VALID_SUBVIEWS.has(subview)) localStorage.setItem(MG_SUBVIEW_KEY, subview);
+}
+
+// Navigate the SPA to `next`, pushing a new history entry so the
+// browser back button returns to the previous route. `next` is a
+// partial — keys you omit inherit from the current route. Skips
+// the push when the resulting hash is the same as the current
+// location (e.g. clicking the active tab is a no-op).
+function navigateTo(next) {
+  const route = { ...currentRoute(), ...next };
+  writeRouteToStorage(route);
+  const hash = routeToHash(route);
+  if (window.location.hash !== hash) {
+    history.pushState(route, "", hash);
+  }
+  applyMode(route.mode);
+}
+
+function setupRouterPopstate() {
+  // Browser back / forward fires popstate. Re-seed storage from
+  // the destination route's hash (the state we pushed isn't
+  // always present — e.g. after a refresh on a hashed URL) and
+  // re-apply without pushing.
+  window.addEventListener("popstate", () => {
+    const route = parseHash(window.location.hash) || currentRoute();
+    writeRouteToStorage(route);
+    applyMode(route.mode);
+  });
+}
+
+function applyInitialRoute() {
+  // Deep-link wins over stored state: refresh on a hashed URL
+  // restores that exact view. Otherwise fall through to whatever
+  // the user was last looking at.
+  const hashed = parseHash(window.location.hash);
+  if (hashed) writeRouteToStorage(hashed);
+  const route = currentRoute();
+  // history.replaceState the canonical hash so back-button from
+  // here lands on a defined state instead of an empty-hash entry.
+  const hash = routeToHash(route);
+  history.replaceState(route, "", hash);
+  applyMode(route.mode);
+}
+
 function applyMode(mode) {
   if (!VALID_MODES.has(mode)) mode = "microgrids";
   const selected = readSelectedMg();
@@ -4037,25 +4135,17 @@ function applyMode(mode) {
 
 // Jump to the topology subview within the current mode and select
 // `id` on the canvas. Used by dashboard tier rows + the formula-tree
-// chip clicks. Pre-multi-mode this was a flat mode switch; now the
-// mode (`microgrids` / `scenarios`) stays put and we just flip the
-// subview pref + re-apply.
+// chip clicks. Pushes a history entry so the back button returns
+// the user to where they clicked from.
 function jumpToTopology(id) {
-  const mode = localStorage.getItem(MODE_KEY) || "microgrids";
-  localStorage.setItem(MG_SUBVIEW_KEY, "topology");
-  applyMode(mode);
+  navigateTo({ subview: "topology" });
   topology.select([id]);
   const c = topology.get(id);
   if (c) showComponent(c);
 }
 
 function selectMicrogrid(id) {
-  if (id == null) {
-    localStorage.removeItem(MG_SELECTED_KEY);
-  } else {
-    localStorage.setItem(MG_SELECTED_KEY, String(id));
-  }
-  applyMode(localStorage.getItem(MODE_KEY) || "microgrids");
+  navigateTo({ mode: "microgrids", selectedMg: id });
   renderReplMgChip();
   // Refetch the per-mg topology so the canvas + the empty-hint
   // overlay (D5) reflect the newly-selected microgrid. Without
@@ -4090,9 +4180,7 @@ function setupReplMgChip() {
   const chip = document.getElementById("repl-mg-chip");
   if (!chip) return;
   chip.addEventListener("click", () => {
-    localStorage.setItem(MODE_KEY, "microgrids");
-    localStorage.removeItem(MG_SELECTED_KEY);
-    applyMode("microgrids");
+    navigateTo({ mode: "microgrids", selectedMg: null });
     renderReplMgChip();
   });
   renderReplMgChip();
@@ -4102,24 +4190,25 @@ function setupModeToggle() {
   for (const btn of document.querySelectorAll("#mode-toggle .mode-btn")) {
     btn.addEventListener("click", () => {
       const mode = btn.dataset.mode;
-      localStorage.setItem(MODE_KEY, mode);
       // Microgrids button returns the user to the list. Picking a
       // microgrid (D2 cards) re-enters the selected view.
-      if (mode === "microgrids") localStorage.removeItem(MG_SELECTED_KEY);
-      applyMode(mode);
+      navigateTo({
+        mode,
+        selectedMg: mode === "microgrids" ? null : currentRoute().selectedMg,
+      });
     });
   }
   for (const btn of document.querySelectorAll("#mg-subtoggle .mode-btn")) {
     btn.addEventListener("click", () => {
       const sv = btn.dataset.subview;
       if (!VALID_SUBVIEWS.has(sv)) return;
-      localStorage.setItem(MG_SUBVIEW_KEY, sv);
-      applyMode(localStorage.getItem(MODE_KEY) || "microgrids");
+      navigateTo({ subview: sv });
     });
   }
   const backBtn = document.getElementById("mg-back");
   if (backBtn) backBtn.addEventListener("click", () => selectMicrogrid(null));
-  applyMode(localStorage.getItem(MODE_KEY) || "microgrids");
+  applyInitialRoute();
+  setupRouterPopstate();
   // Keyboard chord — 1 → Microgrids list, 2 → Scenarios. Skip
   // when a text input has focus so digits typed into the REPL /
   // search boxes don't trigger a mode flip.
@@ -4133,9 +4222,10 @@ function setupModeToggle() {
     else if (ev.key === "2") mode = "scenarios";
     if (!mode) return;
     ev.preventDefault();
-    localStorage.setItem(MODE_KEY, mode);
-    if (mode === "microgrids") localStorage.removeItem(MG_SELECTED_KEY);
-    applyMode(mode);
+    navigateTo({
+      mode,
+      selectedMg: mode === "microgrids" ? null : currentRoute().selectedMg,
+    });
   });
 }
 
