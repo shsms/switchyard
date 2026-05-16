@@ -3400,6 +3400,22 @@ function setupModeToggle() {
     });
   }
   applyMode(localStorage.getItem(MODE_KEY) || "dashboard");
+  // Keyboard chord — 1 → Dashboard, 2 → Topology. Skip when a
+  // text input has focus so digits typed into the REPL / search
+  // boxes don't trigger a mode flip.
+  document.addEventListener("keydown", (ev) => {
+    if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+    const t = ev.target;
+    const tag = t && t.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || (t && t.isContentEditable)) return;
+    let mode = null;
+    if (ev.key === "1") mode = "dashboard";
+    else if (ev.key === "2") mode = "topology";
+    if (!mode) return;
+    ev.preventDefault();
+    localStorage.setItem(MODE_KEY, mode);
+    applyMode(mode);
+  });
 }
 
 async function refreshTopology() {
