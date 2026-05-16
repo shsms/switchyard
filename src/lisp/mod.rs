@@ -172,6 +172,14 @@ impl Config {
         // here, not events on per-site buses — the SPA's reconnect
         // already covers WS sessions that fall behind.
         let microgrid_registered = Arc::new(broadcast::channel(64).0);
+        // Enterprise-wide grid frequency state — one OU process drives
+        // every MicrogridSite in the registry so they share the
+        // physically-correct same frequency. The driver task is
+        // spawned below; bootstrap site + future make-microgrid forms
+        // both attach to this slot.
+        let grid_frequency = crate::sim::frequency::new_shared();
+        site.set_grid_frequency(grid_frequency.clone());
+        crate::sim::frequency::spawn_driver(grid_frequency.clone());
         // Shared slot for the per-tick hook so make-microgrid can
         // install it on each freshly-created MicrogridSite. Populated
         // below once the timer handle exists.
@@ -201,7 +209,9 @@ impl Config {
             enterprise_id_allocator.clone(),
             pre_tick_slot.clone(),
             microgrid_registered.clone(),
+            grid_frequency.clone(),
         );
+        register_frequency(&mut ctx, grid_frequency.clone());
 
         // tulisp-async gives the config DSL access to run-with-timer,
         // cancel-timer, sleep-for and friends, used to drive
@@ -1124,6 +1134,7 @@ fn register_microgrids(
     id_allocator: Arc<std::sync::atomic::AtomicU64>,
     pre_tick: Arc<RwLock<Option<crate::sim::microgrid_site::PreTickHook>>>,
     registered_tx: Arc<broadcast::Sender<u64>>,
+    grid_frequency: crate::sim::frequency::SharedFrequency,
 ) {
     // Read-only accessors scripts use to dispatch on the active
     // microgrid (E2 of gridpool-support.org). Outside a per-mg
@@ -1200,6 +1211,10 @@ fn register_microgrids(
             // microgrid — component ids stay globally unique across
             // the registry without per-site coordination.
             let site = MicrogridSite::with_id_allocator(id_allocator.clone());
+            // Same grid frequency source as every other site, so
+            // their `frequency_hz` reads all return the same OU
+            // value (one AC grid → one frequency).
+            site.set_grid_frequency(grid_frequency.clone());
             // Install the shared pre-tick hook if Config::new has
             // populated it (post-eval reload or runtime
             // create-microgrid). During the initial config eval the
@@ -1753,6 +1768,93 @@ fn add_log_functions(ctx: &mut TulispContext) {
         });
 }
 
+tulisp::AsPlist! {
+    /// Plist payload for `(set-frequency-model …)`. Every field
+    /// optional — only the keys the caller passes are touched.
+    pub struct FrequencyModelArgs {
+        /// Mean the OU process pulls toward (Hz).
+        nominal: Option<f64> {= None},
+        /// Mean reversion rate (1/s). Correlation time of the
+        /// noisy fluctuations is roughly `1 / mean-rev-rate`.
+        mean_rev_rate<":mean-rev-rate">: Option<f64> {= None},
+        /// Noise intensity (Hz/sqrt(s)). Equilibrium standard
+        /// deviation is `sigma / sqrt(2 * mean-rev-rate)`.
+        sigma: Option<f64> {= None},
+    }
+}
+
+/// Defuns the config + scenarios use to drive the shared grid
+/// frequency:
+///
+/// - `(set-frequency F)` — one-shot write of the current value.
+///   The OU driver overwrites on the next step (every 200 ms), so
+///   this is useful for test fixtures or for setting an initial
+///   condition the OU then evolves away from.
+/// - `(set-frequency-model :nominal :mean-rev-rate :sigma)` —
+///   tune the driver parameters. Each key optional; unspecified
+///   keys keep their current values. The defaults pick a noise
+///   floor (~47 mHz std dev) and correlation time (~20 s) that
+///   look like a healthy synchronous grid.
+/// - `(set-frequency-override F)` — pin the value at F. The
+///   driver respects the flag and stops integrating until the
+///   override clears. Scenarios use this to script a UFLS dip /
+///   generator-trip recovery without fighting the driver.
+/// - `(clear-frequency-override)` — release the override; the
+///   driver resumes from the current value.
+/// - `(current-frequency)` — read the live value.
+fn register_frequency(
+    ctx: &mut TulispContext,
+    state: crate::sim::frequency::SharedFrequency,
+) {
+    let s = state.clone();
+    ctx.defun("set-frequency", move |hz: f64| -> Result<bool, Error> {
+        s.write().current_hz = hz as f32;
+        Ok(true)
+    });
+
+    let s = state.clone();
+    ctx.defun(
+        "set-frequency-model",
+        move |args: tulisp::Plist<FrequencyModelArgs>| -> Result<bool, Error> {
+            let a = args.into_inner();
+            let mut g = s.write();
+            if let Some(v) = a.nominal {
+                g.nominal_hz = v as f32;
+            }
+            if let Some(v) = a.mean_rev_rate {
+                g.mean_rev_rate = v.max(0.0) as f32;
+            }
+            if let Some(v) = a.sigma {
+                g.sigma = v.max(0.0) as f32;
+            }
+            Ok(true)
+        },
+    );
+
+    let s = state.clone();
+    ctx.defun(
+        "set-frequency-override",
+        move |hz: f64| -> Result<bool, Error> {
+            s.write().override_hz = Some(hz as f32);
+            Ok(true)
+        },
+    );
+
+    let s = state.clone();
+    ctx.defun(
+        "clear-frequency-override",
+        move || -> Result<bool, Error> {
+            s.write().override_hz = None;
+            Ok(true)
+        },
+    );
+
+    let s = state;
+    ctx.defun("current-frequency", move || -> Result<f64, Error> {
+        Ok(s.read().read_hz() as f64)
+    });
+}
+
 fn register_reset(ctx: &mut TulispContext, router: SharedSiteRouter) {
     // Rust-side: clear the active MicrogridSite's components. The
     // Lisp-side `reset-state` (in sim/common.lisp) wraps this and
@@ -1765,15 +1867,6 @@ fn register_reset(ctx: &mut TulispContext, router: SharedSiteRouter) {
 }
 
 fn register_grid_state(ctx: &mut TulispContext, router: SharedSiteRouter) {
-    let r = router.clone();
-    ctx.defun("set-frequency", move |hz: f64| -> Result<bool, Error> {
-            let w = r.site();
-        let mut state = w.grid_state();
-        state.frequency_hz = hz as f32;
-        w.set_grid_state(state);
-        Ok(true)
-    });
-
     let r = router.clone();
     ctx.defun(
         "set-voltage-per-phase",

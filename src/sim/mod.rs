@@ -7,6 +7,7 @@ pub mod decay;
 pub(crate) mod dynamic_scalar;
 pub mod ev_charger;
 pub mod events;
+pub mod frequency;
 pub mod graph_adapter;
 pub mod grid;
 pub mod history;

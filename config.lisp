@@ -34,17 +34,19 @@
 ;; microgrid — the scenarios per-microgrid replay fans them out.
 ;; -----------------------------------------------------------------------------
 
-;; Per-tick noise on the AC environment: a slowly wandering line
-;; voltage and a frequency that drifts a few mHz around 50 Hz.
+;; Per-tick noise on the AC line voltage — a slow random wander a
+;; few hundred mV either side of nominal. Grid frequency lives on
+;; its own Ornstein-Uhlenbeck driver (one for the whole enterprise,
+;; one per AC grid by physics) — see `(set-frequency-model …)` and
+;; `(set-frequency-override …)` below if you want to tune its
+;; defaults or script an event.
 (every
  :milliseconds 200
  :call (lambda ()
          (set-voltage-per-phase
           (+ 229.0 (/ (random 200) 100.0))
           (+ 229.0 (/ (random 200) 100.0))
-          (+ 229.0 (/ (random 200) 100.0)))
-         (set-frequency
-          (+ 49.99 (/ (random 4) 100.0)))))
+          (+ 229.0 (/ (random 200) 100.0)))))
 
 ;; PV cloud-cover schedule over a 10-minute window, driving the solar
 ;; inverter (id 200 in the Berlin demo microgrid). Sunny first 3 min

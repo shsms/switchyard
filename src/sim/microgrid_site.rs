@@ -153,6 +153,13 @@ struct MicrogridSiteInner {
     /// `(scenario-stop-csv)` or implicitly by `scenario-stop`.
     /// Empty by default — recording is opt-in.
     scenario_csv: RwLock<CsvSinks>,
+    /// Optional handle on the grid frequency state. Wired
+    /// in by `Config::new` so every MicrogridSite in the registry
+    /// reads the same OU-driven frequency value (one AC grid →
+    /// one frequency, by physics). Bootstrap MicrogridSites built
+    /// outside that path (tags pass, unit tests) leave it `None`
+    /// and fall back to the per-mg `grid_state.frequency_hz`.
+    grid_frequency: RwLock<Option<crate::sim::frequency::SharedFrequency>>,
 }
 
 /// Callback invoked at the start of every `tick_once`. Held behind an
@@ -295,8 +302,17 @@ impl MicrogridSite {
                 scenario: RwLock::new(ScenarioJournal::default()),
                 main_meter_id: RwLock::new(None),
                 scenario_csv: RwLock::new(CsvSinks::new()),
+                grid_frequency: RwLock::new(None),
             }),
         }
+    }
+
+    /// Wire this site to an grid frequency source. After this
+    /// call, `grid_state()` reads `frequency_hz` from the shared OU
+    /// state instead of the per-mg `GridState::frequency_hz` slot.
+    /// Voltage stays per-mg.
+    pub fn set_grid_frequency(&self, freq: crate::sim::frequency::SharedFrequency) {
+        *self.inner.grid_frequency.write() = Some(freq);
     }
 
     // ─── Scenario journal + CSV sinks ─────────────────────────────────
@@ -591,7 +607,11 @@ impl MicrogridSite {
     }
 
     pub fn grid_state(&self) -> GridState {
-        self.inner.grid_state.read().clone()
+        let mut state = self.inner.grid_state.read().clone();
+        if let Some(freq) = self.inner.grid_frequency.read().as_ref() {
+            state.frequency_hz = freq.read().read_hz();
+        }
+        state
     }
 
     pub fn set_grid_state(&self, state: GridState) {
