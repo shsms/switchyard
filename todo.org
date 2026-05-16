@@ -215,23 +215,6 @@ heuristic alone but quiet the function-head class so a wrong
 classification is less visually loud (e.g. weight only, no
 hue). Loses some of the "shape pops at a glance" benefit.
 
-*** TODO G2. Token classes that the first cut skipped
-
-The original plan listed five extra classes; shipping G3 only
-covered special-form vs function-call. Still pending:
-
-- *=:keywords=* — symbols starting with =:=. Their own class so
-  =:successors=, =:keys=, etc. read distinctly from positional
-  args.
-- *Quote operators* — colour the leading =\'=, =`=, =,=, =,@= so
-  quoted / quasi-quoted regions are visible at a glance.
-- *Numeric literals* — ints, floats, =#x= / =#o= / =#b= bases,
-  scientific (=1.5e3=), char (=?\n=).
-
-None of these are urgent — without them the overlay is still
-informative — but they're cheap follow-ups since the walker
-already has the per-token flush points.
-
 *** TODO G3. =Enter=-on-empty-line outdent
 
 =indentForNewline= always indents at the innermost open paren's
