@@ -306,7 +306,7 @@ impl Config {
         Ok(Self {
             filename: filename.to_string(),
             ctx,
-            site: site,
+            site,
             metadata,
             extra_watches,
             graph_status,
@@ -1112,6 +1112,12 @@ tulisp::AsPlist! {
 /// (whose body's make-* calls then register into the new site
 /// via the router's per-call dispatch), and finally restores the
 /// previous pointer.
+//
+// Eight args trips clippy's `too_many_arguments` threshold; the
+// review item A6 plans to bundle the shared state into a single
+// `RuntimeHandles` struct that drops the count cleanly. Until
+// then, the explicit list is more readable than a one-off tuple.
+#[allow(clippy::too_many_arguments)]
 fn register_microgrids(
     ctx: &mut TulispContext,
     registry: crate::sim::microgrids::SharedMicrogrids,
