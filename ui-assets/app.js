@@ -293,6 +293,10 @@ const topology = (() => {
   let nodesDS = null;
   let edgesDS = null;
   const componentById = new Map();
+  // Id of the meter currently flagged `:main t` (per the snapshot's
+  // top-level `main_meter_id`). Captured here so copy/paste can
+  // mark the pasted copy as `:main t` when the source meter was.
+  let mainMeterId = null;
   let onSelect = null;
   let onDeselect = null;
   let selectionAtMousedown = [];
@@ -323,6 +327,7 @@ const topology = (() => {
   }
 
   function apply(data) {
+    mainMeterId = typeof data.main_meter_id === "number" ? data.main_meter_id : null;
     // The chrome status pill keeps showing the gRPC-visible count,
     // which is what most operators care about when reasoning about
     // their topology. Hidden meters render on the canvas (dashed)
@@ -616,6 +621,7 @@ const topology = (() => {
     apply,
     get: (id) => componentById.get(id),
     has: (id) => componentById.has(id),
+    mainMeterId: () => mainMeterId,
     parentsOf: (id) => (network ? network.getConnectedNodes(id, "from") : []),
     childrenOf: (id) => (network ? network.getConnectedNodes(id, "to") : []),
     selectedIds: () => (network ? network.getSelectedNodes() : []),
@@ -1045,10 +1051,17 @@ const clipboard = (() => {
 })();
 
 function snapshotSelection(selectedIds) {
+  const mainId = topology.mainMeterId();
   const components = selectedIds
     .map((id) => topology.get(id))
     .filter(Boolean)
-    .map(({ id, category, subtype }) => ({ id, category, subtype }));
+    .map(({ id, category, subtype, hidden }) => ({
+      id,
+      category,
+      subtype,
+      hidden: !!hidden,
+      main: id === mainId,
+    }));
   if (!components.length) return null;
   const selected = new Set(selectedIds);
   const edges = topology
@@ -1087,7 +1100,19 @@ async function pasteClipboard() {
   }
   const snap = clipboard.get();
   const bindings = snap.components
-    .map((c) => `(m${c.id} (${makeFnFor(c)}))`)
+    .map((c) => {
+      const flags = [];
+      // make-meter's `:hidden t` and `:main t` only apply to meters,
+      // but other categories ignore unknown kwargs gracefully — emit
+      // when set so the snapshot round-trips. Sticky for cut+paste
+      // and cross-mg copy+paste; same-mg copy+paste of an existing
+      // `:main` meter will surface a "main meter already set" error
+      // from make-meter, which is the expected guard.
+      if (c.hidden) flags.push(":hidden t");
+      if (c.main) flags.push(":main t");
+      const args = flags.length ? ` ${flags.join(" ")}` : "";
+      return `(m${c.id} (${makeFnFor(c)}${args}))`;
+    })
     .join(" ");
   const reconnects = snap.edges
     .map(([from, to]) => `(world-connect (component-id m${from}) (component-id m${to}))`)
