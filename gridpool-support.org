@@ -1,0 +1,309 @@
+#+TITLE: Multi-microgrid support
+#+TODO: TODO IN-PROGRESS WAIT | DONE CANCELLED
+
+Forward-looking plan for switchyard standing in for an *enterprise*
+of multiple microgrids — same binary, multiple Worlds, multiple
+Microgrid gRPC servers (each on its own port), one shared UI +
+REPL + Scenarios + Assets server, one Lisp interpreter.
+
+* Decisions
+
+Captured from the spec call so the implementation can refer back:
+
+1. *Single process.* One binary owns the enterprise, hosts every
+   microgrid's Microgrid-API gRPC server on a distinct port, and
+   serves one UI on one port.
+2. *URL prefix* =/api/mg/{id}/...= for per-microgrid endpoints
+   (topology, eval, history, microgrid/{status,latest,formulas},
+   setpoints, overrides, persisted, snapshots). Enterprise
+   endpoints (=/api/scenarios=, =/api/clock=, =/api/logs=,
+   =/api/defaults=, =/api/microgrids=) stay at the root.
+3. *Globally unique component ids* across microgrids. Lisp
+   setters keep their existing ID-based surface; under the hood
+   each setter resolves an ID to its owning microgrid's World.
+4. *Scenarios fire =:on= per microgrid* — the engine iterates
+   the registry and funcalls the lambda once per microgrid with
+   an implicit current-microgrid binding so existing setter
+   defuns Just Work. Scenarios may opt into a subset via
+   =:microgrids '(name-a name-b)= (deferred enhancement).
+5. *Create-microgrid UI* takes a name; switchyard auto-allocates
+   the next free numeric id and the next free gRPC port
+   (=8800 + 10×index= as a default policy).
+6. *Assets server* moves to a fixed port (=9900=) — independent
+   of any microgrid's gRPC port.
+7. *REPL targets one microgrid at a time.* The UI's REPL sends
+   evals through =/api/mg/{id}/eval=; a small chip near the
+   REPL input shows the currently-active microgrid name.
+8. *Mode toggle* becomes =[Microgrids]= + =[Scenarios]=. Picking
+   a microgrid drops into a sub-view with =[Dashboard]= +
+   =[Topology]= tabs scoped to that microgrid.
+9. *Copy / paste across microgrids* — the existing clipboard
+   captures structure (categories + internal edges); paste lands
+   in whichever microgrid is currently active.
+
+Things still to decide (will ask when the implementation gets
+there):
+
+- Per-microgrid setpoints-event journal vs single global. Probably
+  per-microgrid since the journal anchors to World state.
+- TSO label semantics — informational chip on the microgrid card
+  in the UI, no behavioural effect for v1.
+
+* Phases
+
+** Phase A — Foundation: rename + microgrid registry
+
+*** TODO A1. Rename =make-grid= → =make-grid-connection-point=
+Hard rename in =sim/defaults.lisp=, =src/lisp/make.rs=, and the
+sample config + scenario library. The proto enum is
+=GridConnectionPoint=, so the new name aligns; the old name
+goes away with no alias because the user opted into a clean
+break.
+
+Acceptance:
+- =grep -nr "make-grid\b"= matches nothing.
+- =cargo test= green.
+
+*** TODO A2. Add =(make-microgrid …)= + global registry
+A new top-level form that wraps everything microgrid-specific:
+
+#+begin_src lisp
+(make-microgrid
+ :name "south yard"
+ :id 2200            ;; optional; auto-allocated if absent
+ :grpc-port 8800     ;; optional; auto-allocated
+ :tso "TN"           ;; optional informational label
+ :grid (make-grid-connection-point
+        :id 1
+        :rated-lower -90000.0
+        :rated-upper  100000.0
+        :successors (list …)))
+#+end_src
+
+Lisp-side:
+- =sim/scenarios.rs= gets a sibling =sim/microgrids.rs= module
+  with =MicrogridDef { id, name, grpc_port, tso }=,
+  =MicrogridEntry { def, world, scenarios? }=, and a
+  =SharedMicrogrids = Arc<Mutex<BTreeMap<u64, MicrogridEntry>>>=
+  registry on =Config=.
+- =Config= gains =current_microgrid: RwLock<Option<u64>>=. Every
+  setter defun that today reads from =Config::world= reads from
+  =registry[current_microgrid].world= instead. The current-mg
+  pointer is set by:
+  - =make-microgrid= during config eval (the form binds it for
+    the duration of evaluating its body's =:grid= argument).
+  - =/api/mg/{id}/eval= (UI REPL).
+  - The scenarios auto-advance task (one iteration per mg).
+- A *default microgrid* (=name "default"=, =id 2200=,
+  =grpc-port 8800=) is created on boot if no
+  =make-microgrid= form ran, so single-microgrid sample configs
+  keep working unchanged after A1.
+- =make-grid-connection-point= rejects calls outside a
+  =make-microgrid= context — the grid component has to belong
+  to *some* microgrid.
+
+Acceptance:
+- A config that calls =(make-microgrid …)= twice registers two
+  entries. =/api/microgrids= (added in C2) lists both.
+- A config with bare =(make-grid-connection-point …)= at top
+  level errors with "no current microgrid".
+
+*** TODO A3. Globally unique component ids
+The auto-id allocator becomes process-global (currently
+per-world). Two safeguards:
+- Configs that hard-code colliding ids across microgrids error
+  at registration.
+- =World::register= consults the registry to see if the id
+  exists anywhere; collision → registration fails.
+
+Acceptance:
+- A config that pins two batteries to id=1000 across separate
+  microgrids errors loudly.
+- Auto-id (=(make-meter)= with no =:id=) returns a fresh id
+  that doesn't collide with any registered microgrid.
+
+** Phase B — Multi-port gRPC + loopback
+
+*** TODO B1. One Microgrid gRPC server per microgrid
+=src/bin/switchyard.rs= grows a loop over the registry: each
+=MicrogridEntry= spawns its own =MicrogridServer= against its
+own =World= on the entry's =grpc_port=. The server task lives
+for the process; A4-future support for runtime-added microgrids
+spawns it on demand.
+
+Acceptance:
+- A two-microgrid config opens two TCP listeners; both serve
+  =MicrogridApi=.
+- =swctl --addr http://[::1]:8800 info= and =--addr 8810 info=
+  return distinct =ListComponents= results.
+
+*** TODO B2. Loopback Microgrid client per microgrid
+The =MicrogridState= slot today wraps a single
+=MicrogridClientHandle= + cache. It becomes
+=HashMap<u64, MicrogridState>=, one entry per microgrid. The
+loopback supervisor (=spawn_microgrid_loopback= in
+=src/ui/mod.rs=) iterates the registry on boot and on
+microgrid-add events; each entry's =subscribe_power_forwarders=
+publishes to that microgrid's own =latest= cache.
+
+Acceptance:
+- =/api/mg/{id}/microgrid/latest= returns that microgrid's
+  loopback aggregates.
+- A topology change in microgrid A doesn't disrupt microgrid B's
+  forwarders.
+
+*** TODO B3. Move PlatformAssets to port 9900
+Today the assets server piggybacks on the Microgrid gRPC port
+via =tonic= service multiplexing. Split it onto a dedicated
+listener on =[::1]:9900= (configurable via
+=(set-assets-socket-addr …)= in =config.lisp=).
+
+Acceptance:
+- =cargo run --bin swctl -- assets-info --addr [::1]:9900=
+  works.
+- =swctl info --addr [::1]:8800= no longer answers any
+  PlatformAssets RPC (404 / not-found).
+
+** Phase C — UI HTTP routing
+
+*** TODO C1. Migrate per-microgrid routes to =/api/mg/{id}/...=
+Endpoints to move (each handler takes
+=Path((id, …))= and looks up the microgrid entry):
+
+- =/api/mg/{id}/topology=
+- =/api/mg/{id}/eval=
+- =/api/mg/{id}/format=
+- =/api/mg/{id}/history=
+- =/api/mg/{id}/setpoints=
+- =/api/mg/{id}/microgrid/status=
+- =/api/mg/{id}/microgrid/latest=
+- =/api/mg/{id}/microgrid/formulas=
+- =/api/mg/{id}/overrides=
+- =/api/mg/{id}/persisted/{idx}=
+- =/api/mg/{id}/persisted/delete=
+- =/api/mg/{id}/snapshots=
+- =/api/mg/{id}/snapshots/save=
+- =/api/mg/{id}/snapshots/load=
+
+Stays at the root:
+
+- =/api/microgrids=, =/api/clock=, =/api/defaults=,
+  =/api/scenarios=, =/api/logs=, =/api/scenario= (journal — may
+  go per-microgrid later, deferred), =/api/scenario/{events,report}=,
+  =/ws/events=.
+
+Acceptance: every existing single-microgrid endpoint round-trips
+under the new prefix when called against the default microgrid.
+
+*** TODO C2. =/api/microgrids= list endpoint
+Snapshot of the registry: =Vec<MicrogridView { id, name,
+grpc_port, tso, component_count }>=. Drives the Microgrids
+mode landing page.
+
+*** TODO C3. =/api/microgrids/create= endpoint
+=POST /api/microgrids= body =\{ "name": "north yard" \}=. Server
+allocates the next free id (max+1) + the next free port
+(=8800 + 10 × index=), runs the equivalent of
+=(make-microgrid :name … :id … :grpc-port …)= in the
+interpreter, spawns the new gRPC server + loopback client,
+appends a =(make-microgrid …)= form to a *per-microgrid* root
+file under =microgrids/<id>.lisp=.
+
+Acceptance: =POST= returns the new microgrid's id + port;
+=/api/microgrids= immediately lists it; the new gRPC server
+accepts =swctl --addr [::1]:<port> info=.
+
+** Phase D — UI rework
+
+*** TODO D1. Mode toggle: Microgrids + Scenarios
+=Dashboard= + =Topology= drop off the top-level chrome; they
+become sub-tabs inside a microgrid's view. Keyboard chord:
+=1= Microgrids, =2= Scenarios.
+
+*** TODO D2. Microgrids list view
+Landing page when =Microgrids= mode is active and no microgrid
+is selected. Renders a card grid: =id · name · TSO chip · ⤳
+gRPC port · component count=. Card click → enters per-microgrid
+view. Plus a =[+ New microgrid]= card that opens the form.
+
+*** TODO D3. Per-microgrid Dashboard + Topology sub-tabs
+Selected microgrid → a header with breadcrumb
+=Microgrids / south yard= + a sub-toggle =Dashboard / Topology=.
+The existing dashboard tiles, tier rows, formula side panel, and
+canvas all keep working — they just point at
+=/api/mg/{id}/...= instead of =/api/...=.
+
+Selection persists in =localStorage= (mirrors
+=switchyard-mode=).
+
+*** TODO D4. Create-microgrid form
+The =[+ New microgrid]= card opens a small form: just a name
+input + Create button. POST to =/api/microgrids/create=;
+on success the UI jumps straight into the new microgrid's
+empty Topology view so the user can start adding components.
+
+*** TODO D5. Empty canvas state
+A microgrid with zero components shows a hint card on the
+Topology canvas: "Empty microgrid — add a grid connection
+point first via Ctrl+drag from the side panel, or paste a
+selection copied from another microgrid."
+
+*** TODO D6. Copy / paste components across microgrids
+The clipboard already captures structure (categories + internal
+edges); the paste path needs to route through the active
+microgrid's =/api/mg/{id}/eval= rather than the old
+=/api/eval=. Visible affordance: clicking Paste while on
+microgrid B after copying from microgrid A creates the same
+shape, with fresh auto-ids.
+
+*** TODO D7. REPL active-microgrid hint
+A small chip just left of the REPL input reading
+=→ south yard= (or =→ enterprise= when no microgrid is
+selected and the user is on Scenarios mode). Clicking it
+jumps to the microgrid's view.
+
+** Phase E — Scenarios + tooling
+
+*** TODO E1. Scenarios fire =:on= per microgrid
+=sim/scenarios.rs= =auto_advance_tick= and =start / jump / step=
+iterate the registry, set the current-microgrid pointer per
+iteration, funcall the lambda. Each iteration records a
+=stage-advance= journal event scoped to that microgrid.
+
+*** TODO E2. =(current-microgrid-id)= defun
+Scripts that want to dispatch on the current microgrid (e.g.
+"only run on south yard") can call =(current-microgrid-id)= or
+=(microgrid-name)=. Returns the id / name the engine bound for
+this iteration. Outside a scenario / REPL context returns =nil=.
+
+*** TODO E3. =swctl --microgrid= flag
+Every per-microgrid =swctl= subcommand (snapshot, pool,
+scenarios? — see open question above, dashboard --tail, eval
+plumbing) grows an optional =--microgrid <name>= /
+=--microgrid-id <id>= flag. Default: if exactly one microgrid
+exists, use it; otherwise error with a hint.
+
+*** TODO E4. Help dialog refresh
+Add a "Multi-microgrid" section: how to switch between
+microgrids, how the REPL chip works, how scenarios apply
+across the enterprise.
+
+** Phase F — Enterprise dashboard (deferred)
+
+*** WAIT F1. Cross-microgrid aggregate dashboard
+Top-level Microgrids mode could carry an enterprise dashboard
+above the per-microgrid card grid: sum of grid power across all
+microgrids, sum of battery pools, etc. Waits on the basic
+multi-microgrid stack being live so the aggregation has
+something to aggregate.
+
+* Implementation order
+
+Roughly in phase order, with the principle that each commit
+should leave the binary buildable + the single-microgrid case
+unbroken. Concretely the first wave (A1 → A2 → B1) gates
+everything else; C / D land incrementally on top.
+
+Estimated ~20-25 commits at the existing ~100-line / commit
+pacing. B1 + C1 + D3 are the lumpy ones; everything else is
+small / medium.
