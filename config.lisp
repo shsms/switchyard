@@ -145,6 +145,12 @@
                  :hidden t
                  :power (lambda () (consumer-curve (window-elapsed 900.0))))))))
 
+;; Load the starter scenarios library — seven multi-stage canned
+;; scenarios appear in the Scenarios mode dropdown on a fresh
+;; checkout. Edit scenarios/library/index.lisp to drop / add
+;; entries; each file is self-contained `(define-scenario …)`.
+(load "scenarios/library/index.lisp")
+
 ;; Apply UI-driven edits the user has clicked Persist on. The override
 ;; filename is parameterised by microgrid-id so multiple sims sharing
 ;; this directory each get their own. No-op when the file doesn't exist.

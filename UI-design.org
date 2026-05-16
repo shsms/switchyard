@@ -345,7 +345,7 @@ case lands.
 
 * Layout
 
-** TODO A1. Promote the topology to one of three top-level modes
+** DONE A1. Promote the topology to one of three top-level modes
 
 Today the canvas is "the UI". For long soak runs it's mostly
 noise — the developer cares what the components are *doing*,
@@ -444,7 +444,7 @@ Acceptance:
 
 * Scenarios
 
-** TODO B1. First-class scenario registry (server + lisp DSL)
+** DONE B1. First-class scenario registry (server + lisp DSL)
 
 Today a scenario is a =(load …)=-d script with timer chains.
 Replace with a registered entity per tradingsim's
@@ -474,7 +474,7 @@ Acceptance:
 - A running scenario's stage auto-advances by wallclock unless
   =manual_override= is set (operator clicked Prev/Next).
 
-** TODO B2. Scenarios mode (UI panel)
+** DONE B2. Scenarios mode (UI panel)
 
 Mirrors =renderScenarioActive= in tradingsim's app.js:
 - Day-long horizontal timeline strip (00:00 → 24:00), one
@@ -491,7 +491,7 @@ Acceptance:
 - prev / next / jump POST to /api/scenarios/.../jump/N and
   reflect within the next poll tick.
 
-** TODO B3. HTTP API parity with tradingsim's scenarios
+** DONE B3. HTTP API parity with tradingsim's scenarios
 
 Endpoints:
   GET    /api/scenarios                         registry list
@@ -753,7 +753,7 @@ reconnect within 30 s without manual refresh.
 
 * CLI parity
 
-** TODO J1. tsctl-style scenarios commands (see B3)
+** DONE J1. tsctl-style scenarios commands (see B3)
 ** TODO J2. tsctl-style faults commands (see E2)
 ** DONE J3. swctl snapshot save/load (see G1)
 ** DONE J4. swctl dashboard --tail
