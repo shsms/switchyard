@@ -53,6 +53,31 @@ there):
 
 ** Phase A — Foundation: rename + microgrid registry
 
+*** TODO A0. Rename =sim::World= → =sim::MicrogridSite=
+Today =World= is the sim-side equivalent of one microgrid — a
+component registry + scheduler + history rings + scenario
+journal. With multiple microgrids living in one process the
+name reads wrong (each microgrid isn't its own *world*; the
+enterprise is the world). =Microgrid= alone shadows
+=frequenz_microgrid::Microgrid= (the upstream client-side
+aggregator we already use for the loopback); =MicrogridSite=
+keeps the physical-installation framing without the collision.
+
+Hard rename: =src/sim/world.rs= → =src/sim/microgrid_site.rs=,
+=struct World= → =struct MicrogridSite=, every type / field /
+function / test name with =world= in it shifts to =site= (or
+=microgrid_site= where the longer form is clearer). Public
+=World= re-export from =src/sim/mod.rs= disappears. Imports
+elsewhere update via search-and-replace; the test for
+collisions is =grep -nri 'world' src/= turning up only
+genuine outer-context uses (e.g. the timing-curve "window
+elapsed" helper, not the sim type).
+
+Acceptance:
+- =cargo test= green.
+- =grep -nri 'World' src/sim/ src/lisp/ src/ui/= matches no
+  remaining sim-type references.
+
 *** TODO A1. Rename =make-grid= → =make-grid-connection-point=
 Hard rename in =sim/defaults.lisp=, =src/lisp/make.rs=, and the
 sample config + scenario library. The proto enum is
