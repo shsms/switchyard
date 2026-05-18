@@ -7,12 +7,17 @@ script is Lisp via [`tulisp`](https://github.com/shsms/tulisp).
 
 The simulator exposes three surfaces:
 
-- **gRPC** (`[::1]:8800`) — Frequenz `Microgrid` v1alpha18 API.
+- **gRPC** — Frequenz `Microgrid` v1alpha18 API. One binary can
+  serve many microgrids; the first defaults to `[::1]:8800` and
+  subsequent ones step by ten (`:8810`, `:8820`, …), or pin an
+  explicit port with `:grpc-port` on `(make-microgrid …)`.
   Downstream apps written against the production API talk to
   switchyard the same way they'd talk to a real microgrid.
-- **Web UI** (`http://127.0.0.1:8801`) — interactive topology +
-  per-component charts + scenario dashboard. Embedded into the
-  binary via `rust-embed`; no build step.
+- **Web UI** (`http://127.0.0.1:8801`) — multi-microgrid SPA
+  with a topology canvas (per-mg undo / redo of edits), a
+  per-component chart dashboard, and a scenario panel. Raw
+  JS / HTML / CSS embedded into the binary via `rust-embed`;
+  no build step.
 - **swctl** — clap-based client that drives both surfaces from the
   shell.
 
@@ -59,14 +64,28 @@ scenario report`.
 swctl info
 swctl tree
 swctl list --category battery
+swctl connections --from 4                                  # filter graph edges
 swctl stream 1001 --samples 5
-swctl set-power 1001 -- -5000 --lifetime 30   # negative = discharge
-swctl scenario report
+swctl set-power 1001 -- -5000 --lifetime 30                 # negative = discharge
+swctl augment-bounds 1001 --lower -1000 --upper 5000        # TTL-limited bounds
+swctl pool battery                                          # loopback BatteryPool snapshot
+swctl scenario report                                       # ad-hoc journal verbs
+swctl scenarios start sunny                                 # registered multi-stage
+swctl snapshot save before-test                             # persist overrides
+swctl dashboard --tail                                      # one-line/sec pulse bar
 ```
 
-`--addr` (default `http://[::1]:8800`) points the gRPC client;
-`--ui-addr` (default `http://127.0.0.1:8801`) points the scenario
-HTTP commands. `--json` swaps any human table for the raw JSON.
+`--addr` (default `http://[::1]:8800`) points the gRPC client
+at the first microgrid; for additional microgrids pass
+`--addr http://[::1]:8810` etc. `--ui-addr` (default
+`http://127.0.0.1:8801`) points the HTTP-driven verbs
+(`scenario*`, `snapshot`, `dashboard`). `--json` swaps any
+human table for the raw JSON.
+
+The singular `scenario` subcommand drives an ad-hoc session
+(start / stop / event / load / report / events / list); the
+plural `scenarios` controls registered multi-stage scenarios
+from `(define-scenario …)`.
 
 ## Configuration knobs
 
@@ -81,15 +100,17 @@ HTTP commands. `--json` swaps any human table for the raw JSON.
 
 ## Architecture in one paragraph
 
-`World` owns the component registry, the physics tick loop, the
-telemetry-history rings, and the scenario journal. Lisp's only jobs
-are wiring the topology (`(make-grid)`, `(make-meter)`, …) and
-animating the environment (`(every …)`, `(run-with-timer …)`,
-`(set-meter-power)`, etc.) — every component's tick / ramp / SoC
-derate stays in Rust. Inverter and battery share only an electrical
-coupling: the battery's BMS clamps DC ingress, the inverter
-publishes the measured aggregate, and a server-side gateway
-intersects bounds for setpoint validation.
+A `MicrogridSite` owns one microgrid's component registry, physics
+tick loop, telemetry-history rings, and scenario journal; an
+enterprise `microgrids` registry keys those sites by id so one
+binary can serve many at once. Lisp's only jobs are wiring topology
+(`(make-grid)`, `(make-meter)`, … inside the `:topology` lambda of
+`(make-microgrid …)`) and animating the environment (`(every …)`,
+`(run-with-timer …)`, `(set-meter-power)`, etc.) — every component's
+tick / ramp / SoC derate stays in Rust. Inverter and battery share
+only an electrical coupling: the battery's BMS clamps DC ingress,
+the inverter publishes the measured aggregate, and a server-side
+gateway intersects bounds for setpoint validation.
 
 ## More
 

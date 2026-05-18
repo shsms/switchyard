@@ -61,8 +61,13 @@ cargo run --bin swctl -- stream 1001 --samples 5
 cargo run --bin swctl -- set-power 1001 5000
 ```
 
-The server binds `[::1]:8800` by default (override via `(set-socket-addr …)`
-in config.lisp). swctl points there by default; override with `--addr`.
+Each registered microgrid binds its own gRPC port; the first
+defaults to `[::1]:8800` and subsequent microgrids step by ten
+(`:8810`, `:8820`, …). Override via `:grpc-port` on
+`(make-microgrid …)`. swctl's `--addr` points the gRPC client at
+the first microgrid by default; pass `--addr http://[::1]:8810`
+etc. to reach others. The UI server binds `127.0.0.1:8801`
+(hardcoded for now — `--ui-bind` / `--ui-port` is on the roadmap).
 
 ## Dependencies
 
@@ -134,13 +139,19 @@ config.lisp does.
   lexical captures (`let*`-bound state, the surrounding closure
   environment) are preserved across firings. defuns/defvars/global
   setq results are visible as you'd expect.
-- **`(every …)` callbacks fire on the physics-tick cadence.** The
-  `Config` pre-tick hook drains tulisp-async's pending-firings
-  mailbox once per `tick_once`. With `physics_tick_ms = 100`, a
-  `(run-with-timer 0.05 …)` waits up to 100 ms before firing; a
-  zero-delay one fires on the next tick, not immediately after the
-  eval. Tests that need a fire without spinning the physics loop
-  can call `site.tick_once(…)` directly.
+- **`(every …)` callbacks fire on `Config`'s dedicated refresh
+  loop, not on the physics tick.** `Config::spawn_lisp_refresh_loop`
+  ticks on its own 100 ms grid, takes the interpreter lock once
+  per pass, refreshes every microgrid's dynamic-scalar inputs,
+  then drains the tulisp-async pending-firings mailbox. So a
+  `(run-with-timer 0.05 …)` waits up to 100 ms before firing,
+  and a zero-delay one fires on the next refresh pass. Tests
+  that need a fire without spinning the loop call
+  `cfg.refresh_once()` (synchronous wrapper for the same work).
+  Physics ticks themselves are pure Rust now — they read the
+  atomic scalars the refresh loop has cached and never touch the
+  interpreter, so a long `/api/eval` no longer freezes the
+  microgrid's beat.
 
 ## Adding a runtime knob
 
