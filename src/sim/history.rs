@@ -139,7 +139,9 @@ impl History {
     }
 
     pub fn push(&mut self, ts: DateTime<Utc>, value: f32) {
-        if self.ring.len() == self.capacity {
+        // `>=` not `==`: a capacity of 0 would never satisfy `== 0` after
+        // the first push, growing the ring without bound.
+        if self.ring.len() >= self.capacity {
             self.ring.pop_front();
         }
         self.ring.push_back(Sample { ts, value });
