@@ -92,6 +92,12 @@ impl CsvLoadProfile {
                     path.display()
                 ))
             })?;
+            if !t.is_finite() {
+                return Err(Error::invalid_argument(format!(
+                    "csv-load {}:{row}: time '{t}' is not finite",
+                    path.display()
+                )));
+            }
             times.push(t);
             for (i, _) in value_headers.iter().enumerate() {
                 let cell = cells.next().ok_or_else(|| {
@@ -108,6 +114,13 @@ impl CsvLoadProfile {
                         value_headers[i]
                     ))
                 })?;
+                if !v.is_finite() {
+                    return Err(Error::invalid_argument(format!(
+                        "csv-load {}:{row} ({}): '{cell}' is not finite",
+                        path.display(),
+                        value_headers[i]
+                    )));
+                }
                 columns[i].push(v);
             }
         }
