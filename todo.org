@@ -422,3 +422,140 @@ the battery's accumulator (=Vec<(parent_id, p, q)>=), distribute
 the clamp ratio across sources, and let each inverter read its own
 =accepted_from(self.id)= to compute fair-share measured. Minor
 trade-off in trait surface.
+
+* Code review — 2026-06-01
+
+Whole-codebase review (8-agent subsystem fan-out + clippy/fmt; clippy
+came back clean). The straightforward issues were fixed in the same pass
+(git =b9673b2..f615211=); the items below were left out because each
+needs a design call or a non-local change. All High/Medium verified
+against the code.
+
+** High
+
+*** TODO Shared id-allocator rewound by a single-site reset
+
+=MicrogridSite::reset()= (=src/sim/microgrid_site.rs=) stores
+=FIRST_AUTO_ID= into the *shared* enterprise =next_id= allocator. The
+=(reset-microgrid)= defun resets one site, so in a multi-microgrid
+enterprise it rewinds the global counter while other sites still hold
+live components at 1000+ — the next auto-allocated id then collides,
+breaking the global-uniqueness invariant the shared allocator exists for.
+
+Fix: drop the =next_id.store= from =reset()=; =Config::reload= already
+resets the allocator explicitly. Caveat: this changes id determinism for
+the single-mg =reset-state= flow (ids no longer restart at 1000 after a
+per-site reset) — confirm that's acceptable before applying.
+
+*** TODO Cross-microgrid eval corruption under concurrent per-mg eval
+
+=with_microgrid= (=src/sim/microgrids.rs=) sets the shared
+=current_microgrid= pointer *before* =eval= takes the interpreter lock,
+and =eval= re-reads =current= for both =overrides_path()= and
+=router.site()=. Two concurrent =/api/mg/{A}/eval= + =/api/mg/{B}/eval=
+(e.g. two browser tabs) cross: A's mutations and appended overrides land
+on B. =with_microgrid= also fails to restore the pointer if =f()= panics.
+
+Fix: make scope-set + eval atomic under one lock, or thread an explicit
+=mg_id= through =eval= / =overrides_path= / =router.site= instead of
+ambient global scope; convert =with_microgrid= to an RAII guard so the
+pointer is restored on unwind.
+
+*** TODO Active and reactive setpoints share one timeout + reset
+
+=do_set_power= (=src/server.rs=) calls =add_timeout(id, …)= for both
+active and reactive setpoints, and =TimeoutTracker= is keyed by id only.
+=reset_setpoint= (the inverters) resets the active ramp *and* the
+reactive controller together. So a reactive setpoint's expiry snaps
+active power to idle, and setting either kind replaces the other's
+pending deadline — but they're independent commands in the proto.
+
+Fix: key the tracker by =(id, SetpointKind)= (the enum already exists in
+=server.rs=) and make =reset_setpoint= take the kind so only the expired
+surface resets.
+
+** Medium
+
+*** TODO Unbounded recursion on a topology cycle
+
+Power aggregation (=children_of= in =src/sim/microgrid_site.rs=, via
+=Meter::aggregate_active= and the inverters) has no visited-set or depth
+cap, and =connect= / =disconnect= aren't gated by the =ComponentGraph=
+validator. A user-introduced cycle (=(connect a b)= + =(connect b a)=)
+makes =telemetry()= / =tick= recurse to a stack overflow that aborts the
+site.
+
+Fix: thread a visited-set / depth limit through the aggregation walk, or
+reject cycle-creating edges in =connect=.
+
+*** TODO CommandDelay doesn't re-clamp an armed setpoint
+
+=BatteryInverter::tick= (and =SolarInverter::tick=) clamp the pending
+target to the envelope only on the tick a command is freshly armed; a
+later-arriving tighter augmentation / SoC-derate never pulls the armed
+target back in, so the ramp drives toward an out-of-envelope value. The
+EV charger already handles this.
+
+Fix: in the =delay.poll == None= branch re-clamp =ramp.target()= to the
+current =effective()= envelope and =set_target= if it changed, mirroring
+=ev_charger=.
+
+*** TODO persisted_overrides does file I/O under the interpreter lock
+
+=persisted_overrides= / =persisted_count= (=src/lisp/mod.rs=) hold the
+=ctx= write lock across =parse_file= (blocking I/O), reachable from sync
+HTTP handlers. That's the lock the 100 ms refresh loop and every eval
+contend on, so a slow / large overrides file stalls physics-input
+updates for every microgrid.
+
+Fix: parse the overrides file with a throwaway =TulispContext=, or read
+the bytes first and hold the lock only for the in-memory parse.
+
+*** TODO Lisp active-timers list grows unbounded across a long run
+
+=random-outage= (=sim/scenarios.lisp=) conses a fresh one-shot timer
+handle onto =active-timers= each cycle and never prunes fired ones; only
+=reset-state= (reload) clears it. A multi-day scenario accumulates
+thousands of dead handles — the same slow-accumulation shape as the
+edge-app incident.
+
+Fix: prune fired one-shots when re-scheduling (filter on live status), or
+reuse a single tracked handle slot per outage chain.
+
+*** TODO Snapshot save/load ignore the per-request microgrid scope
+
+=snapshots_save= / =snapshots_load= (=src/ui/mod.rs=) resolve the target
+via the ambient =current_microgrid= (set by the last per-mg eval) rather
+than a caller-specified id, so they can snapshot / restore the wrong
+microgrid. Same root cause as the concurrent-eval finding above.
+
+Fix: add explicit microgrid-scoped snapshot routes and apply the same
+atomic-scope fix.
+
+** Low
+
+Localized hardening / contract items from the same review:
+
+- AugmentBounds accepts inverted bounds (=lower > upper=); the empty
+  effective envelope turns =clamp= into an identity, disabling setpoint
+  enforcement for the augmentation's lifetime
+  (=augment_electrical_component_bounds= in =src/server.rs= /
+  =sim/bounds.rs=). Reject with =InvalidArgument=.
+- =telemetry_to_proto= (=src/proto_conv.rs=) emits a state snapshot even
+  when =states= is empty; only push the snapshot when non-empty.
+- No request-body size limit on =/api/eval=, =/api/format=, overrides-text
+  (=src/ui/mod.rs=) — add a =DefaultBodyLimit= (matters once the UI is
+  bound non-loopback via =--ui-bind=).
+- =/api/eval= returns =ok:true= even when persisting the override to disk
+  failed (=src/lisp/mod.rs= append path) — surface a persist-failure flag.
+- Scenario =start= / =jump= (=src/sim/scenarios.rs=) leave the enterprise
+  half-started if a per-mg lambda errors mid-loop; match =auto_advance='s
+  log-and-continue instead.
+- =spawn_physics= (=src/sim/microgrid_site.rs=) rebuilds the interval on a
+  cadence change, firing one immediate extra tick.
+- Per-WS-connection forwarder tasks (=src/ui/mod.rs=) only exit on the
+  next site event; abort the handles on socket close so connections to
+  idle microgrids don't park.
+- =swctl= dashboard / pool =--tail= (=src/bin/swctl.rs=) aborts the whole
+  loop on a single transient HTTP error; warn and continue to the next
+  tick instead.
