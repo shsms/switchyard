@@ -124,6 +124,12 @@ impl Ramp {
     }
 
     pub fn snap_to(&self, value: f32) {
+        // Same hazard as `set_target`: a NaN here poisons `actual`
+        // permanently, since every later slew step propagates it.
+        if value.is_nan() {
+            log::warn!("Ramp::snap_to ignored NaN");
+            return;
+        }
         let mut s = self.state.lock();
         s.target = value;
         s.actual = value;
