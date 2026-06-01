@@ -16,7 +16,7 @@
 ;;   id 2    main meter (flagged :main t for peak tracking)
 ;;   id 100  hidden consumer meter (driven by consumer-curve)
 ;;   id 200  solar inverter
-;;   id 1003 / 1006 batteries (auto-allocated; verify with `swctl tree`)
+;;   id 1000 battery, 1001 battery-inverter (auto-allocated; verify with `swctl tree`)
 
 ;; Random helpers — random-pick / random-uniform / random-outage.
 (load "sim/scenarios.lisp")
@@ -66,7 +66,7 @@
 ;; Replace the id list with your actual battery ids — `swctl tree`
 ;; or the topology JSON (/api/topology) is the easiest way to look
 ;; them up.
-(random-outage '(1003)
+(random-outage '(1000)
                :min-every 300.0
                :max-every 600.0
                :min-duration 60.0
