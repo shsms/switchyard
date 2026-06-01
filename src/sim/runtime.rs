@@ -64,6 +64,14 @@ pub enum CommandMode {
     /// Reply immediately with `Unavailable`. Models a device whose
     /// control channel is down.
     Error,
+    /// Reject non-zero active-power setpoints with gRPC
+    /// `INVALID_ARGUMENT`, even though the advertised bounds said the
+    /// setpoint was within range. Models a device that advertises one
+    /// set of bounds but then rejects a command of that size against a
+    /// tighter internal limit. Faulting is intermittent and rotates
+    /// per component (see `over_bound_faulty_now`). Zero-power
+    /// (fail-safe) setpoints are still accepted.
+    OverBound,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -106,6 +114,7 @@ impl FromStr for CommandMode {
             "normal" => Ok(Self::Normal),
             "timeout" => Ok(Self::Timeout),
             "error" => Ok(Self::Error),
+            "over-bound" => Ok(Self::OverBound),
             _ => Err(()),
         }
     }
@@ -153,6 +162,7 @@ impl fmt::Display for CommandMode {
             Self::Normal => "normal",
             Self::Timeout => "timeout",
             Self::Error => "error",
+            Self::OverBound => "over-bound",
         })
     }
 }

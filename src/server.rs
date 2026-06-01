@@ -89,6 +89,25 @@ impl MicrogridServer {
         }
     }
 
+    /// Whether a component is *currently* inside its over-bound fault window.
+    /// Each component faults for a single second roughly once a minute, with
+    /// its fault-second spread across the cycle by a hash of its id so the
+    /// faults don't bunch into the same handful of seconds. So at any instant
+    /// at most a small, slowly-rotating subset of components is rejecting
+    /// set-power — a few flaky devices flapping in and out of the blocked set,
+    /// rather than a different one rejecting every single second.
+    fn over_bound_faulty_now(component_id: u64) -> bool {
+        let secs = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        // ~once a minute, for one second, per component.
+        const CYCLE: u64 = 60;
+        const FAULT_WINDOW: u64 = 1;
+        let phase = component_id.wrapping_mul(0x9E37_79B9_7F4A_7C15) % CYCLE;
+        secs.wrapping_add(phase) % CYCLE < FAULT_WINDOW
+    }
+
     /// The body of `set_electrical_component_power` minus the
     /// power-type validation up front. Split out so the wrapper can
     /// log the outcome of every code path (early-return rejection or
@@ -125,7 +144,26 @@ impl MicrogridServer {
                     req.electrical_component_id
                 )));
             }
-            CommandMode::Normal => {}
+            CommandMode::OverBound
+                if matches!(power_type, PowerType::Active)
+                    && req.power != 0.0
+                    && Self::over_bound_faulty_now(req.electrical_component_id) =>
+            {
+                // Advertised bounds said this setpoint was fine, but the
+                // gateway rejects it against a tighter internal limit just
+                // below the request, returning INVALID_ARGUMENT. Faulting
+                // is intermittent and rotating per component (see
+                // `over_bound_faulty_now`), so the set of currently
+                // rejecting components churns over time — a few flaky
+                // devices flapping in and out of the blocked set.
+                let allowed = (req.power.abs() * 0.97).round();
+                let direction = if req.power >= 0.0 { "charge" } else { "discharge" };
+                return Err(tonic::Status::invalid_argument(format!(
+                    "Requested {direction} power {} W exceeds the maximum allowed {allowed} W",
+                    req.power.abs().round()
+                )));
+            }
+            CommandMode::OverBound | CommandMode::Normal => {}
         }
         if runtime.health != Health::Ok {
             return Err(tonic::Status::failed_precondition(format!(

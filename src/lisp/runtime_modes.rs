@@ -76,7 +76,7 @@ impl_lisp_symbol_enum!(
 );
 impl_lisp_symbol_enum!(
     CommandMode,
-    expected = "normal / timeout / error",
+    expected = "normal / timeout / error / over-bound",
     label = "command-mode"
 );
 
