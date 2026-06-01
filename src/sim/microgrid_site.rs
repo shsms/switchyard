@@ -824,6 +824,17 @@ impl MicrogridSite {
             .retain(|(p, c)| *p != id && *c != id);
         self.inner.histories.write().remove(&id);
         self.inner.runtime.write().remove(&id);
+        self.inner.setpoint_logs.write().remove(&id);
+        self.inner.name_overrides.write().remove(&id);
+        // If the removed component was the flagged main meter, free the
+        // slot so a different meter can claim `:main` afterwards and the
+        // scenario report stops tracking a component that's gone.
+        {
+            let mut main = self.inner.main_meter_id.write();
+            if *main == Some(id) {
+                *main = None;
+            }
+        }
         was_present
     }
 
