@@ -71,7 +71,7 @@ macro_rules! impl_lisp_symbol_enum {
 impl_lisp_symbol_enum!(Health, expected = "ok / error / standby", label = "health");
 impl_lisp_symbol_enum!(
     TelemetryMode,
-    expected = "normal / silent / closed / error-empty",
+    expected = "normal / silent / closed / error-empty / not-found",
     label = "telemetry-mode"
 );
 impl_lisp_symbol_enum!(

@@ -43,6 +43,13 @@ pub enum TelemetryMode {
     /// and no parseable metrics, so downstream consumers receive no
     /// data.
     ErrorEmpty,
+    /// The component exists in the graph (so clients discover and
+    /// subscribe to it), but every telemetry-stream request is
+    /// rejected with gRPC `NOT_FOUND`. Models a phantom component:
+    /// present enough to be discovered and subscribed to, but with no
+    /// data channel behind it, so a streaming client keeps retrying
+    /// the subscription indefinitely.
+    NotFound,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -86,6 +93,7 @@ impl FromStr for TelemetryMode {
             "silent" => Ok(Self::Silent),
             "closed" => Ok(Self::Closed),
             "error-empty" => Ok(Self::ErrorEmpty),
+            "not-found" => Ok(Self::NotFound),
             _ => Err(()),
         }
     }
@@ -134,6 +142,7 @@ impl fmt::Display for TelemetryMode {
             Self::Silent => "silent",
             Self::Closed => "closed",
             Self::ErrorEmpty => "error-empty",
+            Self::NotFound => "not-found",
         })
     }
 }

@@ -342,6 +342,18 @@ impl microgrid_server::Microgrid for MicrogridServer {
         let component = site
             .get(id)
             .ok_or_else(|| tonic::Status::not_found(format!("component {id} not found")))?;
+
+        // A component whose data channel is absent: it exists in the
+        // graph (so clients discover and subscribe to it) but the
+        // telemetry pipeline has no channel behind it, so every stream
+        // request is rejected with NOT_FOUND and a streaming client
+        // retries the subscription indefinitely.
+        if site.runtime_of(id).telemetry == TelemetryMode::NotFound {
+            return Err(tonic::Status::not_found(
+                r#"{ "kind": "NotFound", "message": "No data channel found for component", "source": "" }"#,
+            ));
+        }
+
         let interval = component.stream_interval();
         let jitter_pct = component.stream_jitter_pct().clamp(0.0, 100.0);
 
@@ -393,6 +405,18 @@ impl microgrid_server::Microgrid for MicrogridServer {
                             log::debug!("stream({id}): client disconnected");
                             break;
                         }
+                    }
+                    TelemetryMode::NotFound => {
+                        // Flipped to NotFound after the stream opened:
+                        // terminate it with NOT_FOUND so the client
+                        // reconnects and then hits the open-time
+                        // rejection above, entering the retry loop.
+                        let _ = tx
+                            .send(Err(tonic::Status::not_found(
+                                r#"{ "kind": "NotFound", "message": "No data channel found for component", "source": "" }"#,
+                            )))
+                            .await;
+                        break;
                     }
                     TelemetryMode::Normal => {
                         let mut snapshot = component.telemetry(&site);
