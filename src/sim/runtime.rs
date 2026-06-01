@@ -37,6 +37,12 @@ pub enum TelemetryMode {
     /// EOF; new connections terminate immediately. Models an
     /// unreachable device.
     Closed,
+    /// Emit samples at the stream interval but with empty
+    /// `metric_samples` and a single `ERROR` state snapshot. Models a
+    /// device whose stream is alive but carries only an error state
+    /// and no parseable metrics, so downstream consumers receive no
+    /// data.
+    ErrorEmpty,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -79,6 +85,7 @@ impl FromStr for TelemetryMode {
             "normal" => Ok(Self::Normal),
             "silent" => Ok(Self::Silent),
             "closed" => Ok(Self::Closed),
+            "error-empty" => Ok(Self::ErrorEmpty),
             _ => Err(()),
         }
     }
@@ -126,6 +133,7 @@ impl fmt::Display for TelemetryMode {
             Self::Normal => "normal",
             Self::Silent => "silent",
             Self::Closed => "closed",
+            Self::ErrorEmpty => "error-empty",
         })
     }
 }

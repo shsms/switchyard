@@ -385,6 +385,15 @@ impl microgrid_server::Microgrid for MicrogridServer {
                         // we cooperate with the client and re-check
                         // the mode at the next interval.
                     }
+                    TelemetryMode::ErrorEmpty => {
+                        // Send a sample with no metrics and just an
+                        // ERROR state code.
+                        let msg = crate::proto_conv::error_empty_to_proto(id);
+                        if tx.send(Ok(msg)).await.is_err() {
+                            log::debug!("stream({id}): client disconnected");
+                            break;
+                        }
+                    }
                     TelemetryMode::Normal => {
                         let mut snapshot = component.telemetry(&site);
                         // Health override: a degraded device reports

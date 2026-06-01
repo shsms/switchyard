@@ -281,6 +281,26 @@ pub fn telemetry_to_proto(
     }
 }
 
+/// Build a telemetry response with no metric samples and just an
+/// ERROR state code. Used by `TelemetryMode::ErrorEmpty` to model a
+/// device that streams only an error state with zero metrics.
+pub fn error_empty_to_proto(
+    component_id: u64,
+) -> ReceiveElectricalComponentTelemetryStreamResponse {
+    let now = Some(Timestamp::from(std::time::SystemTime::now()));
+    ReceiveElectricalComponentTelemetryStreamResponse {
+        telemetry: Some(ElectricalComponentTelemetry {
+            electrical_component_id: component_id,
+            metric_samples: Vec::new(),
+            state_snapshots: vec![ElectricalComponentStateSnapshot {
+                origin_time: now,
+                states: vec![ElectricalComponentStateCode::Error as i32],
+                ..Default::default()
+            }],
+        }),
+    }
+}
+
 fn simple_sample(now: Option<Timestamp>, metric: Metric, value: f32) -> MetricSample {
     MetricSample {
         sample_time: now,
