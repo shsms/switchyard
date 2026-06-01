@@ -1,4 +1,4 @@
 /target
-config.ui-overrides.*.lisp
+config.*.overrides.lisp
 /.claude/
 /TAGS
