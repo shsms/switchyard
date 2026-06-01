@@ -140,7 +140,7 @@ enum Cmd {
         /// New upper bound (W).
         #[arg(long, allow_hyphen_values = true)]
         upper: f32,
-        /// Request lifetime in seconds (5..=900).
+        /// Request lifetime in seconds (10..=900).
         #[arg(long, default_value_t = 60)]
         lifetime: u64,
     },

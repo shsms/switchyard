@@ -31,8 +31,8 @@
 ;; property of the AC grid, not the microgrid). Defaults below pick
 ;; a healthy synchronous-grid shape: ~47 mHz equilibrium std dev
 ;; (σ / sqrt(2k) with σ = 0.015 Hz/√s and k = 0.05 /s), ~20-second
-;; correlation time. Scenarios pin a specific value via
-;; `(set-frequency-override F)` / `(clear-frequency-override)`.
+;; correlation time. Scenarios pull toward a specific value via
+;; `(override-frequency-model :nominal F)` / `(clear-frequency-override)`.
 (set-frequency-model
  :nominal       50.0
  :mean-rev-rate  0.05
@@ -50,7 +50,7 @@
 ;; few hundred mV either side of nominal. Grid frequency lives on
 ;; its own Ornstein-Uhlenbeck driver (one for the whole enterprise,
 ;; one per AC grid by physics) — see `(set-frequency-model …)` and
-;; `(set-frequency-override …)` below if you want to tune its
+;; `(override-frequency-model …)` below if you want to tune its
 ;; defaults or script an event.
 (every
  :milliseconds 200

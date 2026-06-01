@@ -114,9 +114,9 @@ AsPlist! {
         health<":health">: Option<Health> {= None},
         telemetry_mode<":telemetry-mode">: Option<TelemetryMode> {= None},
         command_mode<":command-mode">: Option<CommandMode> {= None},
-        /// PF-style Q cap: |Q| ≤ k × |P|. Pass nil to disable.
+        /// PF-style Q cap: |Q| ≤ k × |P|. Pass 0 to disable (nil inherits the default).
         reactive_pf_limit<":reactive-pf-limit">: Option<f64> {= None},
-        /// kVA-style Q cap: P² + Q² ≤ apparent². Pass nil to disable.
+        /// kVA-style Q cap: P² + Q² ≤ apparent². Pass 0 to disable (nil inherits the default).
         reactive_apparent_va<":reactive-apparent-va">: Option<f64> {= None},
         /// Inverter-internal latency before a Q setpoint starts
         /// being tracked. Defaults to 100 ms.

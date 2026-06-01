@@ -20,8 +20,10 @@
 //!
 //! Scenarios that need a specific frequency event (UFLS dip,
 //! generator-trip overshoot + recovery, etc.) call
-//! `set_override` to pin the value; the driver respects the
-//! flag and stops integrating until `clear_override` releases.
+//! `(override-frequency-model …)` to swap in different OU parameters
+//! (e.g. pull toward a lower nominal); the driver keeps integrating
+//! with those until `(clear-frequency-override)` restores the base
+//! model.
 
 use std::sync::Arc;
 use std::time::Duration;
