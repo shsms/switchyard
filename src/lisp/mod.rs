@@ -1933,7 +1933,10 @@ fn add_log_functions(ctx: &mut TulispContext) {
         .defun("cos", |n: f64| n.cos())
         .defun("random", |limit: Option<i64>| {
             if let Some(limit) = limit {
-                rand::thread_rng().gen_range(0..limit)
+                // `gen_range(0..n)` panics on an empty/inverted range, so a
+                // non-positive limit (e.g. `(random (length '()))`) would
+                // abort the eval; clamp so `(random n<=0)` yields 0.
+                rand::thread_rng().gen_range(0..limit.max(1))
             } else {
                 rand::thread_rng().r#gen()
             }
