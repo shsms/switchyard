@@ -421,7 +421,19 @@ impl microgrid_server::Microgrid for MicrogridServer {
             // and the stream slowly drifts out beyond `interval` per
             // step. Pattern lifted from microsim's server loop.
             let mut next_due = SystemTime::now();
+            // Capture the cancel epoch at task start. Each iteration
+            // compares; a mismatch means `cancel_all_streams()` was
+            // called, so we send the client a gRPC `CANCELLED` status
+            // and exit — a server-initiated graceful stream cancel.
+            let start_epoch = site.stream_cancel_epoch();
             loop {
+                if site.stream_cancel_epoch() != start_epoch {
+                    log::debug!("stream({id}): cancelled by epoch bump");
+                    let _ = tx
+                        .send(Err(tonic::Status::cancelled("Channel is closed")))
+                        .await;
+                    break;
+                }
                 // Re-read the telemetry mode each iteration so a
                 // mid-stream `(set-component-telemetry-mode)` flip
                 // takes effect on the next sample boundary.

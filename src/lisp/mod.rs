@@ -1865,7 +1865,7 @@ fn register_runtime_modes(ctx: &mut TulispContext, router: SharedSiteRouter) {
         },
     );
 
-    let r = router;
+    let r = router.clone();
     ctx.defun(
         "set-component-command-mode",
         move |id: i64, m: CommandMode| -> bool {
@@ -1874,6 +1874,16 @@ fn register_runtime_modes(ctx: &mut TulispContext, router: SharedSiteRouter) {
             true
         },
     );
+
+    let r = router;
+    ctx.defun("cancel-all-streams", move || -> bool {
+        // Server-side graceful cancel of every active stream. Each
+        // streaming task sees the epoch bump on its next iteration and
+        // exits, sending the client an EOF/CANCELLED. Clients reconnect
+        // and resume on fresh streams.
+        r.site().cancel_all_streams();
+        true
+    });
 }
 
 fn register_metadata(ctx: &mut TulispContext, metadata: Arc<RwLock<Metadata>>) {

@@ -97,6 +97,11 @@ struct MicrogridSiteInner {
     /// registry) wires sites to a shared allocator via
     /// `MicrogridSite::with_id_allocator`.
     next_id: Arc<AtomicU64>,
+    /// Bumped by `cancel_all_streams()`. Streaming tasks in server.rs
+    /// compare against the value they captured at start and break when
+    /// it has changed. Models a server-initiated graceful cancel of
+    /// every active stream.
+    stream_cancel_epoch: AtomicU64,
     /// Per-component runtime mode flags (health, telemetry mode,
     /// command mode). Defaulted on register, mutated via the
     /// `set-component-*` Lisp defuns or directly from server.rs.
@@ -290,8 +295,28 @@ impl MicrogridSite {
                 main_meter_id: RwLock::new(None),
                 scenario_csv: RwLock::new(CsvSinks::new()),
                 grid_frequency: RwLock::new(None),
+                stream_cancel_epoch: AtomicU64::new(0),
             }),
         }
+    }
+
+    /// Current stream-cancel epoch. Streaming tasks capture this on
+    /// start; on each iteration they re-read it and break if it has
+    /// changed since their start. Used by `cancel_all_streams()` to
+    /// drop every active stream from the server side without killing
+    /// the process.
+    pub fn stream_cancel_epoch(&self) -> u64 {
+        self.inner.stream_cancel_epoch.load(Ordering::Acquire)
+    }
+
+    /// Bump the stream-cancel epoch. Every currently-running stream
+    /// task will see the change on its next iteration (≤ one stream
+    /// interval) and exit cleanly. New clients reconnecting after will
+    /// pick up the new epoch and stream normally.
+    pub fn cancel_all_streams(&self) {
+        self.inner
+            .stream_cancel_epoch
+            .fetch_add(1, Ordering::Release);
     }
 
     /// Wire this site to an grid frequency source. After this
