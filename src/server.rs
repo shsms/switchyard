@@ -481,6 +481,7 @@ impl microgrid_server::Microgrid for MicrogridServer {
                             component.as_ref(),
                             &snapshot,
                             metric_filter.as_ref(),
+                            site.sample_lag_ms(),
                         );
                         if tx.send(Ok(msg)).await.is_err() {
                             log::debug!("stream({id}): client disconnected");

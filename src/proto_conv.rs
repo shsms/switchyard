@@ -132,8 +132,13 @@ pub fn telemetry_to_proto(
     c: &dyn SimulatedComponent,
     t: &Telemetry,
     filter: MetricFilter<'_>,
+    sample_lag_ms: u64,
 ) -> ReceiveElectricalComponentTelemetryStreamResponse {
-    let now = Some(Timestamp::from(std::time::SystemTime::now()));
+    let mut wall_now = std::time::SystemTime::now();
+    if sample_lag_ms > 0 {
+        wall_now -= std::time::Duration::from_millis(sample_lag_ms);
+    }
+    let now = Some(Timestamp::from(wall_now));
     let cat = c.category();
 
     let mut samples = Vec::new();

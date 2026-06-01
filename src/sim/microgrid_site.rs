@@ -102,6 +102,11 @@ struct MicrogridSiteInner {
     /// it has changed. Models a server-initiated graceful cancel of
     /// every active stream.
     stream_cancel_epoch: AtomicU64,
+    /// Server-side artificial lag added to every sample's timestamp.
+    /// When > 0, the protobuf message's timestamps are shifted into
+    /// the past by this many milliseconds — modelling a server that
+    /// delivers samples with stale timestamps.
+    sample_lag_ms: AtomicU64,
     /// Per-component runtime mode flags (health, telemetry mode,
     /// command mode). Defaulted on register, mutated via the
     /// `set-component-*` Lisp defuns or directly from server.rs.
@@ -296,8 +301,22 @@ impl MicrogridSite {
                 scenario_csv: RwLock::new(CsvSinks::new()),
                 grid_frequency: RwLock::new(None),
                 stream_cancel_epoch: AtomicU64::new(0),
+                sample_lag_ms: AtomicU64::new(0),
             }),
         }
+    }
+
+    /// Read the current sample-lag offset (ms). The server uses this
+    /// to shift telemetry timestamps into the past, modelling a server
+    /// that delivers samples with stale timestamps.
+    pub fn sample_lag_ms(&self) -> u64 {
+        self.inner.sample_lag_ms.load(Ordering::Acquire)
+    }
+
+    /// Set the sample-lag offset (ms). 0 = use the wall clock; > 0
+    /// shifts every sample's timestamp into the past by that many ms.
+    pub fn set_sample_lag_ms(&self, ms: u64) {
+        self.inner.sample_lag_ms.store(ms, Ordering::Release);
     }
 
     /// Current stream-cancel epoch. Streaming tasks capture this on
