@@ -157,7 +157,11 @@ impl MicrogridServer {
                 // rejecting components churns over time — a few flaky
                 // devices flapping in and out of the blocked set.
                 let allowed = (req.power.abs() * 0.97).round();
-                let direction = if req.power >= 0.0 { "charge" } else { "discharge" };
+                let direction = if req.power >= 0.0 {
+                    "charge"
+                } else {
+                    "discharge"
+                };
                 return Err(tonic::Status::invalid_argument(format!(
                     "Requested {direction} power {} W exceeds the maximum allowed {allowed} W",
                     req.power.abs().round()
