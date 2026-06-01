@@ -259,15 +259,16 @@ impl ComponentBounds {
     }
 
     pub fn drop_expired(&mut self, now: DateTime<Utc>) {
-        while let Some(front) = self.augmented.front() {
-            let ttl =
-                chrono::Duration::from_std(front.lifetime).unwrap_or(chrono::Duration::zero());
-            if front.create_ts + ttl < now {
-                self.augmented.pop_front();
-            } else {
-                break;
-            }
-        }
+        // Augmentations are stored in arrival order, but lifetimes are
+        // per-request, so expiry order need not match arrival order — a
+        // front-only pop would strand a short-lived entry behind a
+        // longer-lived one and leak it. Scan the whole deque. Drop at
+        // the advertised `valid_until` (create_ts + lifetime), matching
+        // the inclusive horizon handed back to the client.
+        self.augmented.retain(|a| {
+            let ttl = chrono::Duration::from_std(a.lifetime).unwrap_or(chrono::Duration::zero());
+            a.create_ts + ttl > now
+        });
     }
 
     /// Effective bounds: rated ∩ all live augmentations.
