@@ -73,7 +73,7 @@
         <h3>Empty microgrid</h3>
         <p>This microgrid has no components yet. Add a grid connection point first:</p>
         <ol>
-          <li>Pick <strong>grid</strong> from the side panel's <em>Add component</em> dropdown and click <em>Create</em>, or</li>
+          <li>Pick <strong>grid</strong> from the <em>＋ Add</em> panel (top-left of the canvas) and click <em>Create</em>, or</li>
           <li>Eval <code>(make-grid-connection-point :id 1)</code> in the REPL, or</li>
           <li>Paste a structure copied from another microgrid (Ctrl/Cmd+V).</li>
         </ol>
@@ -185,30 +185,39 @@
         </form>
         <div id="dispatches-body"></div>
       </div>
-      <div id="splitter" title="Drag to resize"></div>
-      <aside id="side">
+      <!-- Floating left: summon the Add-component panel (topology only). -->
+      <button id="add-toggle" class="canvas-btn" type="button"
+              title="Add a component">＋ Add</button>
+      <aside id="add-panel" aria-label="add component">
+        <header class="float-head">
+          <h2>Add component</h2>
+          <button id="add-panel-close" class="float-close" type="button" title="Close">×</button>
+        </header>
+        <div class="add-row">
+          <select id="add-category">
+            <option value="make-grid-connection-point">grid</option>
+            <option value="make-meter" selected>meter</option>
+            <option value="make-battery">battery</option>
+            <option value="make-battery-inverter">battery-inverter</option>
+            <option value="make-solar-inverter">solar-inverter</option>
+            <option value="make-ev-charger">ev-charger</option>
+            <option value="make-chp">chp</option>
+          </select>
+          <button id="add-btn" class="hdr-btn primary">Create</button>
+        </div>
+        <p class="hint">
+          Uses category defaults; auto-assigns id. Wire it up by
+          holding <kbd>Ctrl</kbd>/<kbd>Cmd</kbd> and dragging from
+          one node to another, or from the REPL.
+        </p>
+      </aside>
+      <!-- Floating right: the inspector. Hidden until something is
+           selected / a chrome panel is opened; closes on deselect,
+           Esc, the × button, or a tab/mode switch. -->
+      <aside id="inspector" aria-label="inspector">
+        <button id="inspector-close" class="float-close" type="button" title="Close (Esc)">×</button>
         <div id="inspect">
           <p class="hint">Click a node to inspect. Right-click for the context menu.</p>
-        </div>
-        <div id="add-form">
-          <h2>Add component</h2>
-          <div class="add-row">
-            <select id="add-category">
-              <option value="make-grid-connection-point">grid</option>
-              <option value="make-meter" selected>meter</option>
-              <option value="make-battery">battery</option>
-              <option value="make-battery-inverter">battery-inverter</option>
-              <option value="make-solar-inverter">solar-inverter</option>
-              <option value="make-ev-charger">ev-charger</option>
-              <option value="make-chp">chp</option>
-            </select>
-            <button id="add-btn" class="hdr-btn primary">Create</button>
-          </div>
-          <p class="hint">
-            Uses category defaults; auto-assigns id. Wire it up by
-            holding <kbd>Ctrl</kbd>/<kbd>Cmd</kbd> and dragging from
-            one node to another, or from the REPL.
-          </p>
         </div>
       </aside>
       <div id="drawer-splitter" title="Drag to resize"></div>
@@ -274,7 +283,7 @@
       <div id="help-dialog-content">
         <h4>Modes</h4>
         <ul class="help-list">
-          <li>The chrome's <em>Microgrids</em> / <em>Scenarios</em> buttons swap the main pane. The REPL drawer + side panel stay visible in both. Press <kbd>1</kbd> for Microgrids, <kbd>2</kbd> for Scenarios.</li>
+          <li>The chrome's <em>Microgrids</em> / <em>Scenarios</em> buttons swap the main pane. The REPL drawer stays visible in both. Press <kbd>1</kbd> for Microgrids, <kbd>2</kbd> for Scenarios.</li>
           <li>Mode preference persists in <code>localStorage</code>; refresh restores the last-picked mode + last-selected microgrid.</li>
         </ul>
         <h4>Microgrids</h4>
@@ -294,7 +303,7 @@
         </ul>
         <h4>Aggregations</h4>
         <ul class="help-list">
-          <li>Pool tiles read from the same <code>frequenz-microgrid</code> client a production control app would use. Click any tile to open the formula tree in the side panel — each <code>#N</code> is a link back to the topology canvas.</li>
+          <li>Pool tiles read from the same <code>frequenz-microgrid</code> client a production control app would use. Click any tile to open the formula tree in the inspector — each <code>#N</code> is a link back to the topology canvas.</li>
           <li>Pulse-bar pills — <em>graph</em> (✓ / ⚠) summarises validation warnings from <code>frequenz-microgrid-component-graph</code>; <em>loopback</em> is the Microgrid client status; <em>density</em> + <em>TZ</em> toggle visual options.</li>
         </ul>
         <h4>Snapshots</h4>
@@ -303,7 +312,7 @@
         </ul>
         <h4>Topology canvas</h4>
         <ul class="help-list">
-          <li><kbd>Click</kbd> a node — inspect it (charts + overrides + knobs in the side panel).</li>
+          <li><kbd>Click</kbd> a node — inspect it (charts + overrides + knobs in the floating inspector; click empty canvas or <kbd>Esc</kbd> to dismiss).</li>
           <li><kbd>Shift</kbd>+<kbd>Drag</kbd> on empty canvas — rubber-band a selection rectangle; nodes inside the box are selected.</li>
           <li><kbd>Shift</kbd>+<kbd>Click</kbd> a node — toggle that node into / out of the current selection (after a rubber-band, or to build one a node at a time).</li>
           <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+hold + drag from one node to another — create an edge between them.</li>
@@ -312,10 +321,11 @@
           <li><kbd>Del</kbd> / <kbd>Backspace</kbd> — delete selection. <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>A</kbd> — select all visible. <kbd>Esc</kbd> — deselect.</li>
           <li><kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Z</kbd> — undo the last canvas edit. <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> (or <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>Y</kbd>) — redo. Stack is per microgrid and survives switching between dashboard and topology, but not page reloads.</li>
         </ul>
-        <h4>Side panel + chrome</h4>
+        <h4>Inspector + chrome</h4>
         <ul class="help-list">
-          <li><strong>Add component</strong> (lower side panel) — pick a category, click <em>Create</em>; an auto-id'd component appears. Wire it via <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+drag.</li>
-          <li><strong>Defaults</strong> — per-category defaults (Lisp values); edits write to the override file.</li>
+          <li><strong>Inspector</strong> — a floating panel on the right. It appears when you click a node (charts + overrides + knobs) or a Dashboard tile (formula tree), and closes when you click empty canvas, press <kbd>Esc</kbd>, hit its <em>×</em>, or switch tab.</li>
+          <li><strong>Add component</strong> — the <em>＋ Add</em> button at the top-left of the Topology canvas opens a floating panel: pick a category, click <em>Create</em>; an auto-id'd component appears. Wire it via <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+drag.</li>
+          <li><strong>Defaults</strong> — per-category defaults (Lisp values), opened in the inspector; edits write to the override file.</li>
           <li><strong>Overrides pill</strong> — count of forms in <code>microgrids/config.config.ui-overrides.&lt;microgrid-id&gt;.lisplt;microgrid-idconfig.ui-overrides.&lt;microgrid-id&gt;.lispgt;.overrides.lisp</code>. Every successful canvas / REPL edit appends to that file immediately. Click the pill to open the dialog: tick the rows you want gone, hit <em>Delete selected</em>; the file rewrites and the microgrid reloads in one round trip.</li>
         </ul>
         <h4>REPL</h4>

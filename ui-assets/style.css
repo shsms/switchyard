@@ -365,18 +365,18 @@ dialog#help-dialog header button:hover { color: var(--fg); }
 
 main {
   display: grid;
-  /* mg-header spanning all 3 cols (auto height; collapses to 0
-     when the Microgrids mode isn't drilled into a selection)
-     topology | splitter | side  (1fr)
-     drawer-splitter spanning all 3 cols (5px)
-     repl drawer spanning all 3 cols (JS rewrites this row's size). */
-  grid-template-columns: 1fr 5px 420px;
+  /* Single content column: the topology/dashboard/dispatches panes
+     span the full width; the inspector + add panel float over the
+     `topology` area (same grid cell, pinned to a side) rather than
+     occupying a docked column. mg-header is auto height (collapses to
+     0 off a selection); the repl drawer's row size is JS-rewritten. */
+  grid-template-columns: 1fr;
   grid-template-rows: auto 1fr 5px 260px;
   grid-template-areas:
-    "mgheader mgheader mgheader"
-    "topology splitter side"
-    "drawer-splitter drawer-splitter drawer-splitter"
-    "repl     repl     repl";
+    "mgheader"
+    "topology"
+    "drawer-splitter"
+    "repl";
   gap: 0;
   height: calc(100vh - 41px - 28px); /* viewport minus header minus pulse bar */
   /* Same reason as on body: keeps the canvas from pushing the
@@ -386,6 +386,19 @@ main {
      prevents the cell from growing to fit the canvas instead of
      the other way around. */
   min-height: 0;
+}
+
+/* While the inspector is open it gets its own right-hand column, so the
+   content panes shrink to column 1 (the canvas re-fits) instead of the
+   inspector covering them. Only grid-template-columns/areas change here;
+   the drawer splitter still owns grid-template-rows via inline style. */
+body.inspector-open main {
+  grid-template-columns: 1fr 420px;
+  grid-template-areas:
+    "mgheader        mgheader"
+    "topology        inspector"
+    "drawer-splitter drawer-splitter"
+    "repl            repl";
 }
 
 #topology,
@@ -1102,15 +1115,6 @@ body.compact .tier5-health { font-size: 10px; padding: 1px 6px; }
 body.compact .tier5-soc-wrap { height: 12px; }
 body.compact .tier5-soc-text { font-size: 10px; }
 
-#splitter {
-  grid-area: splitter;
-  background: var(--border);
-  cursor: col-resize;
-  /* Subtle visual lift on hover so the drag affordance is clear
-     without dominating the chrome. */
-}
-#splitter:hover, #splitter.dragging { background: var(--accent); }
-
 #drawer-splitter {
   grid-area: drawer-splitter;
   background: var(--border);
@@ -1118,11 +1122,99 @@ body.compact .tier5-soc-text { font-size: 10px; }
 }
 #drawer-splitter:hover, #drawer-splitter.dragging { background: var(--accent); }
 
-#side {
-  grid-area: side;
-  padding: 1rem;
-  overflow-y: auto;
+/* ── Floating panels ─────────────────────────────────────────────────
+   The inspector (right) and the Add-component panel (left) share the
+   `topology` grid cell with the active pane and pin to a side, so they
+   float over the content instead of occupying a docked column. Both
+   are inset cards with elevation; both are hidden until summoned. */
+#inspector {
+  display: none;
+  /* Lives in its own grid column (added by body.inspector-open) so the
+     canvas shrinks beside it instead of hiding under it; the margin +
+     shadow keep it reading as a floating card, not a docked wall. */
+  grid-area: inspector;
+  z-index: 6;
+  position: relative;
+  margin: 10px;
   background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+}
+body.inspector-open #inspector { display: flex; flex-direction: column; }
+#inspect {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  /* extra top padding so content clears the floating × */
+  padding: 1.6rem 1rem 1rem;
+}
+
+.float-close {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  z-index: 1;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 6px;
+  border-radius: 4px;
+}
+.float-close:hover { color: var(--fg); background: var(--bg); }
+.float-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.float-head h2 { margin: 0; }
+
+/* Summon button (top-left) + the Add-component card it opens. Only the
+   Topology sub-tab shows either; #add-panel needs `.open` too. */
+.canvas-btn {
+  display: none;
+  grid-area: topology;
+  justify-self: start;
+  align-self: start;
+  z-index: 6;
+  margin: 10px;
+  padding: 5px 11px;
+  font-size: 12px;
+  background: var(--bg-elev);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+.canvas-btn:hover { border-color: var(--accent); color: var(--accent); }
+#add-panel {
+  display: none;
+  grid-area: topology;
+  justify-self: start;
+  align-self: start;
+  z-index: 6;
+  position: relative;
+  width: 300px;
+  max-width: calc(100% - 20px);
+  margin: 48px 10px 10px;
+  padding: 12px 14px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+}
+body[data-mode="microgrids"][data-mg-view="selected"][data-subview="topology"] #add-toggle {
+  display: inline-flex;
+  align-items: center;
+}
+body[data-mode="microgrids"][data-mg-view="selected"][data-subview="topology"] #add-panel.open {
+  display: block;
 }
 
 #repl {
@@ -1295,29 +1387,16 @@ body.compact .tier5-soc-text { font-size: 10px; }
 }
 #repl-form button:hover { filter: brightness(1.1); }
 
-#side h2 {
+#inspect h2, .float-head h2 {
   font-family: var(--font-mono);
   font-size: 15px;
   margin: 0 0 0.5rem;
   color: var(--accent);
 }
 
-#side .hint {
+#inspect .hint, #add-panel .hint {
   color: var(--muted);
   font-size: 14px;
-}
-
-#side {
-  display: flex;
-  flex-direction: column;
-}
-
-#inspect { flex: 1; }
-
-#add-form {
-  margin-top: 1rem;
-  padding-top: 1rem;
-  border-top: 1px solid var(--border);
 }
 
 .add-row {
@@ -1353,7 +1432,7 @@ body.compact .tier5-soc-text { font-size: 10px; }
   outline: none;
 }
 
-#side h3 {
+#inspect h3 {
   font-family: var(--font-mono);
   font-size: 13px;
   text-transform: uppercase;
@@ -1362,7 +1441,7 @@ body.compact .tier5-soc-text { font-size: 10px; }
   margin: 1rem 0 0.4rem;
 }
 
-#side select[data-knob] {
+#inspect select[data-knob] {
   background: var(--bg);
   color: var(--fg);
   border: 1px solid var(--border);
@@ -1371,9 +1450,9 @@ body.compact .tier5-soc-text { font-size: 10px; }
   font-family: var(--font-mono);
   font-size: 14px;
 }
-#side select[data-knob]:focus { outline: 1px solid var(--accent); }
+#inspect select[data-knob]:focus { outline: 1px solid var(--accent); }
 
-#side .knob-input {
+#inspect .knob-input {
   background: var(--bg);
   color: var(--fg);
   border: 1px solid var(--border);
@@ -1384,7 +1463,7 @@ body.compact .tier5-soc-text { font-size: 10px; }
   width: 100%;
   box-sizing: border-box;
 }
-#side .knob-input:focus { outline: 1px solid var(--accent); }
+#inspect .knob-input:focus { outline: 1px solid var(--accent); }
 
 .conns {
   display: grid;
@@ -1535,7 +1614,7 @@ body.compact .tier5-soc-text { font-size: 10px; }
   margin-right: 0.5rem;
 }
 
-#side dl {
+#inspect dl {
   font-family: var(--font-mono);
   font-size: 14px;
   display: grid;
@@ -1544,13 +1623,13 @@ body.compact .tier5-soc-text { font-size: 10px; }
   margin: 0;
 }
 
-#side dt { color: var(--muted); }
-#side dd { margin: 0; word-break: break-all; }
+#inspect dt { color: var(--muted); }
+#inspect dd { margin: 0; word-break: break-all; }
 
 #charts { margin-top: 1rem; display: flex; flex-direction: column; gap: 0.75rem; }
 .chart { background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 0.25rem; }
 
-/* uPlot's title styling — match the side panel typography. */
+/* uPlot's title styling — match the inspector typography. */
 .u-title { color: var(--fg) !important; font-family: var(--font-mono) !important; font-size: 13px !important; font-weight: normal !important; padding: 4px 6px 0 !important; }
 .u-legend { display: none !important; }
 

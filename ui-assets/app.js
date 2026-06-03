@@ -1,13 +1,50 @@
 // Phase-1 SPA. Renders /api/topology with vis-network, and on node
-// selection shows category-appropriate live charts in the side panel.
+// selection shows category-appropriate live charts in the floating
+// inspector.
 // Visual editing (add / connect / rename / delete) + REPL + Persist
 // + Defaults / Scenarios all hang off the same /api/eval mutation
 // path so anything done in the UI is also scriptable from outside.
 
 const status = document.getElementById("status");
-// `inspect` is the swappable upper half of the side panel; the lower
-// half (`add-form`) stays put across selection changes.
+// `inspect` holds the inspector's swappable content; `inspector` is the
+// floating card around it. The `inspector-open` class on <body> shows
+// the card AND reserves it a grid column, so the canvas shrinks beside
+// it rather than hiding under it. Set when something is selected (or a
+// chrome panel is opened); cleared on deselect, Esc, the × button, or a
+// tab switch — all via clearSide().
 const inspectEl = document.getElementById("inspect");
+const inspectorEl = document.getElementById("inspector");
+
+// Open the floating inspector showing `panel` — "node" / "formula" or a
+// chrome toggle's button id. The matching chrome toggle (Defaults /
+// Report) lights up, so its state tracks the actual panel instead of a
+// private flag that a ×/tab-switch close would leave stale.
+function openInspector(panel) {
+  const wasOpen = document.body.classList.contains("inspector-open");
+  document.body.classList.add("inspector-open");
+  inspectorEl.dataset.panel = panel || "";
+  for (const b of document.querySelectorAll("#defaults-btn, #scenario-report-btn")) {
+    b.classList.toggle("primary", b.id === panel);
+  }
+  // The inspector column reserves space, so opening it shrinks the
+  // canvas — reframe so nothing is clipped. Only on the closed→open
+  // transition; a content swap (node→node) mustn't re-zoom the graph.
+  if (!wasOpen) reflowAfterPanel();
+}
+
+// Re-fit the topology graph + any open uPlot charts after the inspector
+// column appears or disappears and the panes resize. Deferred a frame so
+// the grid reflow has settled before vis-network measures.
+function reflowAfterPanel() {
+  requestAnimationFrame(() => {
+    try {
+      topology.fit();
+    } catch (_) {
+      /* network not built yet (no microgrid) — nothing to fit */
+    }
+    refitCharts();
+  });
+}
 
 function setStatus(text, klass) {
   status.textContent = text;
@@ -361,8 +398,8 @@ const topology = (() => {
         visOptions,
       );
       // Re-frame whenever the container resizes — switching subviews
-      // (display:none → display:block) and dragging the drawer or
-      // side splitter all fall through here. Without this, vis-
+      // (display:none → display:block) and dragging the drawer
+      // splitter all fall through here. Without this, vis-
       // network's camera sticks to whatever extent was captured on
       // first paint and a graph that was wider than the canvas at
       // construction shows only half of itself afterwards.
@@ -936,6 +973,7 @@ async function evalQuoted(expr) {
 
 async function showComponent(d) {
   if (!d) return;
+  openInspector("node");
   liveCharts.clear();
 
   // vis-network's getConnectedNodes(id, direction) returns the
@@ -1045,7 +1083,11 @@ function makePlot(container, metric, quantity, unit, xs, ys) {
   return { plot: new uPlot(opts, [xs, scaledYs], container), scale };
 }
 
+// Close the floating inspector: stop its live charts / report poll,
+// reset its content, and hide the card. Named `clearSide` for the
+// callers that predate the float (deselect handler, Esc, panel toggles).
 function clearSide() {
+  const wasOpen = document.body.classList.contains("inspector-open");
   liveCharts.clear();
   if (scenarioReportTimer != null) {
     clearInterval(scenarioReportTimer);
@@ -1053,6 +1095,13 @@ function clearSide() {
   }
   inspectEl.innerHTML =
     '<p class="hint">Click a node to inspect. Right-click for the context menu.</p>';
+  document.body.classList.remove("inspector-open");
+  delete inspectorEl.dataset.panel;
+  for (const b of document.querySelectorAll("#defaults-btn, #scenario-report-btn")) {
+    b.classList.remove("primary");
+  }
+  // Closing gives the column back to the canvas — refit it (and charts).
+  if (wasOpen) reflowAfterPanel();
 }
 
 let scenarioReportTimer = null;
@@ -1573,22 +1622,21 @@ function setupOverridesPill() {
   });
 }
 
-/// Generic side-panel toggle: a chrome button that swaps the
-/// inspect+add-form view for some custom render. Clicking the
-/// button while open restores the default inspect view (and
-/// re-shows the add-form, which got hidden during render).
+/// Generic inspector toggle: a chrome button (Defaults / Report) that
+/// opens the floating inspector with some custom render. Clicking it
+/// again closes the inspector.
 function makeSidePanelToggle(btnId, render) {
   const btn = document.getElementById(btnId);
-  let open = false;
   btn.addEventListener("click", async () => {
-    open = !open;
-    btn.classList.toggle("primary", open);
-    if (open) {
-      await render();
-    } else {
+    // Clicking the lit button (its panel is the one showing) closes;
+    // otherwise render this panel and open — even if the inspector is
+    // already up showing something else, which just swaps the content.
+    if (document.body.classList.contains("inspector-open") && inspectorEl.dataset.panel === btnId) {
       clearSide();
-      document.getElementById("add-form").style.display = "";
+      return;
     }
+    await render();
+    openInspector(btnId);
   });
 }
 
@@ -1599,7 +1647,6 @@ const setupScenarioReportToggle = () =>
   makeSidePanelToggle("scenario-report-btn", renderScenarioReport);
 
 async function renderScenarioReport() {
-  document.getElementById("add-form").style.display = "none";
   inspectEl.innerHTML = `
     <h2>Scenario report</h2>
     <p class="hint">Live aggregate metrics for the running scenario.
@@ -1686,7 +1733,6 @@ function renderScenarioEvents(events) {
 async function renderDefaults() {
   const res = await fetch("/api/defaults");
   const data = await res.json();
-  document.getElementById("add-form").style.display = "none";
   inspectEl.innerHTML = `
     <h2>Per-category defaults</h2>
     <p class="hint">
@@ -1713,9 +1759,8 @@ async function renderDefaults() {
   }
 }
 
-/// Generic drag-to-resize handler. Both splitters in the chrome
-/// (vertical between topology + side panel, horizontal between
-/// topology row + drawer) follow the same pattern: capture the
+/// Generic drag-to-resize handler. The drawer splitter (between the
+/// topology row and the bottom drawer) uses it: capture the
 /// starting state on mousedown, compute a delta on mousemove,
 /// hand it back to the caller as a clamped px value, refit any
 /// open uPlot charts on every frame so they keep up with the
@@ -1760,23 +1805,21 @@ function makeSplitter({ axis, splitter, getStart, apply, clamp }) {
   });
 }
 
-/// Vertical splitter between topology canvas and side panel.
-/// Updates main's grid-template-columns to resize the third (side)
-/// column.
-function setupSplitter() {
-  const main = document.getElementById("app");
-  const sideEl = document.getElementById("side");
-  const SIDE_MIN = 300; // anything narrower and the inspect form wraps badly
-  const SIDE_MAX_FRAC = 0.7; // don't let the canvas drop below 30% of width
-  makeSplitter({
-    axis: "x",
-    splitter: document.getElementById("splitter"),
-    getStart: () => sideEl.getBoundingClientRect().width,
-    apply: (w) => {
-      main.style.gridTemplateColumns = `1fr 5px ${w}px`;
-    },
-    clamp: (w, vw) => Math.min(vw * SIDE_MAX_FRAC, Math.max(SIDE_MIN, w)),
+// Wire the floating panels' chrome: the inspector's × (close +
+// deselect the node so a re-click reopens it), and the ＋ Add button /
+// its panel's × (toggle the topology-only Add-component card).
+function setupFloatingPanels() {
+  document.getElementById("inspector-close").addEventListener("click", () => {
+    clearSide();
+    topology.select([]);
   });
+  const addPanel = document.getElementById("add-panel");
+  document
+    .getElementById("add-toggle")
+    .addEventListener("click", () => addPanel.classList.toggle("open"));
+  document
+    .getElementById("add-panel-close")
+    .addEventListener("click", () => addPanel.classList.remove("open"));
 }
 
 /// Horizontal splitter between topology row and bottom drawer.
@@ -1792,11 +1835,11 @@ function setupDrawerSplitter() {
     getStart: () => drawer.getBoundingClientRect().height,
     apply: (h) => {
       // Main's grid template has FOUR rows: the auto mgheader, the
-      // 1fr topology/side row, the 5px splitter, the drawer.
+      // 1fr topology row, the 5px drawer-splitter, the drawer.
       // An earlier shape rewrote only three values here, dropping
       // the mgheader's `auto` track — the grid then collapsed
-      // and the canvas + side panel disappeared as soon as the
-      // user dragged the splitter at all. Keep all four tracks.
+      // and the canvas disappeared as soon as the user dragged the
+      // splitter at all. Keep all four tracks.
       main.style.gridTemplateRows = `auto 1fr 5px ${h}px`;
     },
     clamp: (h, vh) => {
@@ -3235,7 +3278,7 @@ const chpRows = (() => {
 // Parses a graph-crate-rendered formula like
 //   MAX(#2 - COALESCE(#1002, #1001, 0.0), 0.0)
 // into an AST: { kind: "op" | "call" | "ref" | "num", ... }. Used by
-// the formula side panel (F4 stage 2) to pretty-print the formula
+// the formula inspector (F4 stage 2) to pretty-print the formula
 // with each #N as a clickable link to the topology canvas. Hand-
 // rolled recursive descent — the grammar is tiny (numbers, refs,
 // + - * /, function calls) and a parser library would dwarf it.
@@ -3368,8 +3411,8 @@ function formulaToHtml(node) {
   return rec(node);
 }
 
-// Open the formula side panel for the given stream. Re-uses the
-// inspector slot in the side panel (same pattern as
+// Open the formula tree for the given stream in the inspector. Re-uses
+// the inspector (same pattern as
 // renderScenarioReport / renderDefaults) so the layout stays
 // uniform.
 async function openFormulaPanel(stream) {
@@ -3379,7 +3422,6 @@ async function openFormulaPanel(stream) {
     const map = await res.json();
     const src = map[stream];
     if (!src) return;
-    document.getElementById("add-form").style.display = "none";
     inspectEl.innerHTML = `
       <div class="formula-panel">
         <h2>Formula · <code>${stream}</code></h2>
@@ -3387,6 +3429,7 @@ async function openFormulaPanel(stream) {
         <p class="hint">Click any <code>#N</code> to jump to that component on the Topology canvas.</p>
       </div>
     `;
+    openInspector("formula");
     // Delegate refs: one listener per panel-open, no per-span hookup.
     inspectEl.querySelector(".formula-tree")?.addEventListener("click", (ev) => {
       const t = ev.target.closest(".formula-ref");
@@ -4443,6 +4486,10 @@ function applyMode(mode) {
   document.body.dataset.mode = mode;
   document.body.dataset.mgView = selected == null ? "list" : "selected";
   document.body.dataset.subview = subview;
+  // Switching tab/mode dismisses the floating panels — the inspector's
+  // selection no longer applies, and the add panel is topology-only.
+  clearSide();
+  document.getElementById("add-panel").classList.remove("open");
   for (const btn of document.querySelectorAll("#mode-toggle .mode-btn")) {
     btn.classList.toggle("active", btn.dataset.mode === mode);
   }
@@ -4590,7 +4637,7 @@ async function init() {
   setupAddForm();
   setupDefaultsToggle();
   setupScenarioReportToggle();
-  setupSplitter();
+  setupFloatingPanels();
   setupDrawerSplitter();
   setupOverridesDialog();
   setupSnapshotsDialog();
@@ -4634,8 +4681,8 @@ async function init() {
       e.preventDefault();
       deleteSelection();
     } else if (e.key === "Escape") {
-      // Topology's own click handler clears the side panel; mirror
-      // that here for keyboard parity.
+      // Topology's own click handler closes the inspector on deselect;
+      // mirror that here for keyboard parity.
       topology.select([]);
       clearSide();
     }
