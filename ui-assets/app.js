@@ -3973,7 +3973,7 @@ const dispatchesPanel = (() => {
     const payloadCell =
       payload === "—"
         ? "—"
-        : `<code title="${escapeHtml(payload)}">${escapeHtml(
+        : `<code title="${escapeHtml(payload).replace(/"/g, "&quot;")}">${escapeHtml(
             payload.length > 60 ? payload.slice(0, 59) + "…" : payload,
           )}</code>`;
     const toggle = d.active ? "Pause" : "Resume";
@@ -4057,6 +4057,7 @@ const dispatchesPanel = (() => {
   }
 
   async function setActive(id, active) {
+    if (currentMg == null) return;
     try {
       await mutate("POST", `/api/mg/${currentMg}/dispatches/${id}/active`, {
         active,
@@ -4068,6 +4069,7 @@ const dispatchesPanel = (() => {
   }
 
   async function remove(id) {
+    if (currentMg == null) return;
     if (!confirm(`Delete dispatch #${id}? This can't be undone.`)) return;
     try {
       await mutate("DELETE", `/api/mg/${currentMg}/dispatches/${id}`);

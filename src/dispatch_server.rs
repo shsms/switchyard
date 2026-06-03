@@ -159,7 +159,8 @@ impl pb::microgrid_dispatch_service_server::MicrogridDispatchService for Dispatc
         if want("recurrence")
             && let Some(rec) = &update.recurrence
         {
-            data.recurrence = Some(recurrence_from_update(rec));
+            let merged = recurrence_from_update(data.recurrence.as_ref(), rec);
+            data.recurrence = Some(merged);
         }
 
         // Re-stamp update_time + end_time after the merge.
@@ -275,19 +276,43 @@ fn dispatch_err_to_status(err: DispatchError) -> tonic::Status {
     }
 }
 
+/// Merge a `RecurrenceRuleUpdate` onto the dispatch's existing rule.
+/// The update's fields are all optional precisely so a caller can change
+/// one part of the recurrence; building a fresh rule instead would zero
+/// `freq` / `interval` and silently turn a recurring dispatch one-off.
+/// (A set repeated field replaces; an empty one leaves the existing —
+/// clearing a repeated field isn't expressible, the usual field-mask
+/// limitation.)
 fn recurrence_from_update(
+    existing: Option<&pb::RecurrenceRule>,
     u: &pb::update_microgrid_dispatch_request::dispatch_update::RecurrenceRuleUpdate,
 ) -> pb::RecurrenceRule {
-    pb::RecurrenceRule {
-        freq: u.freq.unwrap_or_default(),
-        interval: u.interval.unwrap_or_default(),
-        end_criteria: u.end_criteria,
-        byminutes: u.byminutes.clone(),
-        byhours: u.byhours.clone(),
-        byweekdays: u.byweekdays.clone(),
-        bymonthdays: u.bymonthdays.clone(),
-        bymonths: u.bymonths.clone(),
+    let mut rule = existing.cloned().unwrap_or_default();
+    if let Some(freq) = u.freq {
+        rule.freq = freq;
     }
+    if let Some(interval) = u.interval {
+        rule.interval = interval;
+    }
+    if u.end_criteria.is_some() {
+        rule.end_criteria = u.end_criteria;
+    }
+    if !u.byminutes.is_empty() {
+        rule.byminutes = u.byminutes.clone();
+    }
+    if !u.byhours.is_empty() {
+        rule.byhours = u.byhours.clone();
+    }
+    if !u.byweekdays.is_empty() {
+        rule.byweekdays = u.byweekdays.clone();
+    }
+    if !u.bymonthdays.is_empty() {
+        rule.bymonthdays = u.bymonthdays.clone();
+    }
+    if !u.bymonths.is_empty() {
+        rule.bymonths = u.bymonths.clone();
+    }
+    rule
 }
 
 fn in_interval(ts: Option<&Timestamp>, iv: &Interval) -> bool {
@@ -460,8 +485,10 @@ fn paginate(
     if page_size == 0 {
         return (items, None);
     }
+    // saturating_add: a crafted page_token offset near usize::MAX must
+    // not overflow into a reversed slice range and panic the handler.
     let start = offset.min(total);
-    let end = (offset + page_size).min(total);
+    let end = offset.saturating_add(page_size).min(total);
     let page = items[start..end].to_vec();
     let next = (end < total).then(|| format!("{end}:{page_size}"));
     (page, next)

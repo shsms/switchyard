@@ -844,7 +844,10 @@ fn dispatch_to_view(d: &crate::proto::dispatch::Dispatch) -> DispatchView {
 }
 
 fn ts_to_ms(ts: &prost_types::Timestamp) -> i64 {
-    ts.seconds * 1000 + (ts.nanos as i64) / 1_000_000
+    // i128 + clamp: an extreme start_time stored via gRPC (seconds near
+    // i64::MAX) must not overflow `seconds * 1000` when the UI lists it.
+    let ms = ts.seconds as i128 * 1000 + (ts.nanos as i128) / 1_000_000;
+    ms.clamp(i64::MIN as i128, i64::MAX as i128) as i64
 }
 
 /// Compact recurrence summary, e.g. `daily ×2`. `None` for a

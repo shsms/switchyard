@@ -241,7 +241,11 @@ impl DispatchStore {
             data.is_active = active;
         }
         stamp_updated(&mut dispatch);
-        self.replace(microgrid_id, dispatch.clone());
+        // `replace` is false if the dispatch was deleted between our get
+        // and here — report NotFound rather than a phantom success.
+        if !self.replace(microgrid_id, dispatch.clone()) {
+            return Err(DispatchError::NotFound);
+        }
         Ok(dispatch)
     }
 
@@ -320,7 +324,11 @@ pub(crate) fn compute_end_time(
         return None;
     }
     let start = ts_to_dt(start?)?;
-    Some(to_ts(start + chrono::Duration::seconds(duration_s? as i64)))
+    // checked_add_signed (not `+`, which `.expect()`s) so a far-future
+    // start + long duration that overflows chrono's date range yields
+    // "no end time" rather than panicking the create/update handler.
+    let end = start.checked_add_signed(chrono::Duration::seconds(duration_s? as i64))?;
+    Some(to_ts(end))
 }
 
 /// Re-stamp `update_time` to now and re-derive `end_time` from the
@@ -689,5 +697,32 @@ mod tests {
         assert_eq!(struct_to_json(&st), json);
         // A non-object payload is rejected.
         assert!(json_to_struct(&serde_json::json!(5)).is_err());
+    }
+
+    #[test]
+    fn compute_end_time_never_panics_on_extreme_inputs() {
+        // start beyond chrono's representable range => no end, no panic.
+        let huge = Timestamp {
+            seconds: i64::MAX,
+            nanos: 0,
+        };
+        assert!(compute_end_time(Some(&huge), Some(3600), false).is_none());
+        // A near-max start + a long duration overflows the add => still None.
+        let near_max = Timestamp {
+            seconds: 8_210_000_000_000,
+            nanos: 0,
+        };
+        assert!(compute_end_time(Some(&near_max), Some(u32::MAX), false).is_none());
+        // A normal finite, non-recurring dispatch still gets an end_time.
+        let t = Timestamp {
+            seconds: 1_700_000_000,
+            nanos: 0,
+        };
+        assert_eq!(
+            compute_end_time(Some(&t), Some(3600), false)
+                .unwrap()
+                .seconds,
+            1_700_003_600
+        );
     }
 }
