@@ -516,3 +516,139 @@ async fn dispatches_endpoint_empty_for_microgrid_without_dispatches() {
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert!(v.as_array().unwrap().is_empty());
 }
+
+fn post_json(path: &str, body: &str) -> Request<Body> {
+    Request::builder()
+        .method(Method::POST)
+        .uri(path)
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
+fn delete_req(path: &str) -> Request<Body> {
+    Request::builder()
+        .method(Method::DELETE)
+        .uri(path)
+        .body(Body::empty())
+        .unwrap()
+}
+
+fn active_dispatch(type_: &str) -> crate::proto::dispatch::DispatchData {
+    crate::proto::dispatch::DispatchData {
+        r#type: type_.to_string(),
+        is_active: true,
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn dispatch_create_endpoint_stores_and_returns_view() {
+    let cfg = config_with("").await;
+    let (status, body) = call(
+        cfg.clone(),
+        post_json(
+            "/api/mg/2200/dispatches",
+            r#"{"type":"SET_POWER","target":"BATTERY","payload":{"target_power_w":5000}}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["type"], "SET_POWER");
+    assert_eq!(v["active"], true);
+    assert_eq!(v["target"], "BATTERY");
+    assert_eq!(v["payload"]["target_power_w"], 5000.0);
+    // start_immediately default => a start time was stamped.
+    assert!(v["start_ms"].is_i64());
+    assert_eq!(cfg.dispatches().list_mg(2200).len(), 1);
+}
+
+#[tokio::test]
+async fn dispatch_create_endpoint_rejects_bad_target() {
+    let cfg = config_with("").await;
+    let (status, _) = call(
+        cfg,
+        post_json(
+            "/api/mg/2200/dispatches",
+            r#"{"type":"X","target":"not-a-category"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn dispatch_active_endpoint_pauses_and_resumes() {
+    let cfg = config_with("").await;
+    let id = cfg
+        .dispatches()
+        .create(2200, active_dispatch("X"), true)
+        .unwrap()
+        .metadata
+        .unwrap()
+        .dispatch_id;
+
+    let (status, body) = call(
+        cfg.clone(),
+        post_json(
+            &format!("/api/mg/2200/dispatches/{id}/active"),
+            r#"{"active":false}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["active"], false);
+    assert!(
+        !cfg.dispatches()
+            .get(2200, id)
+            .unwrap()
+            .data
+            .unwrap()
+            .is_active
+    );
+
+    // Resume.
+    let (status, _) = call(
+        cfg.clone(),
+        post_json(
+            &format!("/api/mg/2200/dispatches/{id}/active"),
+            r#"{"active":true}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        cfg.dispatches()
+            .get(2200, id)
+            .unwrap()
+            .data
+            .unwrap()
+            .is_active
+    );
+}
+
+#[tokio::test]
+async fn dispatch_delete_endpoint_removes_then_404s() {
+    let cfg = config_with("").await;
+    let id = cfg
+        .dispatches()
+        .create(2200, active_dispatch("X"), true)
+        .unwrap()
+        .metadata
+        .unwrap()
+        .dispatch_id;
+
+    let (status, _) = call(
+        cfg.clone(),
+        delete_req(&format!("/api/mg/2200/dispatches/{id}")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert!(cfg.dispatches().get(2200, id).is_none());
+
+    // Deleting again is a 404.
+    let (status, _) = call(cfg, delete_req(&format!("/api/mg/2200/dispatches/{id}"))).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}

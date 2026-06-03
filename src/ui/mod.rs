@@ -17,7 +17,7 @@ use axum::{
     },
     http::{HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use frequenz_microgrid::{
@@ -662,7 +662,18 @@ fn router(
             "/api/mg/{mg_id}/overrides/text",
             get(overrides_text_for_mg).post(overrides_text_replace_for_mg),
         )
-        .route("/api/mg/{mg_id}/dispatches", get(dispatches_for_mg))
+        .route(
+            "/api/mg/{mg_id}/dispatches",
+            get(dispatches_for_mg).post(dispatch_create_for_mg),
+        )
+        .route(
+            "/api/mg/{mg_id}/dispatches/{dispatch_id}",
+            delete(dispatch_delete_for_mg),
+        )
+        .route(
+            "/api/mg/{mg_id}/dispatches/{dispatch_id}/active",
+            post(dispatch_set_active_for_mg),
+        )
         .route("/ws/events", get(events_ws))
         .layer(Extension(microgrid))
         .layer(Extension(loopbacks))
@@ -708,6 +719,105 @@ async fn dispatches_for_mg(
         .map(dispatch_to_view)
         .collect();
     Json(views)
+}
+
+/// Body for `POST /api/mg/{id}/dispatches`. `target` is the same
+/// human syntax the dispatch CLI takes (category names or numeric
+/// ids); `payload` is free JSON (must be an object). With no
+/// `start_ms` the dispatch starts immediately.
+#[derive(Deserialize)]
+struct DispatchCreateReq {
+    #[serde(rename = "type")]
+    type_: String,
+    target: String,
+    #[serde(default)]
+    duration_s: Option<u32>,
+    #[serde(default)]
+    active: Option<bool>,
+    #[serde(default)]
+    dry_run: Option<bool>,
+    #[serde(default)]
+    payload: Option<serde_json::Value>,
+    #[serde(default)]
+    start_ms: Option<i64>,
+}
+
+/// Create a dispatch from the UI. Parses the human target / payload,
+/// then goes through the same `DispatchStore::create` the gRPC server
+/// uses, so the construction rules are identical.
+async fn dispatch_create_for_mg(
+    State(config): State<Config>,
+    Path(mg_id): Path<u64>,
+    Json(req): Json<DispatchCreateReq>,
+) -> Result<(StatusCode, Json<DispatchView>), (StatusCode, String)> {
+    let target = crate::sim::dispatch::parse_target(&req.target)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    let payload = match req.payload {
+        None | Some(serde_json::Value::Null) => None,
+        Some(value) => Some(
+            crate::sim::dispatch::json_to_struct(&value)
+                .map_err(|e| (StatusCode::BAD_REQUEST, e))?,
+        ),
+    };
+    let start_immediately = req.start_ms.is_none();
+    let start_time = req.start_ms.map(|ms| prost_types::Timestamp {
+        seconds: ms.div_euclid(1000),
+        nanos: (ms.rem_euclid(1000) * 1_000_000) as i32,
+    });
+    let data = crate::proto::dispatch::DispatchData {
+        r#type: req.type_,
+        start_time,
+        duration: req.duration_s,
+        target: Some(target),
+        is_active: req.active.unwrap_or(true),
+        is_dry_run: req.dry_run.unwrap_or(false),
+        payload,
+        recurrence: None,
+    };
+    let dispatch = config
+        .dispatches()
+        .create(mg_id, data, start_immediately)
+        .map_err(dispatch_err_to_http)?;
+    Ok((StatusCode::CREATED, Json(dispatch_to_view(&dispatch))))
+}
+
+/// Body for `POST /api/mg/{id}/dispatches/{did}/active` — pause
+/// (`false`) or resume (`true`).
+#[derive(Deserialize)]
+struct DispatchSetActiveReq {
+    active: bool,
+}
+
+async fn dispatch_set_active_for_mg(
+    State(config): State<Config>,
+    Path((mg_id, dispatch_id)): Path<(u64, u64)>,
+    Json(req): Json<DispatchSetActiveReq>,
+) -> Result<Json<DispatchView>, (StatusCode, String)> {
+    let dispatch = config
+        .dispatches()
+        .set_active(mg_id, dispatch_id, req.active)
+        .map_err(dispatch_err_to_http)?;
+    Ok(Json(dispatch_to_view(&dispatch)))
+}
+
+async fn dispatch_delete_for_mg(
+    State(config): State<Config>,
+    Path((mg_id, dispatch_id)): Path<(u64, u64)>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    config.dispatches().remove(mg_id, dispatch_id).ok_or((
+        StatusCode::NOT_FOUND,
+        format!("dispatch {dispatch_id} not found for microgrid {mg_id}"),
+    ))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+fn dispatch_err_to_http(err: crate::sim::dispatch::DispatchError) -> (StatusCode, String) {
+    use crate::sim::dispatch::DispatchError;
+    let code = match err {
+        DispatchError::MissingStartTime => StatusCode::BAD_REQUEST,
+        DispatchError::NotFound => StatusCode::NOT_FOUND,
+    };
+    (code, err.to_string())
 }
 
 fn dispatch_to_view(d: &crate::proto::dispatch::Dispatch) -> DispatchView {
