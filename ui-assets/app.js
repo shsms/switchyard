@@ -3924,6 +3924,9 @@ function renderClockNow() {
 // (the dispatch CLI created / updated / deleted one).
 const dispatchesPanel = (() => {
   const host = () => document.getElementById("dispatches-body");
+  // The microgrid currently shown — set by render(), read by the
+  // create form + row-button handlers (which are wired once in setup).
+  let currentMg = null;
 
   function fmtTs(ms) {
     if (ms == null) return "—";
@@ -3973,6 +3976,7 @@ const dispatchesPanel = (() => {
         : `<code title="${escapeHtml(payload)}">${escapeHtml(
             payload.length > 60 ? payload.slice(0, 59) + "…" : payload,
           )}</code>`;
+    const toggle = d.active ? "Pause" : "Resume";
     return `<tr>
       <td class="disp-id">#${d.id}</td>
       <td>${escapeHtml(d.type)}</td>
@@ -3982,17 +3986,99 @@ const dispatchesPanel = (() => {
       <td>${escapeHtml(d.target)}</td>
       <td>${escapeHtml(d.recurrence || "once")}</td>
       <td class="disp-payload">${payloadCell}</td>
+      <td class="disp-actions">
+        <button class="link-btn" data-disp-toggle="${d.id}" data-next="${d.active ? 0 : 1}">${toggle}</button>
+        <button class="link-btn disp-del" data-disp-del="${d.id}">Delete</button>
+      </td>
     </tr>`;
   }
 
-  function emptyHtml(mgId) {
-    return `<p class="hint">No dispatches for this microgrid yet. Create one with the dispatch CLI:</p>
-      <pre class="disp-cmd">DISPATCH_API_URL='grpc://[::1]:8900?ssl=false' DISPATCH_API_AUTH_KEY=any \\
-  python -m frequenz.client.dispatch create ${mgId} SET_POWER BATTERY now \\
-  --payload '{"target_power_w": 5000}'</pre>`;
+  function emptyHtml() {
+    return `<p class="hint">No dispatches for this microgrid yet — create one with the form above, <code>swctl dispatch create</code>, or the dispatch CLI.</p>`;
+  }
+
+  // All mutations funnel through here; a non-2xx surfaces the server's
+  // error text (the store's 400 / 404 messages) to the toast.
+  async function mutate(method, path, body) {
+    const opts = { method };
+    if (body !== undefined) {
+      opts.headers = { "content-type": "application/json" };
+      opts.body = JSON.stringify(body);
+    }
+    const res = await fetch(path, opts);
+    if (!res.ok) {
+      const txt = await res.text().catch(() => "");
+      throw new Error(txt || `HTTP ${res.status}`);
+    }
+    return res;
+  }
+
+  async function create(form) {
+    if (currentMg == null) return;
+    const fd = new FormData(form);
+    const type = String(fd.get("type") || "").trim();
+    const target = String(fd.get("target") || "").trim();
+    if (!type || !target) {
+      notify("type and target are required");
+      return;
+    }
+    const body = {
+      type,
+      target,
+      active: fd.get("active") === "on",
+      dry_run: fd.get("dry_run") === "on",
+    };
+    const dur = String(fd.get("duration") || "").trim();
+    if (dur !== "") {
+      const n = Number(dur);
+      if (!Number.isFinite(n) || n < 0) {
+        notify("duration must be a non-negative number of seconds");
+        return;
+      }
+      body.duration_s = Math.floor(n);
+    }
+    const payloadRaw = String(fd.get("payload") || "").trim();
+    if (payloadRaw !== "") {
+      try {
+        body.payload = JSON.parse(payloadRaw);
+      } catch (_) {
+        notify("payload must be valid JSON");
+        return;
+      }
+    }
+    try {
+      await mutate("POST", `/api/mg/${currentMg}/dispatches`, body);
+      form.reset();
+      notify("dispatch created", "info");
+      render(currentMg);
+    } catch (err) {
+      notify(`create failed: ${err.message}`);
+    }
+  }
+
+  async function setActive(id, active) {
+    try {
+      await mutate("POST", `/api/mg/${currentMg}/dispatches/${id}/active`, {
+        active,
+      });
+      render(currentMg);
+    } catch (err) {
+      notify(`${active ? "resume" : "pause"} failed: ${err.message}`);
+    }
+  }
+
+  async function remove(id) {
+    if (!confirm(`Delete dispatch #${id}? This can't be undone.`)) return;
+    try {
+      await mutate("DELETE", `/api/mg/${currentMg}/dispatches/${id}`);
+      render(currentMg);
+    } catch (err) {
+      notify(`delete failed: ${err.message}`);
+    }
   }
 
   async function render(mgId) {
+    currentMg = mgId;
     const el = host();
     if (!el) return;
     let list;
@@ -4007,19 +4093,44 @@ const dispatchesPanel = (() => {
       return;
     }
     if (!Array.isArray(list) || list.length === 0) {
-      el.innerHTML = emptyHtml(mgId);
+      el.innerHTML = emptyHtml();
       return;
     }
     el.innerHTML = `<table class="disp-table">
       <thead><tr>
         <th>ID</th><th>Type</th><th>Status</th><th>Start</th>
-        <th>Duration</th><th>Target</th><th>Recurs</th><th>Payload</th>
+        <th>Duration</th><th>Target</th><th>Recurs</th><th>Payload</th><th></th>
       </tr></thead>
       <tbody>${list.map(rowHtml).join("")}</tbody>
     </table>`;
   }
 
-  return { render };
+  // Wire the create form + row-action delegation once at startup. The
+  // form and #dispatches-body are static in index.html, so the
+  // listeners survive every render() (which only swaps innerHTML).
+  function setup() {
+    const form = document.getElementById("dispatch-create-form");
+    if (form) {
+      form.addEventListener("submit", (e) => {
+        e.preventDefault();
+        create(form);
+      });
+    }
+    const body = host();
+    if (body) {
+      body.addEventListener("click", (e) => {
+        const btn = e.target.closest("button");
+        if (!btn) return;
+        if (btn.dataset.dispToggle != null) {
+          setActive(Number(btn.dataset.dispToggle), btn.dataset.next === "1");
+        } else if (btn.dataset.dispDel != null) {
+          remove(Number(btn.dataset.dispDel));
+        }
+      });
+    }
+  }
+
+  return { render, setup };
 })();
 
 // ─── Pulse bar ─────────────────────────────────────────────────────────────
@@ -4533,6 +4644,7 @@ async function init() {
   setupReplMgChip();
   setupFormulaTileClicks();
   scenariosPanel.setup();
+  dispatchesPanel.setup();
   await clockState.init();
   pulseBar.setup();
   await refreshTopology();
