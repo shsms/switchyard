@@ -19,7 +19,6 @@
 
 use std::pin::Pin;
 
-use chrono::{DateTime, TimeZone, Utc};
 use prost_types::Timestamp;
 use tokio_stream::Stream;
 use tokio_stream::wrappers::ReceiverStream;
@@ -28,7 +27,9 @@ use crate::proto::common::pagination::{PaginationInfo, PaginationParams, paginat
 use crate::proto::common::streaming::Event;
 use crate::proto::common::types::Interval;
 use crate::proto::dispatch as pb;
-use crate::sim::dispatch::{DispatchChange, SharedDispatchStore};
+use crate::sim::dispatch::{
+    DispatchChange, DispatchError, SharedDispatchStore, is_recurring, stamp_updated, ts_to_dt,
+};
 
 pub struct DispatchServer {
     pub store: SharedDispatchStore,
@@ -51,42 +52,25 @@ impl pb::microgrid_dispatch_service_server::MicrogridDispatchService for Dispatc
         request: tonic::Request<pb::CreateMicrogridDispatchRequest>,
     ) -> Result<tonic::Response<pb::CreateMicrogridDispatchResponse>, tonic::Status> {
         let req = request.into_inner();
-        let mut data = req
+        let data = req
             .dispatch_data
             .ok_or_else(|| tonic::Status::invalid_argument("dispatch_data is required"))?;
 
-        let now = Utc::now();
-        // `start_immediately` overrides the start time to server-now.
-        if req.start_immediately == Some(true) {
-            data.start_time = Some(to_ts(now));
-        }
-        // The production API rejects start times in the past. Switchyard
-        // is a simulator backend, so it is deliberately lenient: a past
-        // start_time is accepted (it's how you create an already-running
-        // dispatch for downstream testing, the trick the dispatchsim mock
-        // uses). We only require that *some* start time is present.
-        if data.start_time.is_none() {
-            return Err(tonic::Status::invalid_argument(
-                "start_time is required unless start_immediately is set",
-            ));
-        }
-
-        let id = self.store.alloc_id();
-        let recurring = is_recurring(&data);
-        let end_time = compute_end_time(data.start_time.as_ref(), data.duration, recurring);
-        let dispatch = pb::Dispatch {
-            metadata: Some(pb::DispatchMetadata {
-                dispatch_id: id,
-                create_time: Some(to_ts(now)),
-                update_time: Some(to_ts(now)),
-                end_time,
-            }),
-            data: Some(data),
-        };
-        self.store.insert(req.microgrid_id, dispatch.clone());
+        // All construction (id, timestamps, end_time, start-time
+        // validation) lives in the store so the gRPC + UI create paths
+        // stay identical.
+        let dispatch = self
+            .store
+            .create(req.microgrid_id, data, req.start_immediately == Some(true))
+            .map_err(dispatch_err_to_status)?;
         log::info!(
-            "CreateMicrogridDispatch(microgrid_id={}) -> dispatch {id}",
-            req.microgrid_id
+            "CreateMicrogridDispatch(microgrid_id={}) -> dispatch {}",
+            req.microgrid_id,
+            dispatch
+                .metadata
+                .as_ref()
+                .map(|m| m.dispatch_id)
+                .unwrap_or(0)
         );
         Ok(tonic::Response::new(pb::CreateMicrogridDispatchResponse {
             dispatch: Some(dispatch),
@@ -178,15 +162,8 @@ impl pb::microgrid_dispatch_service_server::MicrogridDispatchService for Dispatc
             data.recurrence = Some(recurrence_from_update(rec));
         }
 
-        // Re-derive update_time + end_time after the merge.
-        let now = Utc::now();
-        let recurring = is_recurring(data);
-        let end_time = compute_end_time(data.start_time.as_ref(), data.duration, recurring);
-        if let Some(meta) = dispatch.metadata.as_mut() {
-            meta.update_time = Some(to_ts(now));
-            meta.end_time = end_time;
-        }
-
+        // Re-stamp update_time + end_time after the merge.
+        stamp_updated(&mut dispatch);
         self.store.replace(req.microgrid_id, dispatch.clone());
         log::info!(
             "UpdateMicrogridDispatch(microgrid_id={}, dispatch_id={})",
@@ -290,40 +267,12 @@ fn not_found(microgrid_id: u64, dispatch_id: u64) -> tonic::Status {
     ))
 }
 
-fn to_ts(dt: DateTime<Utc>) -> Timestamp {
-    Timestamp {
-        seconds: dt.timestamp(),
-        nanos: dt.timestamp_subsec_nanos() as i32,
+/// Map a store-level [`DispatchError`] onto a gRPC status.
+fn dispatch_err_to_status(err: DispatchError) -> tonic::Status {
+    match err {
+        DispatchError::MissingStartTime => tonic::Status::invalid_argument(err.to_string()),
+        DispatchError::NotFound => tonic::Status::not_found(err.to_string()),
     }
-}
-
-fn ts_to_dt(ts: &Timestamp) -> Option<DateTime<Utc>> {
-    Utc.timestamp_opt(ts.seconds, ts.nanos.max(0) as u32)
-        .single()
-}
-
-/// A dispatch recurs if its rule carries a real (non-`UNSPECIFIED`)
-/// frequency.
-fn is_recurring(data: &pb::DispatchData) -> bool {
-    data.recurrence
-        .as_ref()
-        .is_some_and(|r| r.freq != pb::recurrence_rule::Frequency::Unspecified as i32)
-}
-
-/// `end_time` is only calculable for a one-off (non-recurring) dispatch
-/// with a finite duration. Indefinite (no duration) and recurring
-/// dispatches have no single predetermined end, so it stays unset.
-fn compute_end_time(
-    start: Option<&Timestamp>,
-    duration_s: Option<u32>,
-    recurring: bool,
-) -> Option<Timestamp> {
-    if recurring {
-        return None;
-    }
-    let start = ts_to_dt(start?)?;
-    let end = start + chrono::Duration::seconds(duration_s? as i64);
-    Some(to_ts(end))
 }
 
 fn recurrence_from_update(
@@ -528,7 +477,8 @@ fn parse_page_token(token: &str) -> (usize, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sim::dispatch::new_store;
+    use crate::sim::dispatch::{new_store, to_ts};
+    use chrono::Utc;
     use pb::microgrid_dispatch_service_server::MicrogridDispatchService;
 
     fn server() -> DispatchServer {

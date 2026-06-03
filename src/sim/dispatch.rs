@@ -21,10 +21,37 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use chrono::{DateTime, TimeZone, Utc};
 use parking_lot::RwLock;
+use prost_types::Timestamp;
 use tokio::sync::broadcast;
 
 use crate::proto::dispatch as pb;
+
+/// Why a dispatch mutation was rejected. The transport layers map it
+/// to their own error shape — the gRPC server to a `tonic::Status`,
+/// the UI to an HTTP status — so the domain rule lives in one place.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DispatchError {
+    /// Create was asked for a dispatch with neither a `start_time` nor
+    /// `start_immediately`.
+    MissingStartTime,
+    /// No dispatch with that id exists for the microgrid.
+    NotFound,
+}
+
+impl std::fmt::Display for DispatchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingStartTime => {
+                write!(f, "start_time is required unless start_immediately is set")
+            }
+            Self::NotFound => write!(f, "dispatch not found"),
+        }
+    }
+}
+
+impl std::error::Error for DispatchError {}
 
 /// Capacity of the per-store change broadcast ring. Each
 /// `StreamMicrogridDispatches` subscription and every UI WebSocket
@@ -158,6 +185,66 @@ impl DispatchStore {
         removed
     }
 
+    /// Build and store a new dispatch from caller-supplied
+    /// `DispatchData`, returning the stored `Dispatch`. This is the one
+    /// construction path — the gRPC `CreateMicrogridDispatch` handler
+    /// and the UI's create endpoint both go through it, so id
+    /// allocation, timestamping, and `end_time` derivation stay
+    /// identical regardless of who created the dispatch.
+    ///
+    /// `start_immediately` overrides `start_time` to server-now. A
+    /// dispatch with neither is rejected ([`DispatchError::MissingStartTime`]).
+    /// A past `start_time` is intentionally accepted (see the module
+    /// docs): switchyard is a sim backend, and an already-started
+    /// dispatch is a useful thing to create for downstream testing.
+    pub fn create(
+        &self,
+        microgrid_id: u64,
+        mut data: pb::DispatchData,
+        start_immediately: bool,
+    ) -> Result<pb::Dispatch, DispatchError> {
+        let now = Utc::now();
+        if start_immediately {
+            data.start_time = Some(to_ts(now));
+        }
+        if data.start_time.is_none() {
+            return Err(DispatchError::MissingStartTime);
+        }
+        let recurring = is_recurring(&data);
+        let end_time = compute_end_time(data.start_time.as_ref(), data.duration, recurring);
+        let dispatch = pb::Dispatch {
+            metadata: Some(pb::DispatchMetadata {
+                dispatch_id: self.alloc_id(),
+                create_time: Some(to_ts(now)),
+                update_time: Some(to_ts(now)),
+                end_time,
+            }),
+            data: Some(data),
+        };
+        self.insert(microgrid_id, dispatch.clone());
+        Ok(dispatch)
+    }
+
+    /// Flip a dispatch's `is_active` flag (pause / resume), re-stamping
+    /// `update_time` + `end_time` and broadcasting `Updated`. Returns
+    /// [`DispatchError::NotFound`] if the dispatch is gone.
+    pub fn set_active(
+        &self,
+        microgrid_id: u64,
+        dispatch_id: u64,
+        active: bool,
+    ) -> Result<pb::Dispatch, DispatchError> {
+        let mut dispatch = self
+            .get(microgrid_id, dispatch_id)
+            .ok_or(DispatchError::NotFound)?;
+        if let Some(data) = dispatch.data.as_mut() {
+            data.is_active = active;
+        }
+        stamp_updated(&mut dispatch);
+        self.replace(microgrid_id, dispatch.clone());
+        Ok(dispatch)
+    }
+
     /// Fetch a single dispatch by id.
     pub fn get(&self, microgrid_id: u64, dispatch_id: u64) -> Option<pb::Dispatch> {
         self.inner
@@ -193,6 +280,188 @@ impl DispatchStore {
 
 fn dispatch_id_of(d: &pb::Dispatch) -> u64 {
     d.metadata.as_ref().map(|m| m.dispatch_id).unwrap_or(0)
+}
+
+// --- shared dispatch helpers ----------------------------------------------
+//
+// Time + recurrence helpers used by both the store (create / set_active)
+// and the gRPC server's field-mask update. Kept here so the one
+// definition of "how end_time is derived" serves every write path.
+
+pub(crate) fn to_ts(dt: DateTime<Utc>) -> Timestamp {
+    Timestamp {
+        seconds: dt.timestamp(),
+        nanos: dt.timestamp_subsec_nanos() as i32,
+    }
+}
+
+pub(crate) fn ts_to_dt(ts: &Timestamp) -> Option<DateTime<Utc>> {
+    Utc.timestamp_opt(ts.seconds, ts.nanos.max(0) as u32)
+        .single()
+}
+
+/// A dispatch recurs if its rule carries a real (non-`UNSPECIFIED`)
+/// frequency.
+pub(crate) fn is_recurring(data: &pb::DispatchData) -> bool {
+    data.recurrence
+        .as_ref()
+        .is_some_and(|r| r.freq != pb::recurrence_rule::Frequency::Unspecified as i32)
+}
+
+/// `end_time` is only calculable for a one-off (non-recurring) dispatch
+/// with a finite duration. Indefinite (no duration) and recurring
+/// dispatches have no single predetermined end, so it stays unset.
+pub(crate) fn compute_end_time(
+    start: Option<&Timestamp>,
+    duration_s: Option<u32>,
+    recurring: bool,
+) -> Option<Timestamp> {
+    if recurring {
+        return None;
+    }
+    let start = ts_to_dt(start?)?;
+    Some(to_ts(start + chrono::Duration::seconds(duration_s? as i64)))
+}
+
+/// Re-stamp `update_time` to now and re-derive `end_time` from the
+/// current data. Used after any in-place edit (set_active, field-mask
+/// update).
+pub(crate) fn stamp_updated(dispatch: &mut pb::Dispatch) {
+    let now = Utc::now();
+    let (start, duration, recurring) = match dispatch.data.as_ref() {
+        Some(d) => (d.start_time, d.duration, is_recurring(d)),
+        None => (None, None, false),
+    };
+    let end_time = compute_end_time(start.as_ref(), duration, recurring);
+    if let Some(meta) = dispatch.metadata.as_mut() {
+        meta.update_time = Some(to_ts(now));
+        meta.end_time = end_time;
+    }
+}
+
+// --- human-input parsing (shared by the UI create endpoint + swctl) -------
+
+fn category_from_alias(token: &str) -> Option<i32> {
+    use crate::proto::common::microgrid::electrical_components::ElectricalComponentCategory as Cat;
+    let cat = match token.to_lowercase().as_str() {
+        "battery" => Cat::Battery,
+        "grid" => Cat::GridConnectionPoint,
+        "meter" => Cat::Meter,
+        "inverter" => Cat::Inverter,
+        "ev_charger" | "ev-charger" | "evcharger" => Cat::EvCharger,
+        "chp" => Cat::Chp,
+        _ => return None,
+    };
+    Some(cat as i32)
+}
+
+/// Parse a target spec into proto `TargetComponents`. Accepts either a
+/// comma-separated list of numeric component ids (`"1,2,3"`) or a
+/// comma-separated list of category names (`"battery,grid"`); the two
+/// can't be mixed. Mirrors the `frequenz-client-dispatch` CLI's target
+/// argument so the UI / swctl take the same syntax.
+pub fn parse_target(spec: &str) -> Result<pb::TargetComponents, String> {
+    use pb::target_components::{CategoryAndType, CategoryTypeSet, Components, IdSet};
+    let tokens: Vec<&str> = spec
+        .split(',')
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .collect();
+    if tokens.is_empty() {
+        return Err("target is empty".to_string());
+    }
+    // All tokens numeric => a set of component ids.
+    if let Some(ids) = tokens
+        .iter()
+        .map(|t| t.parse::<u64>().ok())
+        .collect::<Option<Vec<u64>>>()
+    {
+        return Ok(pb::TargetComponents {
+            components: Some(Components::ComponentIds(IdSet { ids })),
+        });
+    }
+    // Otherwise category names (no id/category mixing).
+    let mut categories = Vec::with_capacity(tokens.len());
+    for token in &tokens {
+        match category_from_alias(token) {
+            Some(category) => categories.push(CategoryAndType {
+                category,
+                r#type: None,
+            }),
+            None => {
+                return Err(format!(
+                    "unknown target {token:?}; expected component ids (e.g. \"1,2\") or \
+                     categories (battery, grid, meter, inverter, ev_charger, chp)"
+                ));
+            }
+        }
+    }
+    Ok(pb::TargetComponents {
+        components: Some(Components::ComponentCategoriesTypes(CategoryTypeSet {
+            categories,
+        })),
+    })
+}
+
+// --- payload <-> JSON conversion (google.protobuf.Struct) -----------------
+
+/// Convert a JSON value to a proto `Struct`. Errors unless the value is
+/// a JSON object — a dispatch `payload` is a `google.protobuf.Struct`,
+/// which is keyed at the top level.
+pub fn json_to_struct(value: &serde_json::Value) -> Result<prost_types::Struct, String> {
+    match value {
+        serde_json::Value::Object(map) => Ok(prost_types::Struct {
+            fields: map
+                .iter()
+                .map(|(k, v)| (k.clone(), prost_value_from_json(v)))
+                .collect(),
+        }),
+        _ => Err("payload must be a JSON object".to_string()),
+    }
+}
+
+fn prost_value_from_json(value: &serde_json::Value) -> prost_types::Value {
+    use prost_types::value::Kind;
+    use serde_json::Value as J;
+    let kind = match value {
+        J::Null => Kind::NullValue(0),
+        J::Bool(b) => Kind::BoolValue(*b),
+        J::Number(n) => Kind::NumberValue(n.as_f64().unwrap_or(0.0)),
+        J::String(s) => Kind::StringValue(s.clone()),
+        J::Array(items) => Kind::ListValue(prost_types::ListValue {
+            values: items.iter().map(prost_value_from_json).collect(),
+        }),
+        J::Object(map) => Kind::StructValue(prost_types::Struct {
+            fields: map
+                .iter()
+                .map(|(k, v)| (k.clone(), prost_value_from_json(v)))
+                .collect(),
+        }),
+    };
+    prost_types::Value { kind: Some(kind) }
+}
+
+/// Convert a proto `Struct` back to a JSON value (for the UI's
+/// dispatch list).
+pub fn struct_to_json(s: &prost_types::Struct) -> serde_json::Value {
+    let mut map = serde_json::Map::with_capacity(s.fields.len());
+    for (k, v) in &s.fields {
+        map.insert(k.clone(), prost_value_to_json(v));
+    }
+    serde_json::Value::Object(map)
+}
+
+fn prost_value_to_json(v: &prost_types::Value) -> serde_json::Value {
+    use prost_types::value::Kind;
+    use serde_json::Value as J;
+    match &v.kind {
+        None | Some(Kind::NullValue(_)) => J::Null,
+        Some(Kind::NumberValue(n)) => serde_json::Number::from_f64(*n).map_or(J::Null, J::Number),
+        Some(Kind::StringValue(s)) => J::String(s.clone()),
+        Some(Kind::BoolValue(b)) => J::Bool(*b),
+        Some(Kind::StructValue(st)) => struct_to_json(st),
+        Some(Kind::ListValue(l)) => J::Array(l.values.iter().map(prost_value_to_json).collect()),
+    }
 }
 
 #[cfg(test)]
@@ -275,5 +544,102 @@ mod tests {
         assert_eq!(ev.change, DispatchChange::Deleted);
         // The deleted record rides along even though it's gone from the store.
         assert_eq!(ev.dispatch.data.unwrap().r#type, "SET_POWER_V2");
+    }
+
+    #[test]
+    fn create_stamps_id_times_and_end() {
+        let store = new_store();
+        let data = pb::DispatchData {
+            r#type: "SET_POWER".to_string(),
+            duration: Some(3600),
+            ..Default::default()
+        };
+        // start_immediately supplies the start time, so this succeeds
+        // despite `data.start_time` being None.
+        let d = store.create(261, data, true).expect("create ok");
+        let meta = d.metadata.unwrap();
+        assert_eq!(meta.dispatch_id, 1);
+        assert!(meta.create_time.is_some() && meta.update_time.is_some());
+        // Finite one-off => end_time = start + duration.
+        let start = d.data.unwrap().start_time.unwrap();
+        assert_eq!(meta.end_time.unwrap().seconds, start.seconds + 3600);
+        assert!(store.get(261, 1).is_some());
+    }
+
+    #[test]
+    fn create_requires_a_start_time() {
+        let store = new_store();
+        let err = store
+            .create(1, pb::DispatchData::default(), false)
+            .unwrap_err();
+        assert_eq!(err, DispatchError::MissingStartTime);
+        assert_eq!(store.total(), 0);
+    }
+
+    #[test]
+    fn set_active_toggles_and_broadcasts() {
+        let store = new_store();
+        let data = pb::DispatchData {
+            r#type: "X".to_string(),
+            is_active: true,
+            ..Default::default()
+        };
+        let created = store.create(7, data, true).unwrap();
+        let id = created.metadata.unwrap().dispatch_id;
+        let mut rx = store.subscribe();
+
+        let paused = store.set_active(7, id, false).unwrap();
+        assert!(!paused.data.unwrap().is_active);
+        assert_eq!(rx.try_recv().unwrap().change, DispatchChange::Updated);
+        // The stored copy reflects the pause.
+        assert!(!store.get(7, id).unwrap().data.unwrap().is_active);
+
+        // Unknown dispatch => NotFound, nothing broadcast.
+        assert_eq!(
+            store.set_active(7, 999, true).unwrap_err(),
+            DispatchError::NotFound
+        );
+    }
+
+    #[test]
+    fn parse_target_handles_ids_categories_and_errors() {
+        use crate::proto::common::microgrid::electrical_components::ElectricalComponentCategory;
+        use pb::target_components::Components;
+
+        // Numeric list => component ids.
+        match parse_target("1, 2, 3").unwrap().components.unwrap() {
+            Components::ComponentIds(set) => assert_eq!(set.ids, vec![1, 2, 3]),
+            other => panic!("expected ids, got {other:?}"),
+        }
+        // Category names => category-type set (grid aliases to the
+        // GRID_CONNECTION_POINT category).
+        match parse_target("battery,grid").unwrap().components.unwrap() {
+            Components::ComponentCategoriesTypes(set) => {
+                let cats: Vec<i32> = set.categories.iter().map(|c| c.category).collect();
+                assert_eq!(
+                    cats,
+                    vec![
+                        ElectricalComponentCategory::Battery as i32,
+                        ElectricalComponentCategory::GridConnectionPoint as i32,
+                    ]
+                );
+            }
+            other => panic!("expected categories, got {other:?}"),
+        }
+        assert!(parse_target("").is_err());
+        assert!(parse_target("nonsense").is_err());
+    }
+
+    #[test]
+    fn payload_json_struct_roundtrip() {
+        let json = serde_json::json!({
+            "target_power_w": 5000.0,
+            "nested": {"on": true, "tags": ["a", "b"]},
+        });
+        let st = json_to_struct(&json).expect("object converts");
+        // Round-trips back to the same JSON.
+        assert_eq!(struct_to_json(&st), json);
+        // A non-object payload is rejected.
+        assert!(json_to_struct(&serde_json::json!(5)).is_err());
     }
 }

@@ -728,7 +728,7 @@ fn dispatch_to_view(d: &crate::proto::dispatch::Dispatch) -> DispatchView {
         payload: data
             .payload
             .as_ref()
-            .map(struct_to_json)
+            .map(crate::sim::dispatch::struct_to_json)
             .unwrap_or(serde_json::Value::Null),
     }
 }
@@ -801,27 +801,6 @@ fn recurrence_to_string(rule: Option<&crate::proto::dispatch::RecurrenceRule>) -
         .to_lowercase();
     let interval = rule.interval.max(1);
     Some(format!("{label} ×{interval}"))
-}
-
-fn struct_to_json(s: &prost_types::Struct) -> serde_json::Value {
-    let mut map = serde_json::Map::with_capacity(s.fields.len());
-    for (k, v) in &s.fields {
-        map.insert(k.clone(), prost_value_to_json(v));
-    }
-    serde_json::Value::Object(map)
-}
-
-fn prost_value_to_json(v: &prost_types::Value) -> serde_json::Value {
-    use prost_types::value::Kind;
-    use serde_json::Value as J;
-    match &v.kind {
-        None | Some(Kind::NullValue(_)) => J::Null,
-        Some(Kind::NumberValue(n)) => serde_json::Number::from_f64(*n).map_or(J::Null, J::Number),
-        Some(Kind::StringValue(s)) => J::String(s.clone()),
-        Some(Kind::BoolValue(b)) => J::Bool(*b),
-        Some(Kind::StructValue(st)) => struct_to_json(st),
-        Some(Kind::ListValue(l)) => J::Array(l.values.iter().map(prost_value_to_json).collect()),
-    }
 }
 
 #[derive(Serialize)]
