@@ -4,6 +4,7 @@ pub mod chp;
 pub mod clock;
 pub mod component;
 pub mod decay;
+pub mod dispatch;
 pub(crate) mod dynamic_scalar;
 pub mod ev_charger;
 pub mod events;
