@@ -1591,6 +1591,12 @@ body.compact main { height: calc(100vh - 41px - 22px); }
    Read-only table of dispatches the dispatch API holds for the selected
    microgrid; mirrors the dashboard pane (padding + its own scroll). */
 #dispatches {
+  /* `display: block` defeats the inline `hidden` attribute's
+     `[hidden] { display: none }` (same trick #dashboard uses with
+     `display: grid`); the body[data-subview] rules above re-hide it
+     when another sub-tab is active. Without this the pane never shows
+     and the Dispatches tab looks empty. */
+  display: block;
   padding: 16px;
   overflow-y: auto;
   align-content: start;
