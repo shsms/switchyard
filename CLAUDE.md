@@ -79,8 +79,12 @@ shared listener (they're enterprise-wide, keyed by `microgrid_id` per
 request): assets on `[::1]:9900`, dispatch on `[::1]:8900`. Override
 via `(set-assets-socket-addr …)` / `(set-dispatch-socket-addr …)`.
 Point the dispatch CLI at it with
-`--url 'grpc://[::1]:8900?ssl=false' --auth-key any` (auth is ignored).
-The per-microgrid Dispatches UI sub-tab reads `/api/mg/{id}/dispatches`.
+`--url 'grpc://[::1]:8900?ssl=false' --auth-key any` (auth is ignored),
+or use `swctl dispatch {list,create,pause,resume,delete,get}`. The
+per-microgrid Dispatches UI sub-tab (`/api/mg/{id}/dispatches`) lists
+them and can create / pause / resume / delete; all three write paths
+(gRPC, UI, swctl) funnel through `DispatchStore::{create,set_active}`,
+so construction + validation stay identical.
 
 ## Dependencies
 
