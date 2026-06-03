@@ -2502,7 +2502,8 @@ function openWebSocket(onTopologyChanged) {
       // mg_id = undefined and pass through regardless.
       const selectedMg = readSelectedMg();
       const perMg = ev.kind === "sample" || ev.kind === "microgrid_sample"
-                 || ev.kind === "topology_changed" || ev.kind === "setpoint";
+                 || ev.kind === "topology_changed" || ev.kind === "setpoint"
+                 || ev.kind === "dispatch_changed";
       if (perMg && selectedMg != null && ev.mg_id != null && ev.mg_id !== selectedMg) {
         return;
       }
@@ -2522,6 +2523,12 @@ function openWebSocket(onTopologyChanged) {
         pulseBar.recordSetpoint();
       } else if (ev.kind === "log") {
         appendLog(ev);
+      } else if (ev.kind === "dispatch_changed") {
+        // The dispatch store changed for ev.mg_id; refetch only if
+        // we're actually looking at that microgrid's Dispatches tab.
+        if (selectedMg != null && readSubview() === "dispatches") {
+          dispatchesPanel.render(selectedMg);
+        }
       }
     };
     ws.onclose = () => {
@@ -3909,6 +3916,112 @@ function renderClockNow() {
   if (el) el.textContent = clockState.formatNow();
 }
 
+// ─── Dispatches (per-microgrid) ─────────────────────────────────────────────
+//
+// Read-only table of the dispatches switchyard's dispatch API holds for
+// the selected microgrid. Rendered on entering the Dispatches sub-tab
+// and refetched when a `dispatch_changed` WS event names this microgrid
+// (the dispatch CLI created / updated / deleted one).
+const dispatchesPanel = (() => {
+  const host = () => document.getElementById("dispatches-body");
+
+  function fmtTs(ms) {
+    if (ms == null) return "—";
+    try {
+      return new Date(ms).toLocaleString("en-GB", {
+        year: "numeric",
+        month: "short",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+        timeZone: clockState.tzInUse(),
+      });
+    } catch (_) {
+      return new Date(ms).toISOString();
+    }
+  }
+
+  function fmtDuration(s) {
+    if (s == null) return "indefinite";
+    if (s === 0) return "instant";
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const sec = s % 60;
+    return (
+      [h && `${h}h`, m && `${m}m`, sec && `${sec}s`].filter(Boolean).join(" ") ||
+      "0s"
+    );
+  }
+
+  function payloadText(p) {
+    if (p == null) return "—";
+    if (typeof p === "object" && !Array.isArray(p) && Object.keys(p).length === 0)
+      return "—";
+    return JSON.stringify(p);
+  }
+
+  function rowHtml(d) {
+    const status = d.active
+      ? '<span class="disp-badge disp-on">active</span>'
+      : '<span class="disp-badge disp-off">inactive</span>';
+    const dry = d.dry_run ? ' <span class="disp-badge disp-dry">dry-run</span>' : "";
+    const payload = payloadText(d.payload);
+    const payloadCell =
+      payload === "—"
+        ? "—"
+        : `<code title="${escapeHtml(payload)}">${escapeHtml(
+            payload.length > 60 ? payload.slice(0, 59) + "…" : payload,
+          )}</code>`;
+    return `<tr>
+      <td class="disp-id">#${d.id}</td>
+      <td>${escapeHtml(d.type)}</td>
+      <td>${status}${dry}</td>
+      <td>${escapeHtml(fmtTs(d.start_ms))}</td>
+      <td>${escapeHtml(fmtDuration(d.duration_s))}</td>
+      <td>${escapeHtml(d.target)}</td>
+      <td>${escapeHtml(d.recurrence || "once")}</td>
+      <td class="disp-payload">${payloadCell}</td>
+    </tr>`;
+  }
+
+  function emptyHtml(mgId) {
+    return `<p class="hint">No dispatches for this microgrid yet. Create one with the dispatch CLI:</p>
+      <pre class="disp-cmd">DISPATCH_API_URL='grpc://[::1]:8900?ssl=false' DISPATCH_API_AUTH_KEY=any \\
+  python -m frequenz.client.dispatch create ${mgId} SET_POWER BATTERY now \\
+  --payload '{"target_power_w": 5000}'</pre>`;
+  }
+
+  async function render(mgId) {
+    const el = host();
+    if (!el) return;
+    let list;
+    try {
+      const res = await fetch(`/api/mg/${mgId}/dispatches`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      list = await res.json();
+    } catch (err) {
+      el.innerHTML = `<p class="hint">dispatches unavailable: ${escapeHtml(
+        err.message,
+      )}</p>`;
+      return;
+    }
+    if (!Array.isArray(list) || list.length === 0) {
+      el.innerHTML = emptyHtml(mgId);
+      return;
+    }
+    el.innerHTML = `<table class="disp-table">
+      <thead><tr>
+        <th>ID</th><th>Type</th><th>Status</th><th>Start</th>
+        <th>Duration</th><th>Target</th><th>Recurs</th><th>Payload</th>
+      </tr></thead>
+      <tbody>${list.map(rowHtml).join("")}</tbody>
+    </table>`;
+  }
+
+  return { render };
+})();
+
 // ─── Pulse bar ─────────────────────────────────────────────────────────────
 //
 // Always-on system pulse strip. Three live sources today:
@@ -4098,7 +4211,7 @@ const MODE_KEY = "switchyard-mode";
 const MG_SELECTED_KEY = "switchyard-selected-mg";
 const MG_SUBVIEW_KEY = "switchyard-mg-subview";
 const VALID_MODES = new Set(["microgrids", "scenarios"]);
-const VALID_SUBVIEWS = new Set(["dashboard", "topology"]);
+const VALID_SUBVIEWS = new Set(["dashboard", "topology", "dispatches"]);
 
 function readSelectedMg() {
   const raw = localStorage.getItem(MG_SELECTED_KEY);
@@ -4139,7 +4252,8 @@ function currentRoute() {
 function routeToHash({ mode, selectedMg, subview }) {
   if (mode === "scenarios") return "#scenarios";
   if (selectedMg == null) return "#microgrids";
-  if (subview === "topology") return `#microgrids/${selectedMg}/topology`;
+  if (subview === "topology" || subview === "dispatches")
+    return `#microgrids/${selectedMg}/${subview}`;
   return `#microgrids/${selectedMg}`;
 }
 
@@ -4234,6 +4348,9 @@ function applyMode(mode) {
   if (mode === "microgrids" && selected != null && subview === "dashboard") {
     dashboardTiles.backfill();
     gridFrequency.backfill();
+  }
+  if (mode === "microgrids" && selected != null && subview === "dispatches") {
+    dispatchesPanel.render(selected);
   }
   if (mode === "microgrids") microgridsPanel.refresh();
   if (mode === "scenarios") scenariosPanel.refresh();

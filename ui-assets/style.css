@@ -390,6 +390,7 @@ main {
 
 #topology,
 #dashboard,
+#dispatches,
 #scenarios {
   grid-area: topology;
   background: var(--bg);
@@ -408,18 +409,24 @@ main {
 body[data-mode="scenarios"] #microgrid-list,
 body[data-mode="scenarios"] #mg-header,
 body[data-mode="scenarios"] #dashboard,
+body[data-mode="scenarios"] #dispatches,
 body[data-mode="scenarios"] #topology { display: none; }
 
 body[data-mode="microgrids"] #scenarios { display: none; }
 
 body[data-mode="microgrids"][data-mg-view="list"] #mg-header,
 body[data-mode="microgrids"][data-mg-view="list"] #dashboard,
+body[data-mode="microgrids"][data-mg-view="list"] #dispatches,
 body[data-mode="microgrids"][data-mg-view="list"] #topology { display: none; }
 
 body[data-mode="microgrids"][data-mg-view="selected"] #microgrid-list { display: none; }
 
-body[data-mode="microgrids"][data-mg-view="selected"][data-subview="dashboard"] #topology { display: none; }
-body[data-mode="microgrids"][data-mg-view="selected"][data-subview="topology"]  #dashboard { display: none; }
+body[data-mode="microgrids"][data-mg-view="selected"][data-subview="dashboard"] #topology,
+body[data-mode="microgrids"][data-mg-view="selected"][data-subview="dashboard"] #dispatches { display: none; }
+body[data-mode="microgrids"][data-mg-view="selected"][data-subview="topology"]  #dashboard,
+body[data-mode="microgrids"][data-mg-view="selected"][data-subview="topology"]  #dispatches { display: none; }
+body[data-mode="microgrids"][data-mg-view="selected"][data-subview="dispatches"] #dashboard,
+body[data-mode="microgrids"][data-mg-view="selected"][data-subview="dispatches"] #topology { display: none; }
 
 #microgrid-list,
 #mg-header,
@@ -1579,3 +1586,62 @@ body.compact .dash-meta { font-size: 10px; margin-top: 3px; }
 body.compact #dashboard { padding: 8px; gap: 6px; }
 /* Re-tighten the main grid since the pulse bar shrank 6 px. */
 body.compact main { height: calc(100vh - 41px - 22px); }
+
+/* ─── Dispatches (per-microgrid) ─────────────────────────────────────────
+   Read-only table of dispatches the dispatch API holds for the selected
+   microgrid; mirrors the dashboard pane (padding + its own scroll). */
+#dispatches {
+  padding: 16px;
+  overflow-y: auto;
+  align-content: start;
+}
+.dispatches-header h2 { margin: 0 0 4px 0; font-size: 16px; }
+.dispatches-header .hint { margin: 0 0 14px 0; }
+.disp-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.disp-table th {
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  font-weight: 500;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.disp-table td {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.disp-table tbody tr:hover { background: var(--bg-elev); }
+.disp-id { font-family: var(--font-mono); color: var(--muted); }
+.disp-payload code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--accent);
+  word-break: break-all;
+}
+.disp-badge {
+  display: inline-block;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid currentColor;
+}
+.disp-on  { color: var(--good); }
+.disp-off { color: var(--muted); }
+.disp-dry { color: var(--warn); }
+.disp-cmd {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: pre;
+  overflow-x: auto;
+  color: var(--fg);
+}
+body.compact #dispatches { padding: 8px; }

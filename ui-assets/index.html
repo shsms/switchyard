@@ -65,6 +65,7 @@
         <nav id="mg-subtoggle" aria-label="microgrid view">
           <button class="mode-btn" data-subview="dashboard">Dashboard</button>
           <button class="mode-btn" data-subview="topology">Topology</button>
+          <button class="mode-btn" data-subview="dispatches">Dispatches</button>
         </nav>
       </header>
       <div id="topology"></div>
@@ -160,6 +161,17 @@
           <h2 class="tier-heading">CHP</h2>
           <div id="chp-rows" class="tier-rows"></div>
         </section>
+      </div>
+      <div id="dispatches" hidden>
+        <header class="dispatches-header">
+          <h2>Dispatches</h2>
+          <p class="hint">
+            Dispatches the dispatch API (<code>frequenz.api.dispatch.v1</code>)
+            holds for this microgrid. Create them with the dispatch CLI;
+            switchyard stores and serves them to downstream control apps.
+          </p>
+        </header>
+        <div id="dispatches-body"></div>
       </div>
       <div id="splitter" title="Drag to resize"></div>
       <aside id="side">
