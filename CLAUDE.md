@@ -11,6 +11,8 @@ is wiring the topology + animating the environment.
   - `component.rs` — `SimulatedComponent` trait, `ComponentHandle`, `Telemetry`
   - `microgrid_site.rs` — per-microgrid registry, physics tick, grid state, topology
   - `microgrids.rs` — enterprise registry + per-mg routing
+  - `dispatch.rs` — enterprise dispatch store (per-`microgrid_id`, id
+    allocator, lifecycle broadcast); backs the dispatch gRPC + UI
   - `bounds.rs` — `VecBounds`, `ComponentBounds` (rated + TTL augmentations)
   - `ramp.rs` — `CommandDelay` + `Ramp`
   - `decay.rs` — `bounded_exp_decay` + `soc_protected_bounds`
@@ -21,6 +23,9 @@ is wiring the topology + animating the environment.
   - `make.rs` — `(make-*)` constructors via `AsPlist!`
   - `handle.rs` — `ComponentHandle` ↔ `Shared<dyn TulispAny>` round trip
 - `src/server.rs` — `Microgrid` gRPC service
+- `src/assets_server.rs` — `PlatformAssets` gRPC service (shared port)
+- `src/dispatch_server.rs` — `MicrogridDispatchService` gRPC service
+  (store-and-serve dispatch API; CRUD + stream over `sim::dispatch`)
 - `src/proto.rs` + `src/proto_conv.rs` — proto include + `Telemetry` →
   `MetricSample`s
 - `src/timeout_tracker.rs` — request lifetime → `reset_setpoint` expiry
@@ -69,6 +74,14 @@ the first microgrid by default; pass `--addr http://[::1]:8810`
 etc. to reach others. The UI server binds `127.0.0.1:8801`
 (hardcoded for now — `--ui-bind` / `--ui-port` is on the roadmap).
 
+`PlatformAssets` and `MicrogridDispatchService` each bind a single
+shared listener (they're enterprise-wide, keyed by `microgrid_id` per
+request): assets on `[::1]:9900`, dispatch on `[::1]:8900`. Override
+via `(set-assets-socket-addr …)` / `(set-dispatch-socket-addr …)`.
+Point the dispatch CLI at it with
+`--url 'grpc://[::1]:8900?ssl=false' --auth-key any` (auth is ignored).
+The per-microgrid Dispatches UI sub-tab reads `/api/mg/{id}/dispatches`.
+
 ## Dependencies
 
 - `tulisp = { git = "https://github.com/shsms/tulisp", branch = "fmt",
@@ -86,6 +99,9 @@ etc. to reach others. The UI server binds `127.0.0.1:8801`
   - `submodules/frequenz-api-microgrid` (pinned at v0.18.0) — override
     with `SWITCHYARD_PROTO_ROOT` for a private mirror.
   - `submodules/frequenz-api-assets` (pinned at v0.1.0).
+  - `submodules/frequenz-api-dispatch` (pinned at v1.0.0) — dispatch
+    v1; imports the same vendored common v1alpha8, so no common of
+    its own.
 
 ## Adding a component type
 
