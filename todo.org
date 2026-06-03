@@ -423,6 +423,99 @@ the clamp ratio across sources, and let each inverter read its own
 =accepted_from(self.id)= to compute fair-share measured. Minor
 trade-off in trait surface.
 
+** d6. Persist only graph-affecting evals to the overrides file
+
+Today =Config::eval= (=src/lisp/mod.rs:604=) appends *every*
+successful eval, verbatim, to the per-mg overrides file
+(unconditionally on success), then calls =router.site().bump_version()=.
+So a structural edit (=(make-battery …)=, =connect=, delete,
+=rename=) and a transient runtime poke (=(set-meter-power 1 5000)=,
+=(set-component-health 3 'error)=, =(+ 2 3)=, a defaults edit) all
+land in the file identically. Because =(load-overrides)= replays the
+file on reload, runtime pokes currently *resurrect* as if they were
+config — so gating the append also fixes a correctness bug, not just
+clutter. An =eval_silent= twin (=:636=) already evals without
+persisting, so the "should this persist?" seam exists; it's just
+all-or-nothing.
+
+Structural mutations funnel through five =MicrogridSite= methods —
+=register= (=:655=, the =make-*= path), =connect= (=:669=),
+=disconnect= (=:849=), =remove_component= (=:818=), =rename= (=:859=).
+Runtime/env defuns (=set-component-health= =:1882=, =set-frequency=
+=:2038=, =set-*-power=, =every= / =run-with-timer=) touch none of
+them, so "did the graph change?" is observable. =bump_version()=
+(=:567=) fires on *every* eval — it's a WS-refresh counter, not a
+structural signal.
+
+*** The catch: "graph-affecting" is narrower than "worth persisting"
+
+Two cases persist via the same eval path today but are *not* graph
+edits:
+- *Defaults edits* — the Defaults panel saves =(setq battery-defaults
+  …)= through =/api/eval= (=app.js:1755=). They change *future*
+  =make-*=, not the live graph. A strict graph-diff gate would drop
+  them — a regression, since they're config worth keeping.
+- *Renames* — change a component's display name only. Counts as the
+  graph, or not? Open.
+
+So the real decision is the *policy* (graph-structure only, vs.
+"structural + config, minus transient/queries"), and only then the
+mechanism.
+
+*** Options
+
+- *A — fingerprint-diff gate.* In =Config::eval=, hash the structure
+  (=components()= → sorted ={id,category,subtype}= + =connections()= →
+  sorted edges [+ names]) before/after; append only on change. Robust
+  to any lisp (progn, loops, helper defuns) — decides on observed
+  effect, not syntax. Cons: net-zero edits (add+remove in one form)
+  don't persist; a mixed form (=make-*= *and* =set-power=) persists
+  whole (runtime part replays); defaults dropped unless whitelisted.
+- *B — structural-change-counter gate (recommended core).* Add
+  =structural_version: AtomicU64= to =MicrogridSite=, bumped inside
+  the five mutators; =Config::eval= snapshots it before/after and
+  appends only on change. Keep =bump_version()= as the WS counter.
+  Precise (knows a structural op ran), dirt-cheap (one atomic
+  compare, no hashing), tiny surface. Cons: net-zero edits still
+  persist (counter bumps twice); same mixed-form / defaults caveats
+  as A. Can layer A on top to suppress net-zero.
+- *C — verb allowlist (avoid alone).* Persist only if the eval's head
+  is a graph verb. Brittle — =progn= / =dotimes= / =let*= / user
+  defuns / =load= all defeat it. A hint, not the gate.
+- *D — origin-based (good refinement).* Canvas actions
+  (add/connect/delete/rename) are inherently structural and hit
+  dedicated paths; the free-form REPL is the noise. Persist canvas
+  edits always; gate REPL evals through A/B (or treat REPL as
+  scratch). Matches "canvas = the topology I built; REPL =
+  scratchpad". Needs an origin flag on the eval endpoint.
+- *F — form-splitting.* Split a multi-form eval into top-level forms,
+  eval each, persist only the forms that moved the structural signal.
+  Fixes the mixed-form hole; more work. A refinement on B.
+- *G — different model: regenerate, don't append.* Stop append-logging
+  evals; serialize the live graph structure to the file (the
+  clipboard/paste code already emits categories + internal edges, so
+  there's precedent). The file becomes a canonical snapshot, never
+  holds transient pokes, no replay surprises. Cons: bigger change;
+  regenerated forms lose exact source spelling (use defaults, like
+  paste) and you'd need a separate channel for non-graph config
+  (defaults/knobs) you still want kept.
+
+*** Recommendation
+
+B as the gate, with the policy widened to "structural OR
+config-worth-keeping": a structural-change counter gates =make-*= /
+=connect= / =disconnect= / =remove= (and =rename= if names should
+persist), plus a small explicit allowlist for non-graph config evals
+(defaults =setq=s) so they still persist. Optionally add D so the
+REPL is scratch-by-default. Minimal, lives at the five mutators, and
+fixes the reload-replay-of-pokes bug as a bonus.
+
+Open decisions before speccing:
+1. Defaults edits — keep persisting (likely yes) or drop as not-graph?
+2. Renames — graph edit (persist) or not?
+3. REPL vs canvas — REPL scratch-by-default (D), or persist whenever
+   the graph changed regardless of origin?
+
 * Code review — 2026-06-01
 
 Whole-codebase review (8-agent subsystem fan-out + clippy/fmt; clippy
