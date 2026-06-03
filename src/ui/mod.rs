@@ -662,11 +662,166 @@ fn router(
             "/api/mg/{mg_id}/overrides/text",
             get(overrides_text_for_mg).post(overrides_text_replace_for_mg),
         )
+        .route("/api/mg/{mg_id}/dispatches", get(dispatches_for_mg))
         .route("/ws/events", get(events_ws))
         .layer(Extension(microgrid))
         .layer(Extension(loopbacks))
         .layer(Extension(spawner))
         .with_state(config)
+}
+
+/// JSON shape for one dispatch in the per-microgrid Dispatches view.
+/// Timestamps are epoch-millis so the SPA formats them client-side via
+/// its TZ toggle, like every other UI timestamp. `target` / `recurrence`
+/// are pre-rendered human strings — the SPA only displays them.
+#[derive(Serialize)]
+struct DispatchView {
+    id: u64,
+    #[serde(rename = "type")]
+    type_: String,
+    active: bool,
+    dry_run: bool,
+    start_ms: Option<i64>,
+    duration_s: Option<u32>,
+    end_ms: Option<i64>,
+    create_ms: Option<i64>,
+    update_ms: Option<i64>,
+    target: String,
+    recurrence: Option<String>,
+    payload: serde_json::Value,
+}
+
+/// Per-microgrid dispatch list, read straight from the shared
+/// `DispatchStore` (no gRPC round-trip). Newest-created first — ids
+/// are monotonic, so descending id order matches. Returns `[]` for a
+/// microgrid with no dispatches; the store, not the registry, is the
+/// authority here, so an unknown `mg_id` simply yields an empty list.
+async fn dispatches_for_mg(
+    State(config): State<Config>,
+    Path(mg_id): Path<u64>,
+) -> Json<Vec<DispatchView>> {
+    let views = config
+        .dispatches()
+        .list_mg(mg_id)
+        .iter()
+        .rev()
+        .map(dispatch_to_view)
+        .collect();
+    Json(views)
+}
+
+fn dispatch_to_view(d: &crate::proto::dispatch::Dispatch) -> DispatchView {
+    let data = d.data.clone().unwrap_or_default();
+    let meta = d.metadata.clone().unwrap_or_default();
+    DispatchView {
+        id: meta.dispatch_id,
+        type_: data.r#type,
+        active: data.is_active,
+        dry_run: data.is_dry_run,
+        start_ms: data.start_time.as_ref().map(ts_to_ms),
+        duration_s: data.duration,
+        end_ms: meta.end_time.as_ref().map(ts_to_ms),
+        create_ms: meta.create_time.as_ref().map(ts_to_ms),
+        update_ms: meta.update_time.as_ref().map(ts_to_ms),
+        target: target_to_string(data.target.as_ref()),
+        recurrence: recurrence_to_string(data.recurrence.as_ref()),
+        payload: data
+            .payload
+            .as_ref()
+            .map(struct_to_json)
+            .unwrap_or(serde_json::Value::Null),
+    }
+}
+
+fn ts_to_ms(ts: &prost_types::Timestamp) -> i64 {
+    ts.seconds * 1000 + (ts.nanos as i64) / 1_000_000
+}
+
+/// Human label for an `ElectricalComponentCategory` value, e.g.
+/// `BATTERY` — strips the verbose proto enum prefix, or shows the raw
+/// number for an unknown value. (Distinct from `category_label`, which
+/// labels the sim's own `Category` enum.)
+fn electrical_category_label(cat: i32) -> String {
+    use crate::proto::common::microgrid::electrical_components::ElectricalComponentCategory as Cat;
+    match Cat::try_from(cat) {
+        Ok(c) => c
+            .as_str_name()
+            .strip_prefix("ELECTRICAL_COMPONENT_CATEGORY_")
+            .unwrap_or(c.as_str_name())
+            .to_string(),
+        Err(_) => format!("category {cat}"),
+    }
+}
+
+// The deprecated `ComponentCategories` variant is matched on purpose so
+// a dispatch that still carries it renders instead of falling through;
+// `CategoryTypeSet` is the live path.
+#[allow(deprecated)]
+fn target_to_string(target: Option<&crate::proto::dispatch::TargetComponents>) -> String {
+    use crate::proto::dispatch::target_components::Components;
+    match target.and_then(|t| t.components.as_ref()) {
+        None => "—".to_string(),
+        Some(Components::ComponentIds(ids)) => {
+            let list = ids
+                .ids
+                .iter()
+                .map(u64::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("ids: {list}")
+        }
+        Some(Components::ComponentCategories(c)) => c
+            .categories
+            .iter()
+            .map(|cat| electrical_category_label(*cat))
+            .collect::<Vec<_>>()
+            .join(", "),
+        Some(Components::ComponentCategoriesTypes(c)) => c
+            .categories
+            .iter()
+            .map(|ct| electrical_category_label(ct.category))
+            .collect::<Vec<_>>()
+            .join(", "),
+    }
+}
+
+/// Compact recurrence summary, e.g. `daily ×2`. `None` for a
+/// non-recurring dispatch (no rule, or an unspecified frequency).
+fn recurrence_to_string(rule: Option<&crate::proto::dispatch::RecurrenceRule>) -> Option<String> {
+    use crate::proto::dispatch::recurrence_rule::Frequency;
+    let rule = rule?;
+    let freq = Frequency::try_from(rule.freq).ok()?;
+    if freq == Frequency::Unspecified {
+        return None;
+    }
+    let label = freq
+        .as_str_name()
+        .strip_prefix("FREQUENCY_")
+        .unwrap_or(freq.as_str_name())
+        .to_lowercase();
+    let interval = rule.interval.max(1);
+    Some(format!("{label} ×{interval}"))
+}
+
+fn struct_to_json(s: &prost_types::Struct) -> serde_json::Value {
+    let mut map = serde_json::Map::with_capacity(s.fields.len());
+    for (k, v) in &s.fields {
+        map.insert(k.clone(), prost_value_to_json(v));
+    }
+    serde_json::Value::Object(map)
+}
+
+fn prost_value_to_json(v: &prost_types::Value) -> serde_json::Value {
+    use prost_types::value::Kind;
+    use serde_json::Value as J;
+    match &v.kind {
+        None | Some(Kind::NullValue(_)) => J::Null,
+        Some(Kind::NumberValue(n)) => serde_json::Number::from_f64(*n).map_or(J::Null, J::Number),
+        Some(Kind::StringValue(s)) => J::String(s.clone()),
+        Some(Kind::BoolValue(b)) => J::Bool(*b),
+        Some(Kind::StructValue(st)) => struct_to_json(st),
+        Some(Kind::ListValue(l)) => J::Array(l.values.iter().map(prost_value_to_json).collect()),
+    }
 }
 
 #[derive(Serialize)]
@@ -1791,6 +1946,10 @@ struct WireEvent<'a> {
 async fn event_pump(mut socket: WebSocket, config: Config) {
     use tokio::sync::broadcast::error::RecvError as BroadcastRecv;
     let mut log_rx = crate::ui_log::LOG_TAP.get().map(|t| t.subscribe());
+    // Enterprise-wide dispatch lifecycle changes. Wrapped in Option so
+    // a Closed (store dropped — shouldn't happen, it lives on Config)
+    // parks the branch instead of busy-looping, mirroring `log_rx`.
+    let mut dispatch_rx = Some(config.dispatches().subscribe());
     // Subscribe to every microgrid's per-site event bus + the
     // enterprise-wide `microgrid_registered` channel. The initial
     // snapshot covers every entry present at connect time; the
@@ -1886,6 +2045,38 @@ async fn event_pump(mut socket: WebSocket, config: Config) {
                 }
                 Err(BroadcastRecv::Lagged(_)) => continue,
                 Err(BroadcastRecv::Closed) => log_rx = None,
+            },
+            // Dispatch store changes — re-emit as a DispatchChanged
+            // wire event tagged with the affected microgrid so the
+            // SPA's per-microgrid Dispatches view refetches.
+            dispatch = async {
+                match dispatch_rx.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => match dispatch {
+                Ok(dev) => {
+                    let change = match dev.change {
+                        crate::sim::dispatch::DispatchChange::Created => "created",
+                        crate::sim::dispatch::DispatchChange::Updated => "updated",
+                        crate::sim::dispatch::DispatchChange::Deleted => "deleted",
+                    };
+                    let event = crate::sim::events::SiteEvent::DispatchChanged {
+                        dispatch_id: dev.dispatch_id(),
+                        change,
+                    };
+                    let wire = WireEvent {
+                        mg_id: Some(dev.microgrid_id),
+                        event: &event,
+                    };
+                    if let Ok(json) = serde_json::to_string(&wire)
+                        && socket.send(Message::Text(json.into())).await.is_err()
+                    {
+                        break;
+                    }
+                }
+                Err(BroadcastRecv::Lagged(_)) => continue,
+                Err(BroadcastRecv::Closed) => dispatch_rx = None,
             },
             msg = socket.recv() => match msg {
                 Some(Ok(_)) => {}

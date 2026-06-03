@@ -89,4 +89,17 @@ pub enum SiteEvent {
         ts_ms: i64,
         value: Option<f32>,
     },
+    /// A dispatch was created / updated / deleted in the enterprise
+    /// dispatch store. The SPA's per-microgrid Dispatches view
+    /// refetches `/api/mg/{id}/dispatches` when the carried `mg_id`
+    /// (set on the `WireEvent` wrapper) matches the microgrid it's
+    /// showing. Emitted directly by the WS event pump from its
+    /// `DispatchStore` subscription — like the `Log` variant — rather
+    /// than from a per-site event bus, since the dispatch store is
+    /// enterprise-wide and lives on `Config`, not on a `MicrogridSite`.
+    DispatchChanged {
+        dispatch_id: u64,
+        /// `"created"` / `"updated"` / `"deleted"`.
+        change: &'static str,
+    },
 }
