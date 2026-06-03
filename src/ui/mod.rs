@@ -833,7 +833,7 @@ fn dispatch_to_view(d: &crate::proto::dispatch::Dispatch) -> DispatchView {
         end_ms: meta.end_time.as_ref().map(ts_to_ms),
         create_ms: meta.create_time.as_ref().map(ts_to_ms),
         update_ms: meta.update_time.as_ref().map(ts_to_ms),
-        target: target_to_string(data.target.as_ref()),
+        target: crate::sim::dispatch::target_to_string(data.target.as_ref()),
         recurrence: recurrence_to_string(data.recurrence.as_ref()),
         payload: data
             .payload
@@ -845,54 +845,6 @@ fn dispatch_to_view(d: &crate::proto::dispatch::Dispatch) -> DispatchView {
 
 fn ts_to_ms(ts: &prost_types::Timestamp) -> i64 {
     ts.seconds * 1000 + (ts.nanos as i64) / 1_000_000
-}
-
-/// Human label for an `ElectricalComponentCategory` value, e.g.
-/// `BATTERY` — strips the verbose proto enum prefix, or shows the raw
-/// number for an unknown value. (Distinct from `category_label`, which
-/// labels the sim's own `Category` enum.)
-fn electrical_category_label(cat: i32) -> String {
-    use crate::proto::common::microgrid::electrical_components::ElectricalComponentCategory as Cat;
-    match Cat::try_from(cat) {
-        Ok(c) => c
-            .as_str_name()
-            .strip_prefix("ELECTRICAL_COMPONENT_CATEGORY_")
-            .unwrap_or(c.as_str_name())
-            .to_string(),
-        Err(_) => format!("category {cat}"),
-    }
-}
-
-// The deprecated `ComponentCategories` variant is matched on purpose so
-// a dispatch that still carries it renders instead of falling through;
-// `CategoryTypeSet` is the live path.
-#[allow(deprecated)]
-fn target_to_string(target: Option<&crate::proto::dispatch::TargetComponents>) -> String {
-    use crate::proto::dispatch::target_components::Components;
-    match target.and_then(|t| t.components.as_ref()) {
-        None => "—".to_string(),
-        Some(Components::ComponentIds(ids)) => {
-            let list = ids
-                .ids
-                .iter()
-                .map(u64::to_string)
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!("ids: {list}")
-        }
-        Some(Components::ComponentCategories(c)) => c
-            .categories
-            .iter()
-            .map(|cat| electrical_category_label(*cat))
-            .collect::<Vec<_>>()
-            .join(", "),
-        Some(Components::ComponentCategoriesTypes(c)) => c
-            .categories
-            .iter()
-            .map(|ct| electrical_category_label(ct.category))
-            .collect::<Vec<_>>()
-            .join(", "),
-    }
 }
 
 /// Compact recurrence summary, e.g. `daily ×2`. `None` for a

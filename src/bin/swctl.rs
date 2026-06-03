@@ -30,12 +30,19 @@ use switchyard::proto::common::microgrid::electrical_components::{
     ElectricalComponent, ElectricalComponentCategory,
     electrical_component_category_specific_info::Kind,
 };
+use switchyard::proto::dispatch::microgrid_dispatch_service_client::MicrogridDispatchServiceClient;
+use switchyard::proto::dispatch::{
+    CreateMicrogridDispatchRequest, DeleteMicrogridDispatchRequest, DispatchData,
+    GetMicrogridDispatchRequest, ListMicrogridDispatchesRequest, UpdateMicrogridDispatchRequest,
+    update_microgrid_dispatch_request::DispatchUpdate,
+};
 use switchyard::proto::microgrid::microgrid_client::MicrogridClient;
 use switchyard::proto::microgrid::{
     AugmentElectricalComponentBoundsRequest, ListElectricalComponentConnectionsRequest,
     ListElectricalComponentsRequest, PowerType, ReceiveElectricalComponentTelemetryStreamRequest,
     SetElectricalComponentPowerRequest,
 };
+use switchyard::sim::dispatch::{json_to_struct, parse_target, struct_to_json, target_to_string};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -54,6 +61,12 @@ struct Cli {
     /// gRPC.
     #[arg(long, default_value = "http://127.0.0.1:8801", global = true)]
     ui_addr: String,
+
+    /// gRPC endpoint of the (enterprise-wide) MicrogridDispatchService.
+    /// Used by the `dispatch` subcommand; separate from `--addr` since
+    /// the dispatch service binds its own shared port.
+    #[arg(long, default_value = "http://[::1]:8900", global = true)]
+    dispatch_addr: String,
 
     /// Emit JSON instead of human-friendly output where applicable.
     #[arg(long, global = true)]
@@ -145,6 +158,12 @@ enum Cmd {
         lifetime: u64,
     },
 
+    /// Create / list / pause / resume / delete dispatches via the
+    /// MicrogridDispatchService gRPC API (default --dispatch-addr
+    /// http://[::1]:8900).
+    #[command(subcommand)]
+    Dispatch(DispatchCmd),
+
     /// Drive the running scenario: start / stop / event / load,
     /// and read back report + events. Talks to the UI's HTTP
     /// surface, not gRPC.
@@ -184,6 +203,70 @@ enum Cmd {
         /// Polling cadence in seconds (only with --tail).
         #[arg(long, default_value_t = 1.0)]
         interval: f64,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum DispatchCmd {
+    /// List a microgrid's dispatches (newest created first).
+    List {
+        /// Microgrid id.
+        microgrid_id: u64,
+    },
+    /// Show a single dispatch.
+    Get {
+        /// Microgrid id.
+        microgrid_id: u64,
+        /// Dispatch id.
+        dispatch_id: u64,
+    },
+    /// Create a dispatch. TARGET is a comma-separated list of either
+    /// component categories (battery, grid, meter, inverter,
+    /// ev_charger, chp) or numeric component ids (e.g. "1,2,3").
+    Create {
+        /// Microgrid id.
+        microgrid_id: u64,
+        /// Dispatch type the downstream actor keys on (e.g. SET_POWER).
+        #[arg(name = "type")]
+        type_: String,
+        /// Target components.
+        target: String,
+        /// Duration in seconds; omit for an indefinite dispatch.
+        #[arg(long)]
+        duration: Option<u32>,
+        /// JSON payload object, e.g. '{"target_power_w": 5000}'.
+        #[arg(long)]
+        payload: Option<String>,
+        /// Create the dispatch inactive (default: active).
+        #[arg(long)]
+        inactive: bool,
+        /// Mark the dispatch as a dry run.
+        #[arg(long)]
+        dry_run: bool,
+        /// RFC3339 start time; omit to start immediately (now).
+        #[arg(long)]
+        start: Option<String>,
+    },
+    /// Pause a dispatch (set it inactive).
+    Pause {
+        /// Microgrid id.
+        microgrid_id: u64,
+        /// Dispatch id.
+        dispatch_id: u64,
+    },
+    /// Resume a paused dispatch (set it active).
+    Resume {
+        /// Microgrid id.
+        microgrid_id: u64,
+        /// Dispatch id.
+        dispatch_id: u64,
+    },
+    /// Delete a dispatch.
+    Delete {
+        /// Microgrid id.
+        microgrid_id: u64,
+        /// Dispatch id.
+        dispatch_id: u64,
     },
 }
 
@@ -321,6 +404,9 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     // Dispatch scenario commands first — they only need the HTTP
     // client, not a live gRPC channel. Avoids paying for a
     // failing gRPC connect when the user only wants /api/scenario.
+    if let Cmd::Dispatch(d) = cli.cmd {
+        return run_dispatch(d, &cli.dispatch_addr, cli.json).await;
+    }
     if let Cmd::Scenario(s) = cli.cmd {
         return run_scenario(s, &cli.ui_addr, cli.json).await;
     }
@@ -359,13 +445,230 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             upper,
             lifetime,
         } => cmd_augment(&mut client, id, lower, upper, lifetime).await,
-        // Scenario, Scenarios, Snapshot, Dashboard, Pool handled
-        // before the gRPC connect above.
-        Cmd::Scenario(_)
+        // Dispatch, Scenario, Scenarios, Snapshot, Dashboard, Pool
+        // handled before the gRPC connect above.
+        Cmd::Dispatch(_)
+        | Cmd::Scenario(_)
         | Cmd::Scenarios(_)
         | Cmd::Snapshot(_)
         | Cmd::Dashboard { .. }
         | Cmd::Pool { .. } => unreachable!(),
+    }
+}
+
+fn str_err(e: String) -> Box<dyn std::error::Error> {
+    e.into()
+}
+
+fn rfc3339_to_ts(s: &str) -> Result<prost_types::Timestamp, Box<dyn std::error::Error>> {
+    let dt = chrono::DateTime::parse_from_rfc3339(s)?.with_timezone(&chrono::Utc);
+    Ok(prost_types::Timestamp {
+        seconds: dt.timestamp(),
+        nanos: dt.timestamp_subsec_nanos() as i32,
+    })
+}
+
+/// One-line dispatch summary for `dispatch list`.
+fn dispatch_summary(d: &switchyard::proto::dispatch::Dispatch) -> String {
+    let id = d.metadata.as_ref().map(|m| m.dispatch_id).unwrap_or(0);
+    let data = d.data.as_ref();
+    let ty = data.map(|x| x.r#type.as_str()).unwrap_or("?");
+    let active = data.map(|x| x.is_active).unwrap_or(false);
+    let dry = if data.map(|x| x.is_dry_run).unwrap_or(false) {
+        " dry-run"
+    } else {
+        ""
+    };
+    let status = if active { "active" } else { "inactive" };
+    let dur = data
+        .and_then(|x| x.duration)
+        .map(|s| format!("{s}s"))
+        .unwrap_or_else(|| "indefinite".to_string());
+    let target = target_to_string(data.and_then(|x| x.target.as_ref()));
+    format!("#{id}  {ty}  [{status}{dry}]  dur={dur}  target={target}")
+}
+
+/// Multi-line dispatch detail for `dispatch get` / `create`.
+fn print_dispatch_detail(d: &switchyard::proto::dispatch::Dispatch) {
+    println!("{}", dispatch_summary(d));
+    if let Some(data) = d.data.as_ref() {
+        if let Some(st) = data.start_time.as_ref() {
+            println!("  start   = {}", format_ts(st));
+        }
+        if let Some(p) = data.payload.as_ref() {
+            println!("  payload = {}", struct_to_json(p));
+        }
+    }
+    if let Some(end) = d.metadata.as_ref().and_then(|m| m.end_time.as_ref()) {
+        println!("  end     = {}", format_ts(end));
+    }
+}
+
+/// Pause (`active=false`) / resume (`active=true`) a dispatch via an
+/// `is_active` field-mask update.
+async fn set_active_dispatch(
+    client: &mut MicrogridDispatchServiceClient<Channel>,
+    microgrid_id: u64,
+    dispatch_id: u64,
+    active: bool,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let resp = client
+        .update_microgrid_dispatch(UpdateMicrogridDispatchRequest {
+            microgrid_id,
+            dispatch_id,
+            update_mask: Some(prost_types::FieldMask {
+                paths: vec!["is_active".to_string()],
+            }),
+            update: Some(DispatchUpdate {
+                is_active: Some(active),
+                ..Default::default()
+            }),
+        })
+        .await?
+        .into_inner();
+    if json {
+        println!("{resp:#?}");
+    } else {
+        let verb = if active { "resumed" } else { "paused" };
+        println!("{verb} dispatch {dispatch_id} (microgrid {microgrid_id})");
+    }
+    Ok(())
+}
+
+async fn run_dispatch(
+    cmd: DispatchCmd,
+    addr: &str,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut client = MicrogridDispatchServiceClient::connect(addr.to_string()).await?;
+    match cmd {
+        DispatchCmd::List { microgrid_id } => {
+            let resp = client
+                .list_microgrid_dispatches(ListMicrogridDispatchesRequest {
+                    microgrid_id,
+                    filter: None,
+                    sort_options: None,
+                    pagination_params: None,
+                })
+                .await?
+                .into_inner();
+            if json {
+                println!("{resp:#?}");
+                return Ok(());
+            }
+            if resp.dispatches.is_empty() {
+                println!("(no dispatches for microgrid {microgrid_id})");
+            }
+            for d in &resp.dispatches {
+                println!("{}", dispatch_summary(d));
+            }
+            Ok(())
+        }
+        DispatchCmd::Get {
+            microgrid_id,
+            dispatch_id,
+        } => {
+            let resp = client
+                .get_microgrid_dispatch(GetMicrogridDispatchRequest {
+                    microgrid_id,
+                    dispatch_id,
+                })
+                .await?
+                .into_inner();
+            if json {
+                println!("{resp:#?}");
+                return Ok(());
+            }
+            match resp.dispatch.as_ref() {
+                Some(d) => print_dispatch_detail(d),
+                None => println!("(dispatch {dispatch_id} not found)"),
+            }
+            Ok(())
+        }
+        DispatchCmd::Create {
+            microgrid_id,
+            type_,
+            target,
+            duration,
+            payload,
+            inactive,
+            dry_run,
+            start,
+        } => {
+            let target = parse_target(&target).map_err(str_err)?;
+            let payload = match payload {
+                Some(s) => {
+                    let value: serde_json::Value = serde_json::from_str(&s)?;
+                    Some(json_to_struct(&value).map_err(str_err)?)
+                }
+                None => None,
+            };
+            let start_immediately = start.is_none();
+            let start_time = match start.as_deref() {
+                Some(s) => Some(rfc3339_to_ts(s)?),
+                None => None,
+            };
+            let data = DispatchData {
+                r#type: type_,
+                start_time,
+                duration,
+                target: Some(target),
+                is_active: !inactive,
+                is_dry_run: dry_run,
+                payload,
+                recurrence: None,
+            };
+            let resp = client
+                .create_microgrid_dispatch(CreateMicrogridDispatchRequest {
+                    microgrid_id,
+                    dispatch_data: Some(data),
+                    start_immediately: Some(start_immediately),
+                })
+                .await?
+                .into_inner();
+            if json {
+                println!("{resp:#?}");
+                return Ok(());
+            }
+            match resp.dispatch.as_ref() {
+                Some(d) => {
+                    println!("created:");
+                    print_dispatch_detail(d);
+                }
+                None => println!("(no dispatch returned)"),
+            }
+            Ok(())
+        }
+        DispatchCmd::Pause {
+            microgrid_id,
+            dispatch_id,
+        } => set_active_dispatch(&mut client, microgrid_id, dispatch_id, false, json).await,
+        DispatchCmd::Resume {
+            microgrid_id,
+            dispatch_id,
+        } => set_active_dispatch(&mut client, microgrid_id, dispatch_id, true, json).await,
+        DispatchCmd::Delete {
+            microgrid_id,
+            dispatch_id,
+        } => {
+            let resp = client
+                .delete_microgrid_dispatch(DeleteMicrogridDispatchRequest {
+                    microgrid_id,
+                    dispatch_id,
+                })
+                .await?
+                .into_inner();
+            if json {
+                println!("{resp:#?}");
+            } else {
+                println!(
+                    "deleted dispatch {} (microgrid {})",
+                    resp.dispatch_id, resp.microgrid_id
+                );
+            }
+            Ok(())
+        }
     }
 }
 

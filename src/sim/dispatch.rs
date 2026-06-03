@@ -403,6 +403,54 @@ pub fn parse_target(spec: &str) -> Result<pb::TargetComponents, String> {
     })
 }
 
+/// Human label for an `ElectricalComponentCategory` value, e.g.
+/// `BATTERY` — strips the verbose proto enum prefix, or shows the raw
+/// number for an unknown value.
+pub fn electrical_category_label(cat: i32) -> String {
+    use crate::proto::common::microgrid::electrical_components::ElectricalComponentCategory as Cat;
+    match Cat::try_from(cat) {
+        Ok(c) => c
+            .as_str_name()
+            .strip_prefix("ELECTRICAL_COMPONENT_CATEGORY_")
+            .unwrap_or(c.as_str_name())
+            .to_string(),
+        Err(_) => format!("category {cat}"),
+    }
+}
+
+/// Render a dispatch target as a short human string — the inverse of
+/// [`parse_target`], used by the UI list + swctl. Matches on
+/// component-id and category-set shapes; the deprecated bare-category
+/// set is handled too so an older dispatch still renders.
+#[allow(deprecated)]
+pub fn target_to_string(target: Option<&pb::TargetComponents>) -> String {
+    use pb::target_components::Components;
+    match target.and_then(|t| t.components.as_ref()) {
+        None => "—".to_string(),
+        Some(Components::ComponentIds(ids)) => {
+            let list = ids
+                .ids
+                .iter()
+                .map(u64::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("ids: {list}")
+        }
+        Some(Components::ComponentCategories(c)) => c
+            .categories
+            .iter()
+            .map(|cat| electrical_category_label(*cat))
+            .collect::<Vec<_>>()
+            .join(", "),
+        Some(Components::ComponentCategoriesTypes(c)) => c
+            .categories
+            .iter()
+            .map(|ct| electrical_category_label(ct.category))
+            .collect::<Vec<_>>()
+            .join(", "),
+    }
+}
+
 // --- payload <-> JSON conversion (google.protobuf.Struct) -----------------
 
 /// Convert a JSON value to a proto `Struct`. Errors unless the value is
