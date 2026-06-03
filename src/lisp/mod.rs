@@ -46,6 +46,14 @@ pub struct Metadata {
     /// fight a microgrid for its socket. Overridable from lisp
     /// via `(set-assets-socket-addr "[::1]:9900")`.
     pub assets_socket_addr: String,
+    /// Address the single (enterprise-wide) `MicrogridDispatchService`
+    /// gRPC service binds to. One service fronts every microgrid,
+    /// keyed by `microgrid_id` in each request, so it gets its own
+    /// socket — distinct from any microgrid's `grpc_port` and from
+    /// the assets server. Default matches the sibling `dispatchsim`
+    /// mock so existing dispatch-client wiring keeps working.
+    /// Overridable from lisp via `(set-dispatch-socket-addr "…")`.
+    pub dispatch_socket_addr: String,
     /// Fallback request lifetime when a `SetElectricalComponentPower`
     /// caller doesn't supply `request_lifetime`. Mirrors microsim's
     /// `retain-requests-duration-ms`. Tunable via
@@ -63,6 +71,7 @@ impl Default for Metadata {
         Self {
             enterprise_id: 0,
             assets_socket_addr: "[::1]:9900".to_string(),
+            dispatch_socket_addr: "[::1]:8900".to_string(),
             default_request_lifetime: Duration::from_secs(60),
         }
     }
@@ -104,6 +113,14 @@ pub struct Config {
     /// errors out if nothing landed in here by the end of eval. See
     /// `crate::sim::microgrids` for the data model.
     pub(crate) microgrids: crate::sim::microgrids::SharedMicrogrids,
+    /// Enterprise-wide dispatch store — the single
+    /// `MicrogridDispatchService` gRPC server writes here (Create /
+    /// Update / Delete from the dispatch CLI), and the per-microgrid
+    /// Dispatches UI view + `/api/mg/{id}/dispatches` read from it.
+    /// Keyed by `microgrid_id` internally; survives a config reload
+    /// (it isn't owned by any `MicrogridSite`). See
+    /// `crate::sim::dispatch` for the data model.
+    pub(crate) dispatches: crate::sim::dispatch::SharedDispatchStore,
     /// Dynamic site lookup the lisp defuns capture. Resolves to
     /// the current microgrid's site at call time, falling back
     /// to the first registry entry and finally to the bootstrap
@@ -168,6 +185,7 @@ impl Config {
         let clock = crate::sim::clock::new_clock();
         let scenarios = crate::sim::scenarios::new_registry();
         let microgrids = crate::sim::microgrids::new_registry();
+        let dispatches = crate::sim::dispatch::new_store();
         let current_microgrid = crate::sim::microgrids::new_current_microgrid();
         let router = SiteRouter::new(microgrids.clone(), current_microgrid.clone(), site.clone());
         // Capacity = 1024 to absorb a mass-create burst (e.g. a
@@ -303,6 +321,7 @@ impl Config {
             clock,
             scenarios,
             microgrids,
+            dispatches,
             router,
             current_microgrid,
             enterprise_id_allocator,
@@ -325,6 +344,13 @@ impl Config {
     /// rejects configs whose registry is empty after eval.
     pub fn microgrids(&self) -> crate::sim::microgrids::SharedMicrogrids {
         self.microgrids.clone()
+    }
+
+    /// Shared enterprise dispatch store — the `MicrogridDispatchService`
+    /// gRPC server mutates it and the UI's per-microgrid Dispatches
+    /// view reads it. See [`crate::sim::dispatch`].
+    pub fn dispatches(&self) -> crate::sim::dispatch::SharedDispatchStore {
+        self.dispatches.clone()
     }
 
     /// Shared process-wide id allocator backing every microgrid
@@ -525,6 +551,10 @@ impl Config {
 
     pub fn assets_socket_addr(&self) -> String {
         self.metadata.read().assets_socket_addr.clone()
+    }
+
+    pub fn dispatch_socket_addr(&self) -> String {
+        self.metadata.read().dispatch_socket_addr.clone()
     }
 
     pub fn site(&self) -> MicrogridSite {
@@ -1907,6 +1937,14 @@ fn register_metadata(ctx: &mut TulispContext, metadata: Arc<RwLock<Metadata>>) {
         "set-assets-socket-addr",
         move |addr: String| -> Result<bool, Error> {
             m.write().assets_socket_addr = addr;
+            Ok(true)
+        },
+    );
+    let m = metadata.clone();
+    ctx.defun(
+        "set-dispatch-socket-addr",
+        move |addr: String| -> Result<bool, Error> {
+            m.write().dispatch_socket_addr = addr;
             Ok(true)
         },
     );
