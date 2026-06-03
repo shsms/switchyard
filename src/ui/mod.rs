@@ -712,7 +712,7 @@ async fn dispatches_for_mg(
 
 fn dispatch_to_view(d: &crate::proto::dispatch::Dispatch) -> DispatchView {
     let data = d.data.clone().unwrap_or_default();
-    let meta = d.metadata.clone().unwrap_or_default();
+    let meta = d.metadata.unwrap_or_default();
     DispatchView {
         id: meta.dispatch_id,
         type_: data.r#type,

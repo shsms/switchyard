@@ -460,3 +460,59 @@ async fn scenario_report_endpoint_returns_main_meter_peak() {
     let peak = v["peak_main_meter_w"].as_f64().unwrap();
     assert!((peak - 4500.0).abs() < 1e-3, "got peak {peak}");
 }
+
+fn seed_dispatch(
+    store: &crate::sim::dispatch::SharedDispatchStore,
+    mg: u64,
+    id: u64,
+    type_: &str,
+    active: bool,
+) {
+    use crate::proto::dispatch as dpb;
+    store.insert(
+        mg,
+        dpb::Dispatch {
+            metadata: Some(dpb::DispatchMetadata {
+                dispatch_id: id,
+                ..Default::default()
+            }),
+            data: Some(dpb::DispatchData {
+                r#type: type_.to_string(),
+                is_active: active,
+                ..Default::default()
+            }),
+        },
+    );
+}
+
+#[tokio::test]
+async fn dispatches_endpoint_lists_microgrid_dispatches_newest_first() {
+    let cfg = config_with("").await;
+    let store = cfg.dispatches();
+    seed_dispatch(&store, 2200, 1, "SET_POWER", true);
+    seed_dispatch(&store, 2200, 2, "PEAK_SHAVE", false);
+    // A dispatch for another microgrid must not leak into 2200's list.
+    seed_dispatch(&store, 999, 3, "OTHER", true);
+
+    let (status, body) = call(cfg, get("/api/mg/2200/dispatches")).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let arr = v.as_array().unwrap();
+    assert_eq!(arr.len(), 2);
+    // Newest (highest id) first.
+    assert_eq!(arr[0]["id"], 2);
+    assert_eq!(arr[0]["type"], "PEAK_SHAVE");
+    assert_eq!(arr[0]["active"], false);
+    assert_eq!(arr[1]["id"], 1);
+    assert_eq!(arr[1]["type"], "SET_POWER");
+    assert_eq!(arr[1]["active"], true);
+}
+
+#[tokio::test]
+async fn dispatches_endpoint_empty_for_microgrid_without_dispatches() {
+    let cfg = config_with("").await;
+    let (status, body) = call(cfg, get("/api/mg/4242/dispatches")).await;
+    assert_eq!(status, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(v.as_array().unwrap().is_empty());
+}

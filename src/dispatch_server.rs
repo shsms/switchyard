@@ -332,7 +332,7 @@ fn recurrence_from_update(
     pb::RecurrenceRule {
         freq: u.freq.unwrap_or_default(),
         interval: u.interval.unwrap_or_default(),
-        end_criteria: u.end_criteria.clone(),
+        end_criteria: u.end_criteria,
         byminutes: u.byminutes.clone(),
         byhours: u.byhours.clone(),
         byweekdays: u.byweekdays.clone(),
@@ -523,4 +523,318 @@ fn parse_page_token(token: &str) -> (usize, usize) {
     let offset = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
     let page_size = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
     (offset, page_size)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sim::dispatch::new_store;
+    use pb::microgrid_dispatch_service_server::MicrogridDispatchService;
+
+    fn server() -> DispatchServer {
+        DispatchServer::new(new_store())
+    }
+
+    fn data(type_: &str, active: bool) -> pb::DispatchData {
+        pb::DispatchData {
+            r#type: type_.to_string(),
+            start_time: Some(to_ts(Utc::now())),
+            is_active: active,
+            ..Default::default()
+        }
+    }
+
+    async fn create(srv: &DispatchServer, mg: u64, d: pb::DispatchData) -> pb::Dispatch {
+        srv.create_microgrid_dispatch(tonic::Request::new(pb::CreateMicrogridDispatchRequest {
+            microgrid_id: mg,
+            dispatch_data: Some(d),
+            start_immediately: None,
+        }))
+        .await
+        .unwrap()
+        .into_inner()
+        .dispatch
+        .unwrap()
+    }
+
+    async fn list(
+        srv: &DispatchServer,
+        mg: u64,
+        filter: Option<pb::DispatchFilter>,
+    ) -> Vec<pb::Dispatch> {
+        srv.list_microgrid_dispatches(tonic::Request::new(pb::ListMicrogridDispatchesRequest {
+            microgrid_id: mg,
+            filter,
+            sort_options: None,
+            pagination_params: None,
+        }))
+        .await
+        .unwrap()
+        .into_inner()
+        .dispatches
+    }
+
+    fn ids(ds: &[pb::Dispatch]) -> Vec<u64> {
+        ds.iter()
+            .map(|d| d.metadata.as_ref().unwrap().dispatch_id)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn create_assigns_id_and_stamps_times() {
+        let srv = server();
+        let d = create(&srv, 2200, data("SET_POWER", true)).await;
+        let meta = d.metadata.unwrap();
+        assert_eq!(meta.dispatch_id, 1);
+        assert!(meta.create_time.is_some());
+        assert!(meta.update_time.is_some());
+        // Indefinite (no duration) => no calculable end_time.
+        assert!(meta.end_time.is_none());
+    }
+
+    #[tokio::test]
+    async fn create_computes_end_time_for_finite_oneoff() {
+        let srv = server();
+        let start = Utc::now();
+        let mut d = data("X", true);
+        d.start_time = Some(to_ts(start));
+        d.duration = Some(3600);
+        let res = create(&srv, 1, d).await;
+        let end = res
+            .metadata
+            .unwrap()
+            .end_time
+            .expect("finite one-off has end");
+        assert_eq!(end.seconds, start.timestamp() + 3600);
+    }
+
+    #[tokio::test]
+    async fn create_no_end_time_for_recurring_even_with_duration() {
+        let srv = server();
+        let mut d = data("X", true);
+        d.duration = Some(3600);
+        d.recurrence = Some(pb::RecurrenceRule {
+            freq: pb::recurrence_rule::Frequency::Daily as i32,
+            interval: 1,
+            ..Default::default()
+        });
+        let res = create(&srv, 1, d).await;
+        assert!(res.metadata.unwrap().end_time.is_none());
+    }
+
+    #[tokio::test]
+    async fn create_rejects_missing_data_and_start() {
+        let srv = server();
+        let err = srv
+            .create_microgrid_dispatch(tonic::Request::new(pb::CreateMicrogridDispatchRequest {
+                microgrid_id: 1,
+                dispatch_data: None,
+                start_immediately: None,
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+
+        let mut d = data("X", true);
+        d.start_time = None;
+        let err = srv
+            .create_microgrid_dispatch(tonic::Request::new(pb::CreateMicrogridDispatchRequest {
+                microgrid_id: 1,
+                dispatch_data: Some(d),
+                start_immediately: None,
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[tokio::test]
+    async fn start_immediately_supplies_start_time() {
+        let srv = server();
+        let mut d = data("X", true);
+        d.start_time = None; // would be rejected on its own
+        let res = srv
+            .create_microgrid_dispatch(tonic::Request::new(pb::CreateMicrogridDispatchRequest {
+                microgrid_id: 1,
+                dispatch_data: Some(d),
+                start_immediately: Some(true),
+            }))
+            .await
+            .unwrap()
+            .into_inner()
+            .dispatch
+            .unwrap();
+        assert!(res.data.unwrap().start_time.is_some());
+    }
+
+    #[tokio::test]
+    async fn list_sorts_newest_first_and_filters_active() {
+        let srv = server();
+        create(&srv, 7, data("A", true)).await; // id 1
+        create(&srv, 7, data("B", false)).await; // id 2
+        create(&srv, 7, data("C", true)).await; // id 3
+        // Default sort is create_time descending — newest (id 3) first.
+        assert_eq!(ids(&list(&srv, 7, None).await), vec![3, 2, 1]);
+        // is_active filter keeps only the two active ones.
+        let active = list(
+            &srv,
+            7,
+            Some(pb::DispatchFilter {
+                is_active: Some(true),
+                ..Default::default()
+            }),
+        )
+        .await;
+        assert_eq!(ids(&active), vec![3, 1]);
+    }
+
+    #[tokio::test]
+    async fn list_filters_by_query_and_ids() {
+        let srv = server();
+        create(&srv, 1, data("peak_shave", true)).await; // id 1
+        create(&srv, 1, data("set_power", true)).await; // id 2
+        create(&srv, 1, data("peak_trim", true)).await; // id 3
+
+        // Free-text token: substring match on type.
+        let hits = list(
+            &srv,
+            1,
+            Some(pb::DispatchFilter {
+                queries: vec!["peak".into()],
+                ..Default::default()
+            }),
+        )
+        .await;
+        assert_eq!(ids(&hits), vec![3, 1]);
+
+        // `#N` token: exact id match.
+        let hits = list(
+            &srv,
+            1,
+            Some(pb::DispatchFilter {
+                queries: vec!["#2".into()],
+                ..Default::default()
+            }),
+        )
+        .await;
+        assert_eq!(ids(&hits), vec![2]);
+
+        // dispatch_ids filter.
+        let hits = list(
+            &srv,
+            1,
+            Some(pb::DispatchFilter {
+                dispatch_ids: vec![1, 3],
+                ..Default::default()
+            }),
+        )
+        .await;
+        assert_eq!(ids(&hits), vec![3, 1]);
+    }
+
+    #[tokio::test]
+    async fn list_paginates_with_opaque_token() {
+        let srv = server();
+        for _ in 0..5 {
+            create(&srv, 1, data("X", true)).await;
+        }
+        // First page of 2.
+        let resp = srv
+            .list_microgrid_dispatches(tonic::Request::new(pb::ListMicrogridDispatchesRequest {
+                microgrid_id: 1,
+                filter: None,
+                sort_options: None,
+                pagination_params: Some(PaginationParams {
+                    params: Some(pagination_params::Params::PageSize(2)),
+                }),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(resp.dispatches.len(), 2);
+        let info = resp.pagination_info.unwrap();
+        assert_eq!(info.total_items, 5);
+        let token = info.next_page_token.expect("more pages remain");
+
+        // Following the token continues from where page 1 ended.
+        let resp2 = srv
+            .list_microgrid_dispatches(tonic::Request::new(pb::ListMicrogridDispatchesRequest {
+                microgrid_id: 1,
+                filter: None,
+                sort_options: None,
+                pagination_params: Some(PaginationParams {
+                    params: Some(pagination_params::Params::PageToken(token)),
+                }),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(resp2.dispatches.len(), 2);
+        // No overlap between the two pages.
+        let page1_last = ids(&resp.dispatches)[1];
+        assert!(!ids(&resp2.dispatches).contains(&page1_last));
+    }
+
+    #[tokio::test]
+    async fn update_with_mask_touches_only_listed_fields() {
+        let srv = server();
+        let created = create(&srv, 1, data("OLD", true)).await;
+        let id = created.metadata.unwrap().dispatch_id;
+        let resp = srv
+            .update_microgrid_dispatch(tonic::Request::new(pb::UpdateMicrogridDispatchRequest {
+                microgrid_id: 1,
+                dispatch_id: id,
+                update_mask: Some(prost_types::FieldMask {
+                    paths: vec!["is_active".into()],
+                }),
+                update: Some(pb::update_microgrid_dispatch_request::DispatchUpdate {
+                    is_active: Some(false),
+                    // type is not in the mask, so this would-be change is ignored
+                    payload: None,
+                    ..Default::default()
+                }),
+            }))
+            .await
+            .unwrap()
+            .into_inner()
+            .dispatch
+            .unwrap();
+        let data = resp.data.unwrap();
+        assert!(!data.is_active);
+        assert_eq!(data.r#type, "OLD");
+    }
+
+    #[tokio::test]
+    async fn delete_removes_then_get_404s() {
+        let srv = server();
+        let id = create(&srv, 1, data("X", true))
+            .await
+            .metadata
+            .unwrap()
+            .dispatch_id;
+        srv.delete_microgrid_dispatch(tonic::Request::new(pb::DeleteMicrogridDispatchRequest {
+            microgrid_id: 1,
+            dispatch_id: id,
+        }))
+        .await
+        .unwrap();
+        let err = srv
+            .get_microgrid_dispatch(tonic::Request::new(pb::GetMicrogridDispatchRequest {
+                microgrid_id: 1,
+                dispatch_id: id,
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::NotFound);
+    }
+
+    #[tokio::test]
+    async fn dispatches_are_isolated_per_microgrid() {
+        let srv = server();
+        create(&srv, 100, data("A", true)).await;
+        create(&srv, 200, data("B", true)).await;
+        assert_eq!(ids(&list(&srv, 100, None).await), vec![1]);
+        assert_eq!(ids(&list(&srv, 200, None).await), vec![2]);
+        assert!(list(&srv, 300, None).await.is_empty());
+    }
 }
