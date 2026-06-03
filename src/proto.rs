@@ -19,6 +19,7 @@ mod pb {
 
 pub use pb::frequenz::api::assets::v1 as assets;
 pub use pb::frequenz::api::common::v1alpha8 as common;
+pub use pb::frequenz::api::dispatch::v1 as dispatch;
 pub use pb::frequenz::api::microgrid::v1alpha18 as microgrid;
 
 macro_rules! impl_enum_from_str {
