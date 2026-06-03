@@ -7,8 +7,9 @@ use simplelog::{
     ColorChoice, CombinedLogger, ConfigBuilder, LevelFilter, TermLogger, TerminalMode,
 };
 use switchyard::{
-    assets_server::AssetsServer, lisp::Config,
+    assets_server::AssetsServer, dispatch_server::DispatchServer, lisp::Config,
     proto::assets::platform_assets_server::PlatformAssetsServer as AssetsGrpcServer,
+    proto::dispatch::microgrid_dispatch_service_server::MicrogridDispatchServiceServer as DispatchGrpcServer,
     proto::microgrid::microgrid_server::MicrogridServer as MicrogridGrpcServer,
     server::MicrogridServer, sim::MicrogridSite, ui, ui_log,
 };
@@ -212,6 +213,27 @@ async fn main() {
             .await
         {
             log::error!("PlatformAssets gRPC server exited: {e}");
+        }
+    }));
+    // The single (enterprise-wide) MicrogridDispatchService. Like
+    // PlatformAssets it sits on its own listener — one service fronts
+    // every microgrid, keyed by the microgrid_id carried in each
+    // request — so it's reachable no matter which microgrid the
+    // dispatch client targets. Defaults to [::1]:8900; overridable via
+    // (set-dispatch-socket-addr "…").
+    let dispatch_addr_str = config.dispatch_socket_addr();
+    let dispatch_addr: std::net::SocketAddr = dispatch_addr_str
+        .parse()
+        .unwrap_or_else(|e| panic!("invalid dispatch socket addr {dispatch_addr_str:?}: {e}"));
+    log::info!("MicrogridDispatch gRPC listening on {dispatch_addr}");
+    let dispatch_store = config.dispatches();
+    tasks.push(tokio::spawn(async move {
+        if let Err(e) = Server::builder()
+            .add_service(DispatchGrpcServer::new(DispatchServer::new(dispatch_store)))
+            .serve(dispatch_addr)
+            .await
+        {
+            log::error!("MicrogridDispatch gRPC server exited: {e}");
         }
     }));
     for h in tasks {
