@@ -152,10 +152,26 @@ impl SimulatedComponent for SolarInverter {
     }
 
     fn tick(&self, _world: &MicrogridSite, now: DateTime<Utc>, dt: Duration) {
-        self.bounds.lock().drop_expired(now);
-        if let Some(target) = self.delay.poll(now) {
-            self.ramp.set_target(target.max(self.min_avail_w()));
-        }
+        // Promote a delayed setpoint command if its command-delay has elapsed.
+        self.delay.poll(now);
+        // Uncurtailed target: an active setpoint (clamped to what sunlight
+        // allows), else the sunlight-available floor — so a free-running PV
+        // inverter tracks the sun.
+        let avail = self.min_avail_w();
+        let desired = self
+            .delay
+            .armed()
+            .map_or(avail, |setpoint| setpoint.max(avail));
+        // Deliver that, curtailed to the effective (rated ∩ augmentation)
+        // bounds, after dropping expired augmentations: an augmented cap
+        // actually reduces generation, and it recovers toward available when
+        // the cap relaxes. (microsim parity: power limited to live bounds.)
+        let envelope = {
+            let mut bounds = self.bounds.lock();
+            bounds.drop_expired(now);
+            bounds.effective()
+        };
+        self.ramp.set_target(envelope.clamp(desired));
         let p = self.ramp.advance(dt);
         // Reactive: validated when accepted, re-clamped to the live
         // envelope at p as the command is promoted, then slewed.
