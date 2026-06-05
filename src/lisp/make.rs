@@ -610,7 +610,15 @@ fn apply_initial_modes(
     if let Some(t) = telemetry {
         site.set_telemetry_mode(id, t);
     }
-    if let Some(c) = command {
+    // An explicit `:command-mode` refines the default the health coupling
+    // just applied — but it must not re-enable a device declared errored.
+    // `set_health(Error)` couples the command mode to Error (error ⇒ no
+    // commands accepted); letting `:command-mode 'normal` override that
+    // would yield a broken-but-accepting component the runtime path can
+    // never produce. Health wins for an errored device.
+    if let Some(c) = command
+        && health != Some(Health::Error)
+    {
         site.set_command_mode(id, c);
     }
 }
@@ -700,6 +708,25 @@ mod tests {
         // :health ok) lands.
         let site = run("(make-battery :id 102)");
         assert_eq!(site.runtime_of(102).health, crate::sim::runtime::Health::Ok);
+    }
+
+    /// `:health 'error` couples command mode to Error (error ⇒ no commands
+    /// accepted). An explicit `:command-mode` must not re-enable an errored
+    /// device — health wins. A non-errored device still honours its mode.
+    #[test]
+    fn errored_health_overrides_explicit_command_mode() {
+        use crate::sim::runtime::{CommandMode, Health};
+        let site = run(
+            r#"(%make-battery :id 300 :health 'error :command-mode 'normal)
+               (%make-battery :id 301 :health 'ok :command-mode 'timeout)"#,
+        );
+        let errored = site.runtime_of(300);
+        assert_eq!(errored.health, Health::Error);
+        assert_eq!(errored.command, CommandMode::Error);
+
+        let ok = site.runtime_of(301);
+        assert_eq!(ok.health, Health::Ok);
+        assert_eq!(ok.command, CommandMode::Timeout);
     }
 
     /// `:power N` lands as a constant DynamicScalar — aggregate_power_w
