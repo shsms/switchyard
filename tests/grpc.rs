@@ -5,11 +5,12 @@
 mod common;
 
 use common::TestServer;
+use switchyard::proto::common::metrics::{Bounds, Metric};
 use switchyard::proto::microgrid::microgrid_client::MicrogridClient;
 use switchyard::proto::microgrid::{
-    ListElectricalComponentConnectionsRequest, ListElectricalComponentsRequest, PowerType,
-    ReceiveElectricalComponentTelemetryStreamRequest, SetElectricalComponentPowerRequest,
-    SetElectricalComponentPowerRequestStatus,
+    AugmentElectricalComponentBoundsRequest, ListElectricalComponentConnectionsRequest,
+    ListElectricalComponentsRequest, PowerType, ReceiveElectricalComponentTelemetryStreamRequest,
+    SetElectricalComponentPowerRequest, SetElectricalComponentPowerRequestStatus,
 };
 
 const TINY_TOPOLOGY: &str = r#"
@@ -87,6 +88,56 @@ async fn set_power_happy_path_returns_success() {
         first.status,
         SetElectricalComponentPowerRequestStatus::Success as i32,
     );
+}
+
+const ERRORED_INVERTER_TOPOLOGY: &str = r#"
+(set-microgrid-id 7)
+(%make-grid-connection-point :id 1
+            :successors
+            (list (%make-meter :id 2 :main t
+                               :successors
+                               (list (%make-battery-inverter
+                                      :id 4 :health 'error
+                                      :rated-lower -5000.0
+                                      :rated-upper  5000.0
+                                      :successors
+                                      (list (%make-battery
+                                             :id 3
+                                             :rated-lower -5000.0
+                                             :rated-upper  5000.0)))))))
+"#;
+
+/// An errored inverter refuses every command — both setpoints and bounds
+/// augmentations (the latter were previously accepted unconditionally).
+#[tokio::test(flavor = "multi_thread")]
+async fn errored_component_rejects_power_and_bounds() {
+    let s = TestServer::start(ERRORED_INVERTER_TOPOLOGY).await;
+    let mut c = connect(&s).await;
+    let power_err = c
+        .set_electrical_component_power(SetElectricalComponentPowerRequest {
+            electrical_component_id: 4,
+            power: 0.0,
+            power_type: PowerType::Active as i32,
+            request_lifetime: Some(30),
+        })
+        .await
+        .expect_err("setpoint to an errored device should be rejected");
+    // Erroring the device couples its command mode to Error → Unavailable.
+    assert_eq!(power_err.code(), tonic::Code::Unavailable);
+
+    let bounds_err = c
+        .augment_electrical_component_bounds(AugmentElectricalComponentBoundsRequest {
+            electrical_component_id: 4,
+            target_metric: Metric::AcPowerActive as i32,
+            bounds: vec![Bounds {
+                lower: Some(-1000.0),
+                upper: Some(1000.0),
+            }],
+            request_lifetime: Some(30),
+        })
+        .await
+        .expect_err("bounds augmentation to an errored device should be rejected");
+    assert_eq!(bounds_err.code(), tonic::Code::Unavailable);
 }
 
 #[tokio::test(flavor = "multi_thread")]

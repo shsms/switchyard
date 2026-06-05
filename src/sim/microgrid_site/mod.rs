@@ -635,7 +635,17 @@ impl MicrogridSite {
     }
 
     pub fn set_health(&self, id: u64, health: Health) {
-        self.inner.runtime.write().entry(id).or_default().health = health;
+        let mut runtime = self.inner.runtime.write();
+        let entry = runtime.entry(id).or_default();
+        entry.health = health;
+        // Couple command handling to health: an errored device is also
+        // unreachable for commands (both setpoints and bounds are
+        // rejected); clearing the error restores normal command handling.
+        match health {
+            Health::Error => entry.command = CommandMode::Error,
+            Health::Ok => entry.command = CommandMode::Normal,
+            Health::Standby => {}
+        }
     }
 
     pub fn set_telemetry_mode(&self, id: u64, mode: TelemetryMode) {
@@ -758,6 +768,22 @@ impl Default for MicrogridSite {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn set_health_couples_command_mode() {
+        let w = MicrogridSite::new();
+        // Erroring a component makes it unreachable for commands too.
+        w.set_health(5, Health::Error);
+        assert_eq!(w.runtime_of(5).health, Health::Error);
+        assert_eq!(w.runtime_of(5).command, CommandMode::Error);
+        // Clearing the error restores normal command handling.
+        w.set_health(5, Health::Ok);
+        assert_eq!(w.runtime_of(5).command, CommandMode::Normal);
+        // Standby refuses via the health check but leaves command mode alone.
+        w.set_command_mode(5, CommandMode::Timeout);
+        w.set_health(5, Health::Standby);
+        assert_eq!(w.runtime_of(5).command, CommandMode::Timeout);
+    }
 
     /// Two meters can list the same inverter as a successor and both
     /// edges land in the connections graph (a parallel-meter

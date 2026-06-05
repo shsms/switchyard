@@ -108,6 +108,36 @@ impl MicrogridServer {
         secs.wrapping_add(phase) % CYCLE < FAULT_WINDOW
     }
 
+    /// Runtime fault gate shared by SetPower and AugmentBounds. A
+    /// `Timeout` command mode hangs the request, `Error` replies
+    /// `Unavailable`, and any non-`Ok` health refuses with
+    /// `FailedPrecondition` — so an errored or standby device rejects
+    /// both setpoint and bounds commands. Returns the command mode so
+    /// setpoint callers can further special-case `OverBound` (which is
+    /// setpoint-only — bounds commands carry no power value).
+    async fn gate_runtime_faults(&self, id: u64) -> Result<CommandMode, tonic::Status> {
+        let runtime = self.site.runtime_of(id);
+        match runtime.command {
+            CommandMode::Timeout => {
+                std::future::pending::<()>().await;
+                unreachable!()
+            }
+            CommandMode::Error => {
+                return Err(tonic::Status::unavailable(format!(
+                    "component {id} unreachable"
+                )));
+            }
+            CommandMode::OverBound | CommandMode::Normal => {}
+        }
+        if runtime.health != Health::Ok {
+            return Err(tonic::Status::failed_precondition(format!(
+                "component {id} is in {:?} state; commands rejected",
+                runtime.health
+            )));
+        }
+        Ok(runtime.command)
+    }
+
     /// The body of `set_electrical_component_power` minus the
     /// power-type validation up front. Split out so the wrapper can
     /// log the outcome of every code path (early-return rejection or
@@ -128,51 +158,32 @@ impl MicrogridServer {
             ))
         })?;
 
-        // Runtime fault simulation: command_mode and health are
-        // checked before any physics. Order matters — `Timeout` /
-        // `Error` are wire-level faults, `Health` is application-level
-        // refusal.
-        let runtime = site.runtime_of(req.electrical_component_id);
-        match runtime.command {
-            CommandMode::Timeout => {
-                std::future::pending::<()>().await;
-                unreachable!()
-            }
-            CommandMode::Error => {
-                return Err(tonic::Status::unavailable(format!(
-                    "component {} unreachable",
-                    req.electrical_component_id
-                )));
-            }
-            CommandMode::OverBound
-                if matches!(power_type, PowerType::Active)
-                    && req.power != 0.0
-                    && Self::over_bound_faulty_now(req.electrical_component_id) =>
-            {
-                // Advertised bounds said this setpoint was fine, but the
-                // gateway rejects it against a tighter internal limit just
-                // below the request, returning INVALID_ARGUMENT. Faulting
-                // is intermittent and rotating per component (see
-                // `over_bound_faulty_now`), so the set of currently
-                // rejecting components churns over time — a few flaky
-                // devices flapping in and out of the blocked set.
-                let allowed = (req.power.abs() * 0.97).round();
-                let direction = if req.power >= 0.0 {
-                    "charge"
-                } else {
-                    "discharge"
-                };
-                return Err(tonic::Status::invalid_argument(format!(
-                    "Requested {direction} power {} W exceeds the maximum allowed {allowed} W",
-                    req.power.abs().round()
-                )));
-            }
-            CommandMode::OverBound | CommandMode::Normal => {}
-        }
-        if runtime.health != Health::Ok {
-            return Err(tonic::Status::failed_precondition(format!(
-                "component {} is in {:?} state; setpoints rejected",
-                req.electrical_component_id, runtime.health
+        // Runtime fault simulation: command mode + health are checked
+        // before any physics (shared with AugmentBounds).
+        let command = self
+            .gate_runtime_faults(req.electrical_component_id)
+            .await?;
+        // `OverBound` is a setpoint-only fault: the gateway advertised
+        // bounds that accept this value but rejects it against a tighter
+        // internal limit just below the request, returning
+        // INVALID_ARGUMENT. Faulting is intermittent and rotating per
+        // component (see `over_bound_faulty_now`), so the set of currently
+        // rejecting components churns over time. Zero-power (fail-safe)
+        // setpoints are still accepted.
+        if matches!(command, CommandMode::OverBound)
+            && matches!(power_type, PowerType::Active)
+            && req.power != 0.0
+            && Self::over_bound_faulty_now(req.electrical_component_id)
+        {
+            let allowed = (req.power.abs() * 0.97).round();
+            let direction = if req.power >= 0.0 {
+                "charge"
+            } else {
+                "discharge"
+            };
+            return Err(tonic::Status::invalid_argument(format!(
+                "Requested {direction} power {} W exceeds the maximum allowed {allowed} W",
+                req.power.abs().round()
             )));
         }
 
@@ -546,18 +557,23 @@ impl microgrid_server::Microgrid for MicrogridServer {
 
         let site = self.site.clone();
         let response = match site.get(id) {
-            Some(component) => {
-                component.augment_active_bounds(now, VecBounds::new(req.bounds), lifetime);
-                let expiry = now + chrono::Duration::seconds(lifetime_s);
-                Ok(tonic::Response::new(
-                    AugmentElectricalComponentBoundsResponse {
-                        valid_until_time: Some(prost_types::Timestamp {
-                            seconds: expiry.timestamp(),
-                            nanos: expiry.timestamp_subsec_nanos() as i32,
-                        }),
-                    },
-                ))
-            }
+            // Reject the augmentation for an errored/standby/unreachable
+            // device, same as a setpoint command.
+            Some(component) => match self.gate_runtime_faults(id).await {
+                Ok(_) => {
+                    component.augment_active_bounds(now, VecBounds::new(req.bounds), lifetime);
+                    let expiry = now + chrono::Duration::seconds(lifetime_s);
+                    Ok(tonic::Response::new(
+                        AugmentElectricalComponentBoundsResponse {
+                            valid_until_time: Some(prost_types::Timestamp {
+                                seconds: expiry.timestamp(),
+                                nanos: expiry.timestamp_subsec_nanos() as i32,
+                            }),
+                        },
+                    ))
+                }
+                Err(status) => Err(status),
+            },
             None => Err(tonic::Status::not_found(format!(
                 "component {id} not found"
             ))),
