@@ -206,6 +206,15 @@ impl MicrogridServer {
             }
         }
 
+        // Resolve the request lifetime *before* actuating: an out-of-range
+        // lifetime is a protocol error, and rejecting it after the setpoint
+        // was applied would leave the component running with no expiry timer
+        // registered while the client believes the request failed.
+        let duration = resolve_lifetime(
+            req.request_lifetime,
+            self.config.metadata().default_request_lifetime,
+        )?;
+
         let result = match power_type {
             PowerType::Active => component.set_active_setpoint(req.power),
             PowerType::Reactive => component.set_reactive_setpoint(req.power),
@@ -216,10 +225,6 @@ impl MicrogridServer {
             return Err(setpoint_error_to_status(e));
         }
 
-        let duration = resolve_lifetime(
-            req.request_lifetime,
-            self.config.metadata().default_request_lifetime,
-        )?;
         site.add_timeout(req.electrical_component_id, duration);
 
         let (tx, rx) = tokio::sync::mpsc::channel(1);

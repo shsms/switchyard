@@ -10,8 +10,24 @@ use switchyard::proto::microgrid::microgrid_client::MicrogridClient;
 use switchyard::proto::microgrid::{
     AugmentElectricalComponentBoundsRequest, ListElectricalComponentConnectionsRequest,
     ListElectricalComponentsRequest, PowerType, ReceiveElectricalComponentTelemetryStreamRequest,
-    SetElectricalComponentPowerRequest, SetElectricalComponentPowerRequestStatus,
+    ReceiveElectricalComponentTelemetryStreamResponse, SetElectricalComponentPowerRequest,
+    SetElectricalComponentPowerRequestStatus,
 };
+
+/// Pull the AC active-power value (W) out of a telemetry response, if present.
+fn active_power_w(resp: &ReceiveElectricalComponentTelemetryStreamResponse) -> Option<f32> {
+    use switchyard::proto::common::metrics::{Metric, metric_value_variant::MetricValueVariant};
+    let t = resp.telemetry.as_ref()?;
+    t.metric_samples.iter().find_map(|s| {
+        if s.metric != Metric::AcPowerActive as i32 {
+            return None;
+        }
+        match s.value.as_ref()?.metric_value_variant.as_ref()? {
+            MetricValueVariant::SimpleMetric(v) => Some(v.value),
+            _ => None,
+        }
+    })
+}
 
 const TINY_TOPOLOGY: &str = r#"
 (set-microgrid-id 7)
@@ -138,6 +154,58 @@ async fn errored_component_rejects_power_and_bounds() {
         .await
         .expect_err("bounds augmentation to an errored device should be rejected");
     assert_eq!(bounds_err.code(), tonic::Code::Unavailable);
+}
+
+/// An out-of-range `request_lifetime` is a protocol error that must be
+/// rejected *before* the setpoint is applied — otherwise the component
+/// runs at the commanded power with no expiry timer while the client
+/// sees an error.
+#[tokio::test(flavor = "multi_thread")]
+async fn out_of_range_lifetime_rejects_without_actuating() {
+    let s = TestServer::start(TINY_TOPOLOGY).await;
+    let mut c = connect(&s).await;
+    let err = c
+        .set_electrical_component_power(SetElectricalComponentPowerRequest {
+            electrical_component_id: 4,
+            power: 3000.0,
+            power_type: PowerType::Active as i32,
+            request_lifetime: Some(5), // below the 10 s minimum
+        })
+        .await
+        .expect_err("sub-minimum lifetime should be rejected");
+    assert_eq!(err.code(), tonic::Code::InvalidArgument);
+
+    // The inverter must not have actuated: stream it and confirm it stays
+    // at 0 W rather than ramping to the rejected 3 kW (its ramp is instant).
+    let resp = c
+        .receive_electrical_component_telemetry_stream(
+            ReceiveElectricalComponentTelemetryStreamRequest {
+                electrical_component_id: 4,
+                filter: None,
+            },
+        )
+        .await
+        .expect("subscribe");
+    let mut stream = resp.into_inner();
+    let checked = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let mut seen = 0;
+        while let Ok(Some(msg)) = stream.message().await {
+            if let Some(p) = active_power_w(&msg) {
+                assert!(
+                    p.abs() < 1.0,
+                    "inverter actuated despite a rejected request: {p} W"
+                );
+                seen += 1;
+                if seen >= 3 {
+                    break;
+                }
+            }
+        }
+        seen
+    })
+    .await
+    .expect("telemetry stream timed out");
+    assert!(checked >= 3, "expected ≥3 power samples, got {checked}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
