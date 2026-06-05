@@ -42,6 +42,41 @@ fn resolve_lifetime(
         None => Ok(fallback),
     }
 }
+
+/// Reject a malformed bounds augmentation before it reaches a component.
+/// An empty set, an inverted band (lower > upper), or one disjoint from
+/// the component's current envelope would all drive `effective()` empty —
+/// every subsequent setpoint then rejected (`contains` is false on an
+/// empty `VecBounds`) while the running output stays unconstrained
+/// (`clamp` is the identity on an empty set). Bounce it at the gateway.
+fn validate_augmentation(
+    proposed: &VecBounds,
+    current: Option<VecBounds>,
+) -> Result<(), tonic::Status> {
+    if proposed.0.is_empty() {
+        return Err(tonic::Status::invalid_argument(
+            "augmentation contains no bounds",
+        ));
+    }
+    if let Some(b) = proposed
+        .0
+        .iter()
+        .find(|b| matches!((b.lower, b.upper), (Some(l), Some(u)) if l > u))
+    {
+        return Err(tonic::Status::invalid_argument(format!(
+            "augmentation bound [{:?}, {:?}] is inverted (lower > upper)",
+            b.lower, b.upper
+        )));
+    }
+    if let Some(cur) = current
+        && cur.intersect(proposed).0.is_empty()
+    {
+        return Err(tonic::Status::invalid_argument(
+            "augmentation is disjoint from the component's bounds; no valid setpoint would remain",
+        ));
+    }
+    Ok(())
+}
 use crate::proto::common::microgrid::electrical_components::ElectricalComponentConnection;
 use crate::proto::common::microgrid::{Microgrid, MicrogridStatus};
 use crate::proto::microgrid::{
@@ -568,16 +603,22 @@ impl microgrid_server::Microgrid for MicrogridServer {
             // device, same as a setpoint command.
             Some(component) => match self.gate_runtime_faults(id).await {
                 Ok(_) => {
-                    component.augment_active_bounds(now, VecBounds::new(req.bounds), lifetime);
-                    let expiry = now + chrono::Duration::seconds(lifetime_s);
-                    Ok(tonic::Response::new(
-                        AugmentElectricalComponentBoundsResponse {
-                            valid_until_time: Some(prost_types::Timestamp {
-                                seconds: expiry.timestamp(),
-                                nanos: expiry.timestamp_subsec_nanos() as i32,
-                            }),
-                        },
-                    ))
+                    let proposed = VecBounds::new(req.bounds);
+                    match validate_augmentation(&proposed, component.effective_active_bounds()) {
+                        Ok(()) => {
+                            component.augment_active_bounds(now, proposed, lifetime);
+                            let expiry = now + chrono::Duration::seconds(lifetime_s);
+                            Ok(tonic::Response::new(
+                                AugmentElectricalComponentBoundsResponse {
+                                    valid_until_time: Some(prost_types::Timestamp {
+                                        seconds: expiry.timestamp(),
+                                        nanos: expiry.timestamp_subsec_nanos() as i32,
+                                    }),
+                                },
+                            ))
+                        }
+                        Err(status) => Err(status),
+                    }
                 }
                 Err(status) => Err(status),
             },

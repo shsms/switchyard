@@ -283,6 +283,57 @@ async fn zero_power_is_always_allowed() {
     );
 }
 
+/// A malformed augmentation — inverted, or disjoint from the component's
+/// bounds — must be rejected, not silently brick the component (every
+/// setpoint then rejected while the running output goes unconstrained).
+#[tokio::test(flavor = "multi_thread")]
+async fn malformed_augmentation_is_rejected() {
+    let s = TestServer::start(TINY_TOPOLOGY).await;
+    let mut c = connect(&s).await;
+
+    let inverted = c
+        .augment_electrical_component_bounds(AugmentElectricalComponentBoundsRequest {
+            electrical_component_id: 4,
+            target_metric: Metric::AcPowerActive as i32,
+            bounds: vec![Bounds {
+                lower: Some(1000.0),
+                upper: Some(-1000.0),
+            }],
+            request_lifetime: Some(30),
+        })
+        .await
+        .expect_err("inverted bounds must be rejected");
+    assert_eq!(inverted.code(), tonic::Code::InvalidArgument);
+
+    // Disjoint from the inverter's rated ±5 kW band.
+    let disjoint = c
+        .augment_electrical_component_bounds(AugmentElectricalComponentBoundsRequest {
+            electrical_component_id: 4,
+            target_metric: Metric::AcPowerActive as i32,
+            bounds: vec![Bounds {
+                lower: Some(50_000.0),
+                upper: Some(60_000.0),
+            }],
+            request_lifetime: Some(30),
+        })
+        .await
+        .expect_err("disjoint bounds must be rejected");
+    assert_eq!(disjoint.code(), tonic::Code::InvalidArgument);
+
+    // A valid tightening still succeeds.
+    c.augment_electrical_component_bounds(AugmentElectricalComponentBoundsRequest {
+        electrical_component_id: 4,
+        target_metric: Metric::AcPowerActive as i32,
+        bounds: vec![Bounds {
+            lower: Some(-2000.0),
+            upper: Some(2000.0),
+        }],
+        request_lifetime: Some(30),
+    })
+    .await
+    .expect("valid augmentation must be accepted");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn telemetry_stream_emits_samples_for_a_component() {
     let s = TestServer::start(TINY_TOPOLOGY).await;
