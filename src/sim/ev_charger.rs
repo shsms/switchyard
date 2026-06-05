@@ -221,8 +221,11 @@ impl SimulatedComponent for EvCharger {
         // as the cell tops up). Augmentations are an explicit
         // narrowing the client just asked for and expects to take
         // effect, so they belong in the validation envelope.
+        // 0 W (the fail-safe park) is always accepted, even when an
+        // augmentation has narrowed the envelope to exclude it — a
+        // controller can always stop the component.
         let envelope = self.bounds.lock().effective();
-        if !envelope.contains(power_w) {
+        if power_w != 0.0 && !envelope.contains(power_w) {
             return Err(SetpointError::OutOfBounds {
                 value: power_w,
                 envelope,

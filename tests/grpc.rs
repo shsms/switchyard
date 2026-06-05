@@ -230,6 +230,59 @@ async fn set_power_outside_envelope_is_rejected() {
     );
 }
 
+/// 0 W (the fail-safe park) must always be accepted, even when an
+/// augmentation has narrowed the envelope to exclude it.
+#[tokio::test(flavor = "multi_thread")]
+async fn zero_power_is_always_allowed() {
+    let s = TestServer::start(TINY_TOPOLOGY).await;
+    let mut c = connect(&s).await;
+    // Narrow inverter 4 to discharge-only [-5 kW, -1 kW], excluding 0 W.
+    c.augment_electrical_component_bounds(AugmentElectricalComponentBoundsRequest {
+        electrical_component_id: 4,
+        target_metric: Metric::AcPowerActive as i32,
+        bounds: vec![Bounds {
+            lower: Some(-5000.0),
+            upper: Some(-1000.0),
+        }],
+        request_lifetime: Some(30),
+    })
+    .await
+    .expect("augment ok");
+
+    // A non-zero setpoint outside the augmented band is still rejected...
+    let err = c
+        .set_electrical_component_power(SetElectricalComponentPowerRequest {
+            electrical_component_id: 4,
+            power: 500.0,
+            power_type: PowerType::Active as i32,
+            request_lifetime: Some(30),
+        })
+        .await
+        .expect_err("500 W is outside the augmented envelope");
+    assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+
+    // ...but 0 W is accepted regardless.
+    let resp = c
+        .set_electrical_component_power(SetElectricalComponentPowerRequest {
+            electrical_component_id: 4,
+            power: 0.0,
+            power_type: PowerType::Active as i32,
+            request_lifetime: Some(30),
+        })
+        .await
+        .expect("0 W must be accepted");
+    let first = resp
+        .into_inner()
+        .message()
+        .await
+        .expect("stream poll")
+        .expect("a status");
+    assert_eq!(
+        first.status,
+        SetElectricalComponentPowerRequestStatus::Success as i32,
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn telemetry_stream_emits_samples_for_a_component() {
     let s = TestServer::start(TINY_TOPOLOGY).await;

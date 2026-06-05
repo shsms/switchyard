@@ -219,8 +219,11 @@ impl SimulatedComponent for BatteryInverter {
         // so children-summing happens in tick(). Validation here uses our
         // own (post-augmentation) bounds — anything beyond that is a hard
         // protocol error; the SoC clamp is enforced silently via tick().
+        // 0 W (the fail-safe park) is always accepted, even when an
+        // augmentation has narrowed the envelope to exclude it — a
+        // controller can always stop the component.
         let envelope = self.bounds.lock().effective();
-        if !envelope.contains(power_w) {
+        if power_w != 0.0 && !envelope.contains(power_w) {
             return Err(SetpointError::OutOfBounds {
                 value: power_w,
                 envelope,

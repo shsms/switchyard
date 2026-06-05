@@ -192,8 +192,10 @@ impl MicrogridServer {
         // its children's reported DC bounds and rejects setpoints that
         // exceed the result. Switchyard does the same here so client
         // code sees the production behaviour even though the inverter
-        // and battery don't share a data link in our model.
+        // and battery don't share a data link in our model. 0 W (the
+        // fail-safe park) is always allowed, whatever the envelope.
         if matches!(power_type, PowerType::Active)
+            && req.power != 0.0
             && let Some(child_env) = site.aggregate_child_bounds(req.electrical_component_id)
         {
             let own = component.effective_active_bounds().unwrap_or_default();
