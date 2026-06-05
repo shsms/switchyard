@@ -17,6 +17,7 @@ use crate::sim::{
     meter::{per_phase_apparent_current, split_per_phase},
     ramp::{CommandDelay, Ramp},
     reactive::{ReactiveCapability, ReactivePath},
+    runtime::Health,
 };
 
 #[derive(Clone, Debug)]
@@ -151,7 +152,19 @@ impl SimulatedComponent for SolarInverter {
         self.sunlight_source.read().refresh(ctx);
     }
 
-    fn tick(&self, _world: &MicrogridSite, now: DateTime<Utc>, dt: Duration) {
+    fn tick(&self, world: &MicrogridSite, now: DateTime<Utc>, dt: Duration) {
+        // Own-health gate: a faulted or standby PV inverter is tripped
+        // offline — zero output. It must NOT fall back to its default of
+        // producing from sunlight. Unlike a battery inverter (which awaits
+        // re-dispatch), a recovered PV inverter reconnects and resumes
+        // generating from whatever sunlight is available, so the healthy
+        // path below picks production back up on its own — we only snap the
+        // live output to zero and leave any curtailment setpoint intact.
+        if world.runtime_of(self.id).health != Health::Ok {
+            self.ramp.snap_to(0.0);
+            self.reactive.override_published(0.0);
+            return;
+        }
         // Promote a delayed setpoint command if its command-delay has elapsed.
         self.delay.poll(now);
         // Uncurtailed target: an active setpoint (clamped to what sunlight
@@ -345,5 +358,35 @@ mod tests {
         // Subsequent refresh is a no-op on the constant.
         inv.refresh_inputs(&mut ctx);
         assert!((inv.min_avail_w() - (-3_000.0)).abs() < 1e-3);
+    }
+
+    /// A faulted PV inverter trips offline: it produces nothing rather
+    /// than falling back to full sunlight-tracking. On recovery it
+    /// reconnects and resumes producing from the available sunlight.
+    #[test]
+    fn errored_inverter_stops_producing() {
+        let w = MicrogridSite::new();
+        let inv = SolarInverter::new(1, Duration::from_secs(1), cfg_with_sun(100.0));
+        w.register(inv);
+        let inv = w.get(1).unwrap();
+        let dt = Duration::from_millis(100);
+
+        // Healthy at full sun: produces its rated -10 kW.
+        inv.tick(&w, Utc::now(), dt);
+        assert!((inv.aggregate_power_w(&w) - (-10_000.0)).abs() < 1.0);
+
+        // Errored: tripped offline, zero output — NOT sunlight production.
+        w.set_health(1, Health::Error);
+        inv.tick(&w, Utc::now(), dt);
+        assert!(
+            inv.aggregate_power_w(&w).abs() < 1.0,
+            "errored PV inverter must produce 0 W, got {}",
+            inv.aggregate_power_w(&w),
+        );
+
+        // Recovery: a PV inverter reconnects and resumes from sunlight.
+        w.set_health(1, Health::Ok);
+        inv.tick(&w, Utc::now(), dt);
+        assert!((inv.aggregate_power_w(&w) - (-10_000.0)).abs() < 1.0);
     }
 }

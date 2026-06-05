@@ -113,6 +113,22 @@ impl SimulatedComponent for BatteryInverter {
     fn tick(&self, site: &MicrogridSite, now: DateTime<Utc>, dt: Duration) {
         self.bounds.lock().drop_expired(now);
 
+        // Own-health gate: a faulted or standby inverter is electrically
+        // offline — its IGBTs stop switching, so it pushes nothing to its
+        // batteries and reports zero AC output. Distinct from the
+        // no-healthy-children case below (a *healthy* inverter with no
+        // sink, which holds its setpoint and resumes the instant a child
+        // returns): a tripped inverter clears its setpoint and stays at
+        // zero until it both recovers and is re-dispatched, because a real
+        // inverter stays off until it is reset.
+        if site.runtime_of(self.id).health != Health::Ok {
+            self.delay.reset();
+            self.ramp.snap_to(0.0);
+            *self.measured_w.lock() = 0.0;
+            self.reactive.reset();
+            return;
+        }
+
         // Active path: clamp the pending command against our OWN
         // bounds (no peeking at the children — the gateway gates
         // out-of-envelope setpoints upstream). If one slips through,
@@ -397,5 +413,44 @@ mod tests {
         w.set_health(bat_id, Health::Ok);
         inv.tick(&w, Utc::now(), Duration::from_millis(100));
         assert!((inv.aggregate_power_w(&w) - 3000.0).abs() < 1.0);
+    }
+
+    /// When the *inverter itself* faults it trips offline: zero output,
+    /// and — unlike the no-healthy-children case — it does NOT auto-resume
+    /// its prior setpoint on recovery. A real inverter stays off until it
+    /// is reset and re-dispatched.
+    #[test]
+    fn errored_inverter_trips_offline_and_awaits_redispatch() {
+        let (w, _bat_id, inv_id) = setup_inverter_with_battery();
+        let inv = w.get(inv_id).unwrap();
+        let dt = Duration::from_millis(100);
+
+        inv.set_active_setpoint(3000.0).unwrap();
+        inv.tick(&w, Utc::now(), dt);
+        assert!((inv.aggregate_power_w(&w) - 3000.0).abs() < 1.0);
+
+        // Fault the inverter itself → no production or consumption.
+        w.set_health(inv_id, Health::Error);
+        inv.tick(&w, Utc::now(), dt);
+        assert!(
+            inv.aggregate_power_w(&w).abs() < 1.0,
+            "errored inverter must produce 0 W, got {}",
+            inv.aggregate_power_w(&w),
+        );
+
+        // Recovery alone does not resume delivery — the setpoint was
+        // cleared on the trip, so it stays at zero awaiting re-dispatch.
+        w.set_health(inv_id, Health::Ok);
+        inv.tick(&w, Utc::now(), dt);
+        assert!(
+            inv.aggregate_power_w(&w).abs() < 1.0,
+            "recovered inverter must await re-dispatch at 0 W, got {}",
+            inv.aggregate_power_w(&w),
+        );
+
+        // A fresh setpoint brings it back online.
+        inv.set_active_setpoint(2000.0).unwrap();
+        inv.tick(&w, Utc::now(), dt);
+        assert!((inv.aggregate_power_w(&w) - 2000.0).abs() < 1.0);
     }
 }
