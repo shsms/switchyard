@@ -43,7 +43,7 @@ impl Config {
     /// `tokio::task::spawn_blocking` to keep the executor free.
     ///
     /// On success the source is appended to the per-microgrid
-    /// override file (`config.ui-overrides.<id>.lisp`) so the
+    /// override file (`config.<id>.overrides.lisp`) so the
     /// edit survives a reload. Errored evals are skipped — a
     /// half-applied topology change shouldn't leave a re-erroring
     /// expression on disk. Either way the MicrogridSite version bumps so
@@ -123,7 +123,7 @@ impl Config {
     }
 
     /// One entry per top-level form in the per-microgrid override
-    /// file (`config.ui-overrides.<microgrid-id>.lisp`), parsed
+    /// file (`config.<microgrid-id>.overrides.lisp`), parsed
     /// via `TulispContext::parse_file`. Returns an empty vec if
     /// the file is missing or malformed — load-overrides will
     /// surface a parse error on the next reload, so we don't bother
