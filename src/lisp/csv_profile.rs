@@ -158,6 +158,15 @@ impl CsvLoadProfile {
                 self.path.display()
             ))
         })?;
+        // A NaN time would fall through the endpoint clamps into the
+        // binary search, whose partial_cmp unwrap panics — and the
+        // caller is a lisp defun, so `t` is script-controlled. Reject
+        // it like csv-load rejects non-finite cell values.
+        if t.is_nan() {
+            return Err(Error::invalid_argument(
+                "csv-lookup: time must not be NaN".to_string(),
+            ));
+        }
         if self.times.is_empty() {
             return Ok(0.0);
         }
@@ -263,5 +272,15 @@ mod tests {
     fn rejects_missing_value_column() {
         let p = write_tmp("missing", "time,a,b\n0,1,2\n10,3\n");
         assert!(CsvLoadProfile::load(&p).is_err());
+    }
+
+    #[test]
+    fn lookup_rejects_nan_time_instead_of_panicking() {
+        let p = write_tmp("nan-t", "time,a\n0,1\n10,2\n20,3\n");
+        let prof = CsvLoadProfile::load(&p).unwrap();
+        assert!(prof.lookup("a", f64::NAN).is_err());
+        // Infinities take the endpoint clamps and stay fine.
+        assert_eq!(prof.lookup("a", f64::INFINITY).unwrap(), 3.0);
+        assert_eq!(prof.lookup("a", f64::NEG_INFINITY).unwrap(), 1.0);
     }
 }
