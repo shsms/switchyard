@@ -70,7 +70,17 @@ impl Config {
         let dest = self
             .overrides_path()
             .ok_or_else(|| "no resolvable microgrid scope; can't pick a destination".to_string())?;
-        fs::copy(&src, &dest).map_err(|e| format!("copy snapshot failed: {e}"))?;
+        // Atomic replace (temp + rename), mirroring the other
+        // overrides-file rewrite paths — a copy interrupted midway
+        // must not leave a truncated overrides file behind. The
+        // microgrids/ dir may not exist yet if nothing was persisted
+        // before the first snapshot load.
+        if let Some(dir) = dest.parent() {
+            fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+        }
+        let tmp = dest.with_extension("lisp.tmp");
+        fs::copy(&src, &tmp).map_err(|e| format!("copy snapshot failed: {e}"))?;
+        fs::rename(&tmp, &dest).map_err(|e| format!("replace overrides failed: {e}"))?;
         self.reload()
     }
 
