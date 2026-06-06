@@ -156,13 +156,13 @@ export function wordAtCursor(input) {
 }
 
 // Number of rotating paren-depth colours; CSS picks via .paren-N.
-export const RAINBOW_DEPTHS = 7;
+const RAINBOW_DEPTHS = 7;
 
 // Symbols that head a list and are syntax keywords rather than
 // callable functions. Drives the .repl-special-form class so the
 // shape of a form is visible at a glance: `defun`, `let`, `when`
 // pop one colour; ordinary function calls get a different one.
-export const SPECIAL_FORMS = new Set([
+const SPECIAL_FORMS = new Set([
   "defun", "defmacro", "defvar", "defconst", "defspecial",
   "let", "let*", "letrec",
   "if", "when", "unless", "cond", "case", "pcase",

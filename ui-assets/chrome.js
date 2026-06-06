@@ -149,7 +149,7 @@ export const clockState = (() => {
   };
 })();
 
-export function renderClockNow() {
+function renderClockNow() {
   const el = document.getElementById("pulse-clock");
   if (el) el.textContent = clockState.formatNow();
 }

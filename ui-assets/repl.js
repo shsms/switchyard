@@ -26,7 +26,7 @@ import { dispatchesPanel, escapeHtml, setStatus } from "./app.js";
 // (ring of recent records); /ws/events kind:"log" appends each new
 // record live. Capped at 500 DOM rows so a chatty session doesn't
 // freeze the panel.
-export function appendLog(ev) {
+function appendLog(ev) {
   const box = document.getElementById("logs");
   const el = document.createElement("div");
   el.className = `log-line ${(ev.level || "info").toLowerCase()}`;

@@ -283,7 +283,7 @@ function selectField(knob, current, options) {
   return `<select data-knob="${knob}">${opts}</select>`;
 }
 
-export function jsToLispString(s) {
+function jsToLispString(s) {
   return s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
