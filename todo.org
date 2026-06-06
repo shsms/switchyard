@@ -2,13 +2,18 @@
 #+TODO: TODO IN-PROGRESS WAIT | DONE CANCELLED
 
 Forward-looking residue. The reactive-input + scenario framework
-+ integration-test + CI tracks all landed; what's left are smaller
-deferred items, a new browser-automation push, and a handful of
-open design questions.
++ integration-test + CI tracks all landed; what's left is the
+browser-automation push, a few deferred features, the unfixed
+review findings, and a handful of open design questions.
+
+Layout: =Roadmap= holds plannable feature work, =Review backlog=
+holds verified findings waiting on a design call, =Open design
+questions= holds the unsettled d-items, and =Archive= keeps the
+DONE entries for the record.
 
 * Roadmap
 
-** F. Browser-driven UI tests
+** B. Browser-driven UI tests
 
 The Rust integration tests in =tests/= cover the HTTP and gRPC
 boundaries but stop at the JSON shape — none of them exercise the
@@ -32,7 +37,7 @@ animations move power around at 200 ms. Tests need to either
 freeze the world at known points or assert on stable structure
 rather than pixel-exact screenshots.
 
-*** TODO F1. Playwright harness + first round of functional tests
+*** TODO B1. Playwright harness + first round of functional tests
 
 Lay the foundation; cover surfaces that don't need pixel-perfect
 output to verify.
@@ -51,9 +56,9 @@ output to verify.
 Acceptance: =npm test= passes on a clean checkout in <30 s; one
 flake-free pass over 10 consecutive runs.
 
-*** TODO F2. Scenario flow + REPL interaction tests
+*** TODO B2. Scenario flow + REPL interaction tests
 
-Build on F1 to cover the more state-ful flows.
+Build on B1 to cover the more state-ful flows.
 
 - Drive a small scenario through =/api/eval= (=(scenario-start
   …)=, =(set-meter-power 100 (lambda () N))=), open the Report
@@ -72,7 +77,7 @@ Build on F1 to cover the more state-ful flows.
 Acceptance: each flow runs deterministically when the server is
 fresh; tests don't share state between runs.
 
-*** TODO F3. Visual regression on a small set of stable views
+*** TODO B3. Visual regression on a small set of stable views
 
 Pixel-exact snapshots only where the surface is reliably stable.
 Avoids the topology-layout flake.
@@ -96,7 +101,7 @@ fail every run.
 Acceptance: three snapshot tests, baselines checked in, second
 run on the same machine matches.
 
-*** TODO F4. CI integration for the browser tests
+*** TODO B4. CI integration for the browser tests
 
 Add a fourth job to =.github/workflows/ci.yml=:
 
@@ -113,6 +118,46 @@ screenshots / traces are inspectable post-run. Run on
 Acceptance: CI green on this PR; introducing a UI regression
 flips it red and the artifact contains a trace pointing at the
 broken assertion.
+
+** S. Additional gRPC services
+
+*** TODO S1. Expose the reporting API                             :switchyard:rust:
+
+Mount the [[https://github.com/frequenz-floss/frequenz-api-reporting][frequenz-api-reporting]] gRPC service so downstream apps can hit a
+switchyard instance with the same reporting calls they'd use against
+a real deployment.  Larger project than the assets API (see
+=Archive=) — reporting wants historical aggregations, multi-metric
+queries, time-range pagination, etc., which switchyard doesn't
+currently retain.
+
+*** TODO S2. ListMicrogrids discovery RPC
+
+Follow-up from the assets API: there's no =ListMicrogrids= RPC in
+the upstream proto, so gRPC-only clients still need
+=/api/microgrids= (HTTP) to discover available ids. Worth a
+switchyard-side proto extension if a gRPC-only client ever needs
+it.
+
+** R. REPL editing experience polish
+
+The shipped first cut covers the common case: =/api/format=
+behind =Tab=, paren-stack indent on =Enter=, and a special-form
+vs function-call distinction in the overlay. What's left are
+correctness gaps where the simple "first symbol after =(= is a
+function head" model misclassifies things.
+
+*** TODO R1. =Enter=-on-empty-line outdent
+
+=indentForNewline= always indents at the innermost open paren's
+column + 2. Hitting =Enter= twice in a row from a fresh blank
+line therefore lands the cursor at the same indent on every
+=Enter=, with no easy way to walk back out without typing
+=Backspace= a known number of times.
+
+Match Emacs Lisp mode: if the line being broken is whitespace-
+only *and* the previous line is also whitespace-only, fall back
+to column 0 (or, more general: outdent by =indent-step=). Small
+addition to =indentForNewline=, no server roundtrip.
 
 ** E. Smaller deferred items
 
@@ -142,381 +187,7 @@ Why deferred: requires either a tulisp-side reflection API or a
 =switchyard::lisp::make= self-describing module. Hardcoded JS works
 fine for the current category count.
 
-** F. Additional gRPC services
-
-*** DONE F1. Expose the assets API                                :switchyard:rust:
-CLOSED: [2026-05-16 Sa]
-:LOGBOOK:
-- State "DONE"       from "INPROGRESS"  [2026-05-16 Sa]
-- State "INPROGRESS" from              [2026-05-15 Fr]
-:END:
-
-Mounted the [[https://github.com/frequenz-floss/frequenz-api-assets][frequenz-api-assets]] gRPC service on [::1]:9900 (its own
-listener, separate from the per-microgrid =MicrogridServer= ports).
-=GetMicrogrid=, =ListMicrogridElectricalComponents=, and
-=ListMicrogridElectricalComponentConnections= dispatch per-request by
-looking the requested =microgrid_id= up in =Config::microgrids()=, so
-the single assets service answers for every microgrid switchyard
-manages. Unknown ids → =NotFound=.
-
-Follow-up that didn't make it into F1: there's no =ListMicrogrids=
-RPC in the upstream proto, so clients still need =/api/microgrids=
-(HTTP) to discover available ids. Worth a switchyard-side proto
-extension if a gRPC-only client ever needs it.
-
-*** TODO F2. Expose the reporting API                             :switchyard:rust:
-
-Mount the [[https://github.com/frequenz-floss/frequenz-api-reporting][frequenz-api-reporting]] gRPC service so downstream apps can hit a
-switchyard instance with the same reporting calls they'd use against
-a real deployment.  Larger project than F1 — reporting wants
-historical aggregations, multi-metric queries, time-range
-pagination, etc., which switchyard doesn't currently retain.  Defer
-until F1 lands and scope is clearer.
-
-** G. REPL editing experience polish
-
-The shipped first cut covers the common case: =/api/format=
-behind =Tab=, paren-stack indent on =Enter=, and a special-form
-vs function-call distinction in the overlay. What's left are
-correctness gaps where the simple "first symbol after =(= is a
-function head" model misclassifies things.
-
-*** TODO G3. =Enter=-on-empty-line outdent
-
-=indentForNewline= always indents at the innermost open paren's
-column + 2. Hitting =Enter= twice in a row from a fresh blank
-line therefore lands the cursor at the same indent on every
-=Enter=, with no easy way to walk back out without typing
-=Backspace= a known number of times.
-
-Match Emacs Lisp mode: if the line being broken is whitespace-
-only *and* the previous line is also whitespace-only, fall back
-to column 0 (or, more general: outdent by =indent-step=). Small
-addition to =indentForNewline=, no server roundtrip.
-
-** H. Navigation + editor history
-
-*** DONE H1. Back / forward navigation across screens
-
-Browser back / forward should walk the user's mode + microgrid +
-subview history: e.g. Microgrids list → per-mg Dashboard →
-Scenarios → back should land in the per-mg Dashboard, not the
-top of the Microgrids list. Currently mode + subview live in
-=localStorage= only, so the back/forward buttons walk the
-browser's URL history (which doesn't reflect SPA state) and end
-up at the previous page in the browser.
-
-Likely shape: push entries into =history.pushState= on every
-=applyMode= + =selectMicrogrid= + =setSubview= transition with
-the state as the payload; =window.onpopstate= reads it back and
-re-applies. The selected-mg id needs to round-trip through the
-URL so a back-then-refresh lands on the same view (currently a
-refresh keeps the mg from localStorage but the back button
-loses it).
-
-Acceptance: dashboard-of-mg-2200 → Scenarios → back puts the user
-back on dashboard-of-mg-2200 with the same subview; same for
-=switchyard.html#microgrids/2200/dashboard= deep-links.
-
-*** DONE H2. Undo in the topology editing canvas
-
-Cut / copy / paste land via =/api/mg/{id}/eval= and update the
-override file. There's no undo for the canvas-level operations
-(delete, paste, connect, disconnect, rename). The persisted-
-overrides dialog can hand-prune individual forms after the fact,
-but it's a row-by-row checkbox UI, not a Ctrl-Z stack.
-
-Want a per-mg undo stack the canvas + side-panel mutations push
-onto: each entry is enough state to revert. Two shapes:
-
-- *Optimistic snapshots.* Snapshot the override file before each
-  eval; Ctrl-Z restores it. Cheap but heavy (whole-file write per
-  edit) and doesn't help if the user evaluates via REPL.
-- *Inverse operations.* Each mutating verb produces an inverse
-  expression — =(rename-component 1 "old")=, =(connect a b)= →
-  =(disconnect a b)=, etc. — that the stack pushes. Lighter but
-  needs every mutating defun to declare its inverse.
-
-Probably start with snapshots (simpler) and refine.
-
-Acceptance: Ctrl-Z after a paste removes the pasted subgraph;
-Ctrl-Z after a rename restores the previous name; Ctrl-Shift-Z
-re-applies the undone step.
-
-*** DONE H3. Topology canvas: keep the graph centered
-
-Switching into the Topology subview often shows only half the
-graph — the user has to pan to see the full diagram. Small
-unrelated UI mutations (a side-panel open, a header chip update)
-sometimes shift the centering further. Likely a vis-network
-`fit()` issue: the fit is only called at first paint, not on
-resize / focus / panel toggle.
-
-Acceptance: switching into Topology always lands with the graph
-visible end-to-end; no follow-on action moves it off center
-unless the user pans / zooms themselves.
-
-*** DONE H4. Bottom splitter wedges the layout
-
-Dragging the bottom splitter (REPL drawer vs. main pane) past a
-threshold appears to take up the whole vertical space and the
-canvas + side panel become invisible. The side (vertical)
-splitter behaves normally.
-
-Reproduce via headless Firefox (selenium): start the binary,
-flip to Topology subview, drag the bottom splitter to ~0 px
-from the top, screenshot. Then investigate the CSS / JS — likely
-the splitter's min-height clamp is missing or the grid template
-collapses.
-
-Acceptance: dragging the splitter to either extreme leaves both
-panes visible (or at least recoverable via the splitter); a
-selenium regression test pins the behaviour.
-
-* Bugs / open design questions
-
-** d1. Rethink ~file-exists-p~ resolving against the config's load dir
-
-The current =register_fs_helpers= in =src/lisp/mod.rs= resolves
-relative paths in =(file-exists-p PATH)= against the config file's
-load directory (the same base =(load PATH)= uses). The motivation
-was to keep =load-overrides='s gate
-
-#+begin_src elisp
-(when (file-exists-p "microgrids/config.7.overrides.lisp")
-  (load "microgrids/config.7.overrides.lisp"))
-#+end_src
-
-answering the same question both halves of that =when= ask — the
-two used to disagree when the process CWD differed from the config
-dir, which broke the override-replay path inside
-=remove_persisted_override= and the test that exercises it.
-
-That's still a real coordination problem, but the fix is a little
-heavy-handed:
-
-- *Emacs divergence.* Real Elisp's =file-exists-p= resolves against
-  =default-directory=, not the load path. Anyone porting code from
-  Emacs (or eyeballing the docstring) would expect CWD-relative
-  resolution; ours quietly rebases.
-- *Surprises for non-override paths.* =(file-exists-p
-  "telemetry.csv")= etc. now also rebases — fine if the user
-  always means "next to config.lisp" but wrong if they meant CWD.
-- *Coupling to =load_dir= at registration time.* The closure
-  captures the path on =Config::new=, so a later =set_load_path=
-  on the ctx (if we ever expose one to Lisp) wouldn't be visible
-  to =file-exists-p=. =(load PATH)= in tulisp reads =ctx.load_path=
-  on every call.
-
-*Better directions to consider:*
-
-1. Drop the special handling in =file-exists-p= and instead change
-   the Lisp side: =load-overrides= in =sim/common.lisp= could build
-   an absolute path before the gate, eg. by exposing the
-   override-file path as a Rust-side defun (=(overrides-path)=
-   already exists; make it return an absolute path).
-2. Land a tulisp-level fix: add a =ctx.load_path= getter (currently
-   =pub(crate)=) so a closure can resolve at call time, mirroring
-   =(load PATH)=.
-3. Push a =file-exists-p= change upstream into tulisp itself,
-   matching =(load)='s resolution.
-
-(2) or (3) is probably the right answer; (1) is the smallest patch
-on the switchyard side.
-
-*Where the workaround lives today:* =register_fs_helpers= closes over
-=load_dir: PathBuf=, captured in =register_runtime= and propagated
-from =Config::new=. The matching test
-(=ui::tests::persisted_remove_drops_form_immediately=) inlines a
-local =load-overrides= defun and relies on this resolution to find
-the override file.
-
-** d2. Promote per-mg override file into the per-mg config file
-
-Currently every successful eval lands in the per-microgrid override
-file (=microgrids/config.<id>.overrides.lisp=). The next step in
-that flow: a UI action that takes the override file's contents and
-folds them into the matching =microgrids/config.<id>.lisp= (inside
-the =:topology= lambda — see below), then empties the override
-file. After the action the world is unchanged but the source-of-
-truth has shifted from "runtime edit" to "canonical microgrid
-config" and the entry is no longer editable from the UI overrides
-dialog.
-
-*Where it'd land:* a button in the chrome (probably called Persist
-or Promote), a server-side endpoint that does the file munging, and
-an entry in this UI dialog that confirms the move.
-
-*Open questions to settle before coding:*
-
-- Where in =microgrids/config.<id>.lisp= does the content go? The
-  natural slot is inside the =(make-microgrid :topology (lambda
-  () …))= lambda body, alongside whatever topology the file
-  already declares. Insertion point: before the trailing
-  =(load-overrides)= call, so the canonical forms run first and
-  then any remaining overrides layer on top. Mechanical append at
-  the end of the lambda is the floor — semantic grouping (collect
-  rename-component calls near the renamed components, etc.) is
-  much harder and probably not worth automating in v1.
-- Does the action try to dedup against existing forms in the
-  per-mg config file? eg. if the override is
-  =(rename-component 1 "alpha")= and the config already calls
-  =(rename-component 1 "main-grid")= inside the topology, do we
-  replace the existing call, append after it, or just append at
-  the end and let last-write-win semantics carry the day?
-- Does the action run =tulisp-fmt= over the merged file, or
-  preserve the existing whitespace / comments verbatim and only
-  format the appended block?
-- After the move, the override file is empty and the per-mg config
-  file grew. Reloading should yield the same microgrid (same
-  forms, just relocated). Worth a test that round-trips
-  add → promote → reload → state-equal.
-
-*Why deferred:* the immediate-write override file makes the
-override file the pending log. Promote-to-config is a one-way
-commit gate on top of that, but the design questions above need a
-real config sample to test against — easier to settle once a heavy
-microgrid config has accumulated some real overrides.
-
-** d3. Parallel-paths share semantic — does this match real installs?
-
-We currently model "child shared by N parents" as "each parent sees
-1/N of the child's flow" (parallel-conductor semantic). It's
-physically real for high-current buses split into N cables for
-ampacity, each with its own CT and meter, summed by an upstream
-aggregator. But that's an unusual SCADA-level topology.
-
-The more common multi-parent setup in real microgrids is *redundant
-observers* — two meters on the *same* wire (Class A + Class B,
-primary + backup) both reporting the full flow, with the SCADA layer
-deduping or selecting one. Under our current semantic, those two
-meters would each read half, which isn't what the user expects.
-
-If user feedback pushes us either way, options are:
-
-- *Keep parallel-share as default*, document the redundant-observer
-  use case as "express it via =:hidden t= on the backup meter so it
-  doesn't appear in the connections graph".
-- *Flip default to count-fully-per-parent*, and add an explicit
-  =:share <fraction>= plist arg for the parallel-conductor case.
-- *Add a topology-level kind annotation* (=:redundant-with <id>=,
-  =:parallel-with <id>=) so the connection graph itself encodes
-  intent. Most expressive, most invasive.
-
-** d4. Per-phase reactive setpoints
-
-The proto's =SetElectricalComponentPower= takes a single scalar
-=power= value, not per-phase. Real inverters can be commanded to
-dispatch unbalanced reactive across phases for voltage support. Out
-of scope for v1; would need a proto extension or a side-channel
-defun. Tracked here so we don't forget the gap.
-
-** d5. Per-source attribution under MxN
-
-Today an inverter publishes its *commanded* AC output as =measured=;
-the battery separately publishes the accepted (clamped) value. A
-SCADA client that wants to see "inverter 1 produced 7.5 kW of the
-13 kW total flowing into the shared battery" has to read both
-streams and reconcile. A future upgrade: track per-source pushes on
-the battery's accumulator (=Vec<(parent_id, p, q)>=), distribute
-the clamp ratio across sources, and let each inverter read its own
-=accepted_from(self.id)= to compute fair-share measured. Minor
-trade-off in trait surface.
-
-** d6. Persist only graph-affecting evals to the overrides file
-
-Today =Config::eval= (=src/lisp/mod.rs:604=) appends *every*
-successful eval, verbatim, to the per-mg overrides file
-(unconditionally on success), then calls =router.site().bump_version()=.
-So a structural edit (=(make-battery …)=, =connect=, delete,
-=rename=) and a transient runtime poke (=(set-meter-power 1 5000)=,
-=(set-component-health 3 'error)=, =(+ 2 3)=, a defaults edit) all
-land in the file identically. Because =(load-overrides)= replays the
-file on reload, runtime pokes currently *resurrect* as if they were
-config — so gating the append also fixes a correctness bug, not just
-clutter. An =eval_silent= twin (=:636=) already evals without
-persisting, so the "should this persist?" seam exists; it's just
-all-or-nothing.
-
-Structural mutations funnel through five =MicrogridSite= methods —
-=register= (=:655=, the =make-*= path), =connect= (=:669=),
-=disconnect= (=:849=), =remove_component= (=:818=), =rename= (=:859=).
-Runtime/env defuns (=set-component-health= =:1882=, =set-frequency=
-=:2038=, =set-*-power=, =every= / =run-with-timer=) touch none of
-them, so "did the graph change?" is observable. =bump_version()=
-(=:567=) fires on *every* eval — it's a WS-refresh counter, not a
-structural signal.
-
-*** The catch: "graph-affecting" is narrower than "worth persisting"
-
-Two cases persist via the same eval path today but are *not* graph
-edits:
-- *Defaults edits* — the Defaults panel saves =(setq battery-defaults
-  …)= through =/api/eval= (=app.js:1755=). They change *future*
-  =make-*=, not the live graph. A strict graph-diff gate would drop
-  them — a regression, since they're config worth keeping.
-- *Renames* — change a component's display name only. Counts as the
-  graph, or not? Open.
-
-So the real decision is the *policy* (graph-structure only, vs.
-"structural + config, minus transient/queries"), and only then the
-mechanism.
-
-*** Options
-
-- *A — fingerprint-diff gate.* In =Config::eval=, hash the structure
-  (=components()= → sorted ={id,category,subtype}= + =connections()= →
-  sorted edges [+ names]) before/after; append only on change. Robust
-  to any lisp (progn, loops, helper defuns) — decides on observed
-  effect, not syntax. Cons: net-zero edits (add+remove in one form)
-  don't persist; a mixed form (=make-*= *and* =set-power=) persists
-  whole (runtime part replays); defaults dropped unless whitelisted.
-- *B — structural-change-counter gate (recommended core).* Add
-  =structural_version: AtomicU64= to =MicrogridSite=, bumped inside
-  the five mutators; =Config::eval= snapshots it before/after and
-  appends only on change. Keep =bump_version()= as the WS counter.
-  Precise (knows a structural op ran), dirt-cheap (one atomic
-  compare, no hashing), tiny surface. Cons: net-zero edits still
-  persist (counter bumps twice); same mixed-form / defaults caveats
-  as A. Can layer A on top to suppress net-zero.
-- *C — verb allowlist (avoid alone).* Persist only if the eval's head
-  is a graph verb. Brittle — =progn= / =dotimes= / =let*= / user
-  defuns / =load= all defeat it. A hint, not the gate.
-- *D — origin-based (good refinement).* Canvas actions
-  (add/connect/delete/rename) are inherently structural and hit
-  dedicated paths; the free-form REPL is the noise. Persist canvas
-  edits always; gate REPL evals through A/B (or treat REPL as
-  scratch). Matches "canvas = the topology I built; REPL =
-  scratchpad". Needs an origin flag on the eval endpoint.
-- *F — form-splitting.* Split a multi-form eval into top-level forms,
-  eval each, persist only the forms that moved the structural signal.
-  Fixes the mixed-form hole; more work. A refinement on B.
-- *G — different model: regenerate, don't append.* Stop append-logging
-  evals; serialize the live graph structure to the file (the
-  clipboard/paste code already emits categories + internal edges, so
-  there's precedent). The file becomes a canonical snapshot, never
-  holds transient pokes, no replay surprises. Cons: bigger change;
-  regenerated forms lose exact source spelling (use defaults, like
-  paste) and you'd need a separate channel for non-graph config
-  (defaults/knobs) you still want kept.
-
-*** Recommendation
-
-B as the gate, with the policy widened to "structural OR
-config-worth-keeping": a structural-change counter gates =make-*= /
-=connect= / =disconnect= / =remove= (and =rename= if names should
-persist), plus a small explicit allowlist for non-graph config evals
-(defaults =setq=s) so they still persist. Optionally add D so the
-REPL is scratch-by-default. Minimal, lives at the five mutators, and
-fixes the reload-replay-of-pokes bug as a bonus.
-
-Open decisions before speccing:
-1. Defaults edits — keep persisting (likely yes) or drop as not-graph?
-2. Renames — graph edit (persist) or not?
-3. REPL vs canvas — REPL scratch-by-default (D), or persist whenever
-   the graph changed regardless of origin?
-
-* Code review — 2026-06-01
+* Review backlog — 2026-06-01
 
 Whole-codebase review (8-agent subsystem fan-out + clippy/fmt; clippy
 came back clean). The straightforward issues were fixed in the same pass
@@ -617,10 +288,11 @@ reuse a single tracked handle slot per outage chain.
 
 *** TODO Snapshot save/load ignore the per-request microgrid scope
 
-=snapshots_save= / =snapshots_load= (=src/ui/mod.rs=) resolve the target
-via the ambient =current_microgrid= (set by the last per-mg eval) rather
-than a caller-specified id, so they can snapshot / restore the wrong
-microgrid. Same root cause as the concurrent-eval finding above.
+=snapshots_save= / =snapshots_load= (=src/ui/handlers/snapshots.rs=)
+resolve the target via the ambient =current_microgrid= (set by the last
+per-mg eval) rather than a caller-specified id, so they can snapshot /
+restore the wrong microgrid. Same root cause as the concurrent-eval
+finding above.
 
 Fix: add explicit microgrid-scoped snapshot routes and apply the same
 atomic-scope fix.
@@ -637,7 +309,7 @@ Localized hardening / contract items from the same review:
 - =telemetry_to_proto= (=src/proto_conv.rs=) emits a state snapshot even
   when =states= is empty; only push the snapshot when non-empty.
 - No request-body size limit on =/api/eval=, =/api/format=, overrides-text
-  (=src/ui/mod.rs=) — add a =DefaultBodyLimit= (matters once the UI is
+  (=src/ui/=) — add a =DefaultBodyLimit= (matters once the UI is
   bound non-loopback via =--ui-bind=).
 - =/api/eval= returns =ok:true= even when persisting the override to disk
   failed (=src/lisp/mod.rs= append path) — surface a persist-failure flag.
@@ -646,9 +318,346 @@ Localized hardening / contract items from the same review:
   log-and-continue instead.
 - =spawn_physics= (=src/sim/microgrid_site.rs=) rebuilds the interval on a
   cadence change, firing one immediate extra tick.
-- Per-WS-connection forwarder tasks (=src/ui/mod.rs=) only exit on the
-  next site event; abort the handles on socket close so connections to
-  idle microgrids don't park.
+- Per-WS-connection forwarder tasks (=src/ui/events_ws.rs=) only exit on
+  the next site event; abort the handles on socket close so connections
+  to idle microgrids don't park.
 - =swctl= dashboard / pool =--tail= (=src/bin/swctl.rs=) aborts the whole
   loop on a single transient HTTP error; warn and continue to the next
   tick instead.
+
+* Open design questions
+
+** d1. Rethink ~file-exists-p~ resolving against the config's load dir
+
+The current =defuns::fs::register= (=src/lisp/defuns/fs.rs=) resolves
+relative paths in =(file-exists-p PATH)= against the config file's
+load directory (the same base =(load PATH)= uses). The motivation
+was to keep =load-overrides='s gate
+
+#+begin_src elisp
+(when (file-exists-p "microgrids/config.7.overrides.lisp")
+  (load "microgrids/config.7.overrides.lisp"))
+#+end_src
+
+answering the same question both halves of that =when= ask — the
+two used to disagree when the process CWD differed from the config
+dir, which broke the override-replay path inside
+=remove_persisted_override= and the test that exercises it.
+
+That's still a real coordination problem, but the fix is a little
+heavy-handed:
+
+- *Emacs divergence.* Real Elisp's =file-exists-p= resolves against
+  =default-directory=, not the load path. Anyone porting code from
+  Emacs (or eyeballing the docstring) would expect CWD-relative
+  resolution; ours quietly rebases.
+- *Surprises for non-override paths.* =(file-exists-p
+  "telemetry.csv")= etc. now also rebases — fine if the user
+  always means "next to config.lisp" but wrong if they meant CWD.
+- *Coupling to =load_dir= at registration time.* The closure
+  captures the path on =Config::new=, so a later =set_load_path=
+  on the ctx (if we ever expose one to Lisp) wouldn't be visible
+  to =file-exists-p=. =(load PATH)= in tulisp reads =ctx.load_path=
+  on every call.
+
+*Better directions to consider:*
+
+1. Drop the special handling in =file-exists-p= and instead change
+   the Lisp side: =load-overrides= in =sim/common.lisp= could build
+   an absolute path before the gate, eg. by exposing the
+   override-file path as a Rust-side defun (=(overrides-path)=
+   already exists; make it return an absolute path).
+2. Land a tulisp-level fix: add a =ctx.load_path= getter (currently
+   =pub(crate)=) so a closure can resolve at call time, mirroring
+   =(load PATH)=.
+3. Push a =file-exists-p= change upstream into tulisp itself,
+   matching =(load)='s resolution.
+
+(2) or (3) is probably the right answer; (1) is the smallest patch
+on the switchyard side.
+
+*Where the workaround lives today:* =defuns::fs::register= closes
+over =load_dir: PathBuf=, propagated from =Config::new= via
+=defuns::register_runtime=. The matching test
+(=ui::tests::persisted_remove_drops_form_immediately=) inlines a
+local =load-overrides= defun and relies on this resolution to find
+the override file.
+
+** d2. Promote per-mg override file into the per-mg config file
+
+Currently every successful eval lands in the per-microgrid override
+file (=microgrids/config.<id>.overrides.lisp=). The next step in
+that flow: a UI action that takes the override file's contents and
+folds them into the matching =microgrids/config.<id>.lisp= (inside
+the =:topology= lambda — see below), then empties the override
+file. After the action the world is unchanged but the source-of-
+truth has shifted from "runtime edit" to "canonical microgrid
+config" and the entry is no longer editable from the UI overrides
+dialog.
+
+*Where it'd land:* a button in the chrome (probably called Persist
+or Promote), a server-side endpoint that does the file munging, and
+an entry in this UI dialog that confirms the move.
+
+*Open questions to settle before coding:*
+
+- Where in =microgrids/config.<id>.lisp= does the content go? The
+  natural slot is inside the =(make-microgrid :topology (lambda
+  () …))= lambda body, alongside whatever topology the file
+  already declares. Insertion point: before the trailing
+  =(load-overrides)= call, so the canonical forms run first and
+  then any remaining overrides layer on top. Mechanical append at
+  the end of the lambda is the floor — semantic grouping (collect
+  rename-component calls near the renamed components, etc.) is
+  much harder and probably not worth automating in v1.
+- Does the action try to dedup against existing forms in the
+  per-mg config file? eg. if the override is
+  =(rename-component 1 "alpha")= and the config already calls
+  =(rename-component 1 "main-grid")= inside the topology, do we
+  replace the existing call, append after it, or just append at
+  the end and let last-write-win semantics carry the day?
+- Does the action run =tulisp-fmt= over the merged file, or
+  preserve the existing whitespace / comments verbatim and only
+  format the appended block?
+- After the move, the override file is empty and the per-mg config
+  file grew. Reloading should yield the same microgrid (same
+  forms, just relocated). Worth a test that round-trips
+  add → promote → reload → state-equal.
+
+*Why deferred:* the immediate-write override file makes the
+override file the pending log. Promote-to-config is a one-way
+commit gate on top of that, but the design questions above need a
+real config sample to test against — easier to settle once a heavy
+microgrid config has accumulated some real overrides.
+
+** d3. Parallel-paths share semantic — does this match real installs?
+
+We currently model "child shared by N parents" as "each parent sees
+1/N of the child's flow" (parallel-conductor semantic). It's
+physically real for high-current buses split into N cables for
+ampacity, each with its own CT and meter, summed by an upstream
+aggregator. But that's an unusual SCADA-level topology.
+
+The more common multi-parent setup in real microgrids is *redundant
+observers* — two meters on the *same* wire (Class A + Class B,
+primary + backup) both reporting the full flow, with the SCADA layer
+deduping or selecting one. Under our current semantic, those two
+meters would each read half, which isn't what the user expects.
+
+If user feedback pushes us either way, options are:
+
+- *Keep parallel-share as default*, document the redundant-observer
+  use case as "express it via =:hidden t= on the backup meter so it
+  doesn't appear in the connections graph".
+- *Flip default to count-fully-per-parent*, and add an explicit
+  =:share <fraction>= plist arg for the parallel-conductor case.
+- *Add a topology-level kind annotation* (=:redundant-with <id>=,
+  =:parallel-with <id>=) so the connection graph itself encodes
+  intent. Most expressive, most invasive.
+
+** d4. Per-phase reactive setpoints
+
+The proto's =SetElectricalComponentPower= takes a single scalar
+=power= value, not per-phase. Real inverters can be commanded to
+dispatch unbalanced reactive across phases for voltage support. Out
+of scope for v1; would need a proto extension or a side-channel
+defun. Tracked here so we don't forget the gap.
+
+** d5. Per-source attribution under MxN
+
+Today an inverter publishes its *commanded* AC output as =measured=;
+the battery separately publishes the accepted (clamped) value. A
+SCADA client that wants to see "inverter 1 produced 7.5 kW of the
+13 kW total flowing into the shared battery" has to read both
+streams and reconcile. A future upgrade: track per-source pushes on
+the battery's accumulator (=Vec<(parent_id, p, q)>=), distribute
+the clamp ratio across sources, and let each inverter read its own
+=accepted_from(self.id)= to compute fair-share measured. Minor
+trade-off in trait surface.
+
+** d6. Persist only graph-affecting evals to the overrides file
+
+Today =Config::eval= (=src/lisp/mod.rs=) appends *every*
+successful eval, verbatim, to the per-mg overrides file
+(unconditionally on success), then calls =router.site().bump_version()=.
+So a structural edit (=(make-battery …)=, =connect=, delete,
+=rename=) and a transient runtime poke (=(set-meter-power 1 5000)=,
+=(set-component-health 3 'error)=, =(+ 2 3)=, a defaults edit) all
+land in the file identically. Because =(load-overrides)= replays the
+file on reload, runtime pokes currently *resurrect* as if they were
+config — so gating the append also fixes a correctness bug, not just
+clutter. An =eval_silent= twin already evals without
+persisting, so the "should this persist?" seam exists; it's just
+all-or-nothing.
+
+Structural mutations funnel through five =MicrogridSite= methods —
+=register= (the =make-*= path), =connect=, =disconnect=,
+=remove_component=, =rename=. Runtime/env defuns
+(=set-component-health=, =set-frequency=, =set-*-power=, =every= /
+=run-with-timer=) touch none of them, so "did the graph change?" is
+observable. =bump_version()= fires on *every* eval — it's a
+WS-refresh counter, not a structural signal.
+
+*** The catch: "graph-affecting" is narrower than "worth persisting"
+
+Two cases persist via the same eval path today but are *not* graph
+edits:
+- *Defaults edits* — the Defaults panel saves =(setq battery-defaults
+  …)= through =/api/eval= (=ui-assets/dialogs.js=). They change
+  *future* =make-*=, not the live graph. A strict graph-diff gate
+  would drop them — a regression, since they're config worth keeping.
+- *Renames* — change a component's display name only. Counts as the
+  graph, or not? Open.
+
+So the real decision is the *policy* (graph-structure only, vs.
+"structural + config, minus transient/queries"), and only then the
+mechanism.
+
+*** Options
+
+- *A — fingerprint-diff gate.* In =Config::eval=, hash the structure
+  (=components()= → sorted ={id,category,subtype}= + =connections()= →
+  sorted edges [+ names]) before/after; append only on change. Robust
+  to any lisp (progn, loops, helper defuns) — decides on observed
+  effect, not syntax. Cons: net-zero edits (add+remove in one form)
+  don't persist; a mixed form (=make-*= *and* =set-power=) persists
+  whole (runtime part replays); defaults dropped unless whitelisted.
+- *B — structural-change-counter gate (recommended core).* Add
+  =structural_version: AtomicU64= to =MicrogridSite=, bumped inside
+  the five mutators; =Config::eval= snapshots it before/after and
+  appends only on change. Keep =bump_version()= as the WS counter.
+  Precise (knows a structural op ran), dirt-cheap (one atomic
+  compare, no hashing), tiny surface. Cons: net-zero edits still
+  persist (counter bumps twice); same mixed-form / defaults caveats
+  as A. Can layer A on top to suppress net-zero.
+- *C — verb allowlist (avoid alone).* Persist only if the eval's head
+  is a graph verb. Brittle — =progn= / =dotimes= / =let*= / user
+  defuns / =load= all defeat it. A hint, not the gate.
+- *D — origin-based (good refinement).* Canvas actions
+  (add/connect/delete/rename) are inherently structural and hit
+  dedicated paths; the free-form REPL is the noise. Persist canvas
+  edits always; gate REPL evals through A/B (or treat REPL as
+  scratch). Matches "canvas = the topology I built; REPL =
+  scratchpad". Needs an origin flag on the eval endpoint.
+- *F — form-splitting.* Split a multi-form eval into top-level forms,
+  eval each, persist only the forms that moved the structural signal.
+  Fixes the mixed-form hole; more work. A refinement on B.
+- *G — different model: regenerate, don't append.* Stop append-logging
+  evals; serialize the live graph structure to the file (the
+  clipboard/paste code already emits categories + internal edges, so
+  there's precedent). The file becomes a canonical snapshot, never
+  holds transient pokes, no replay surprises. Cons: bigger change;
+  regenerated forms lose exact source spelling (use defaults, like
+  paste) and you'd need a separate channel for non-graph config
+  (defaults/knobs) you still want kept.
+
+*** Recommendation
+
+B as the gate, with the policy widened to "structural OR
+config-worth-keeping": a structural-change counter gates =make-*= /
+=connect= / =disconnect= / =remove= (and =rename= if names should
+persist), plus a small explicit allowlist for non-graph config evals
+(defaults =setq=s) so they still persist. Optionally add D so the
+REPL is scratch-by-default. Minimal, lives at the five mutators, and
+fixes the reload-replay-of-pokes bug as a bonus.
+
+Open decisions before speccing:
+1. Defaults edits — keep persisting (likely yes) or drop as not-graph?
+2. Renames — graph edit (persist) or not?
+3. REPL vs canvas — REPL scratch-by-default (D), or persist whenever
+   the graph changed regardless of origin?
+
+* Archive
+
+** DONE Expose the assets API                                     :switchyard:rust:
+CLOSED: [2026-05-16 Sa]
+:LOGBOOK:
+- State "DONE"       from "INPROGRESS"  [2026-05-16 Sa]
+- State "INPROGRESS" from              [2026-05-15 Fr]
+:END:
+
+Mounted the [[https://github.com/frequenz-floss/frequenz-api-assets][frequenz-api-assets]] gRPC service on [::1]:9900 (its own
+listener, separate from the per-microgrid =MicrogridServer= ports).
+=GetMicrogrid=, =ListMicrogridElectricalComponents=, and
+=ListMicrogridElectricalComponentConnections= dispatch per-request by
+looking the requested =microgrid_id= up in =Config::microgrids()=, so
+the single assets service answers for every microgrid switchyard
+manages. Unknown ids → =NotFound=. The missing =ListMicrogrids=
+discovery RPC is tracked as roadmap item =S2=.
+
+** DONE Back / forward navigation across screens
+
+Browser back / forward should walk the user's mode + microgrid +
+subview history: e.g. Microgrids list → per-mg Dashboard →
+Scenarios → back should land in the per-mg Dashboard, not the
+top of the Microgrids list. Currently mode + subview live in
+=localStorage= only, so the back/forward buttons walk the
+browser's URL history (which doesn't reflect SPA state) and end
+up at the previous page in the browser.
+
+Likely shape: push entries into =history.pushState= on every
+=applyMode= + =selectMicrogrid= + =setSubview= transition with
+the state as the payload; =window.onpopstate= reads it back and
+re-applies. The selected-mg id needs to round-trip through the
+URL so a back-then-refresh lands on the same view (currently a
+refresh keeps the mg from localStorage but the back button
+loses it).
+
+Acceptance: dashboard-of-mg-2200 → Scenarios → back puts the user
+back on dashboard-of-mg-2200 with the same subview; same for
+=switchyard.html#microgrids/2200/dashboard= deep-links.
+
+** DONE Undo in the topology editing canvas
+
+Cut / copy / paste land via =/api/mg/{id}/eval= and update the
+override file. There's no undo for the canvas-level operations
+(delete, paste, connect, disconnect, rename). The persisted-
+overrides dialog can hand-prune individual forms after the fact,
+but it's a row-by-row checkbox UI, not a Ctrl-Z stack.
+
+Want a per-mg undo stack the canvas + side-panel mutations push
+onto: each entry is enough state to revert. Two shapes:
+
+- *Optimistic snapshots.* Snapshot the override file before each
+  eval; Ctrl-Z restores it. Cheap but heavy (whole-file write per
+  edit) and doesn't help if the user evaluates via REPL.
+- *Inverse operations.* Each mutating verb produces an inverse
+  expression — =(rename-component 1 "old")=, =(connect a b)= →
+  =(disconnect a b)=, etc. — that the stack pushes. Lighter but
+  needs every mutating defun to declare its inverse.
+
+Probably start with snapshots (simpler) and refine.
+
+Acceptance: Ctrl-Z after a paste removes the pasted subgraph;
+Ctrl-Z after a rename restores the previous name; Ctrl-Shift-Z
+re-applies the undone step.
+
+** DONE Topology canvas: keep the graph centered
+
+Switching into the Topology subview often shows only half the
+graph — the user has to pan to see the full diagram. Small
+unrelated UI mutations (a side-panel open, a header chip update)
+sometimes shift the centering further. Likely a vis-network
+`fit()` issue: the fit is only called at first paint, not on
+resize / focus / panel toggle.
+
+Acceptance: switching into Topology always lands with the graph
+visible end-to-end; no follow-on action moves it off center
+unless the user pans / zooms themselves.
+
+** DONE Bottom splitter wedges the layout
+
+Dragging the bottom splitter (REPL drawer vs. main pane) past a
+threshold appears to take up the whole vertical space and the
+canvas + side panel become invisible. The side (vertical)
+splitter behaves normally.
+
+Reproduce via headless Firefox (selenium): start the binary,
+flip to Topology subview, drag the bottom splitter to ~0 px
+from the top, screenshot. Then investigate the CSS / JS — likely
+the splitter's min-height clamp is missing or the grid template
+collapses.
+
+Acceptance: dragging the splitter to either extreme leaves both
+panes visible (or at least recoverable via the splitter); a
+selenium regression test pins the behaviour.
