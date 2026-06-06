@@ -163,9 +163,14 @@ impl pb::microgrid_dispatch_service_server::MicrogridDispatchService for Dispatc
             data.recurrence = Some(merged);
         }
 
-        // Re-stamp update_time + end_time after the merge.
+        // Re-stamp update_time + end_time after the merge. `replace`
+        // is false if the dispatch was deleted between our get and
+        // here — report NotFound rather than a phantom success,
+        // matching the store's own set_active.
         stamp_updated(&mut dispatch);
-        self.store.replace(req.microgrid_id, dispatch.clone());
+        if !self.store.replace(req.microgrid_id, dispatch.clone()) {
+            return Err(not_found(req.microgrid_id, req.dispatch_id));
+        }
         log::info!(
             "UpdateMicrogridDispatch(microgrid_id={}, dispatch_id={})",
             req.microgrid_id,
