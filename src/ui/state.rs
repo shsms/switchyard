@@ -55,9 +55,9 @@ pub struct MicrogridState {
     /// topology changes. A new client per rebuild would close the
     /// previous one's instructions channel, and
     /// `MicrogridClientActor` in frequenz-microgrid 0.4.1
-    /// busy-spins at 100 % CPU on a closed channel (see
-    /// `microgrid-rs-busy-spin-issue.md` for the writeup). Keeping
-    /// one handle clone alive forever sidesteps the bug entirely.
+    /// busy-spins at 100 % CPU on a closed channel (tracked
+    /// upstream in frequenz-microgrid-rs). Keeping one handle
+    /// clone alive forever sidesteps the bug entirely.
     ///
     /// `tokio::sync::OnceCell` rather than `RwLock<Option<_>>`
     /// because the value is set exactly once on the first
