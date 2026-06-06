@@ -28,8 +28,9 @@
   (setq active-timers nil))
 
 (defun reset-state ()
-  "Cancel every timer registered via `every` / `run-with-timer-tracked`,
-then wipe the active microgrid's components. Call this at the top of
+  "Cancel every timer tracked on `active-timers` (pushed by `every`,
+`scenario-end-after`, and the random-outage chain), then wipe the
+active microgrid's components. Call this at the top of
 your config so a hot-reload starts from a clean slate."
   (dolist (tm active-timers)
     (cancel-timer tm))
@@ -67,8 +68,8 @@ cancel it on reload."
 
 (defun overrides-path ()
   "Path of the per-microgrid UI overrides file, relative to the
-config's load directory. Mirrors what the UI's /api/persist endpoint
-writes to. Reads `(current-microgrid-id)`, which inside a
+config's load directory. Mirrors where every successful /api/eval
+form is appended. Reads `(current-microgrid-id)`, which inside a
 make-microgrid `:topology` lambda resolves to the entry being built.
 The file sits next to the per-mg config under microgrids/."
   (format "microgrids/config.%d.overrides.lisp" (current-microgrid-id)))
@@ -88,7 +89,7 @@ context active."
 
 (defun scenario-end-after (minutes)
   "Schedule a single-shot timer that runs (scenario-stop) after
-MINUTES wall-clock MINUTES (not seconds — most other DSL ops are
+MINUTES wall-clock minutes (not seconds — most other DSL ops are
 seconds or milliseconds; this one is minutes because the use case
 is fixed-duration runs sized in minutes, e.g.
 `(scenario-end-after 60)` for a one-hour cap). The handle goes
