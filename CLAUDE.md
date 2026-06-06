@@ -104,10 +104,10 @@ so construction + validation stay identical.
 
 ## Dependencies
 
-- `tulisp = { git = "https://github.com/shsms/tulisp", branch = "fmt",
-  features = ["sync", "etags"] }` — pinned to the `fmt` branch for
-  AsPlist!, etags, and other downstream-touching features. Don't
-  downgrade or swap branches without coordination.
+- `tulisp = { git = "https://github.com/shsms/tulisp", features =
+  ["sync", "etags"] }` — tracks the main branch for AsPlist!, etags,
+  and other downstream-touching features. Don't downgrade or swap
+  branches without coordination.
 - `tulisp-async = { git = "https://github.com/tulisp/tulisp-async" }`
   — same-ctx timer primitives (`run-with-timer`, `cancel-timer`,
   `sleep-for`). `TokioExecutor::new` calls `Handle::current()`, so

@@ -23,8 +23,9 @@ futures = "0.3.30"
 frequenz-microgrid-component-graph = "0.5"
 # High-level Microgrid client + typed metric streams. The UI server
 # runs this as a client of switchyard's own gRPC server on localhost
-# (see UI-design.org §Z2): aggregated Dashboard tiles read from the
-# same LogicalMeterHandle::xxx<M>().subscribe() streams a production
+# (the loopback supervisor in src/ui/loopback.rs): aggregated
+# Dashboard tiles read from the same
+# LogicalMeterHandle::xxx<M>().subscribe() streams a production
 # downstream control app would consume.
 frequenz-microgrid = "0.4"
 log = "0.4.22"
