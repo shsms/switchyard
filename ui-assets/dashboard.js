@@ -8,6 +8,12 @@
 import { jumpToTopology, mgPath } from "./app.js";
 import { loadFormulas } from "./formulas.js";
 
+// Aggregated metrics from the loopback Microgrid client flow into the
+// Dashboard pane via two paths: (a) /api/microgrid/latest at mode-
+// enter time so the tiles paint immediately with a real number, and
+// (b) microgrid_sample WS frames for the per-second updates. Every
+// tile selects its source via `data-stream="..."`; new tiles only
+// have to declare the right stream name to participate.
 export const dashboardTiles = (() => {
   // 900 samples × 1 Hz cadence = 15 min sparkline window. Backfilled
   // from `/api/microgrid/history` on each backfill() (page load + mode

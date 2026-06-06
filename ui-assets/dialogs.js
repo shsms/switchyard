@@ -13,6 +13,11 @@ import {
 } from "./app.js";
 import { clearSide, startScenarioReportLoop } from "./inspect.js";
 
+// Single-source-of-truth for /api/overrides. Two consumers want
+// this data (the chrome's count pill and the overrides dialog),
+// both refresh on the same triggers (WS TopologyChanged, the
+// dialog's delete actions). Centralising avoids fan-out fetches
+// per WS tick and keeps everyone reading off one snapshot.
 export const overrideState = (() => {
   let snapshot = { persisted: [], count: 0 };
   const subs = new Set();

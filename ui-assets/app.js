@@ -122,11 +122,6 @@ export function notify(message, kind = "error") {
   setTimeout(() => t.remove(), 5000);
 }
 
-// Single-source-of-truth for /api/overrides. Two consumers want
-// this data (the chrome's count pill and the overrides dialog),
-// both refresh on the same triggers (WS TopologyChanged, the
-// dialog's delete actions). Centralising avoids fan-out fetches
-// per WS tick and keeps everyone reading off one snapshot.
 export function escapeHtml(s) {
   return String(s).replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" })[c]);
 }
@@ -147,15 +142,6 @@ function setupFloatingPanels() {
     .getElementById("add-panel-close")
     .addEventListener("click", () => addPanel.classList.remove("open"));
 }
-
-// ─── Dashboard tiles ────────────────────────────────────────────────────────
-//
-// Aggregated metrics from the loopback Microgrid client flow into the
-// Dashboard pane via two paths: (a) /api/microgrid/latest at mode-
-// enter time so the tiles paint immediately with a real number, and
-// (b) microgrid_sample WS frames for the per-second updates. Every
-// tile selects its source via `data-stream="..."`; new tiles only
-// have to declare the right stream name to participate.
 
 // ─── Dispatches (per-microgrid) ─────────────────────────────────────────────
 //
@@ -376,9 +362,6 @@ export const dispatchesPanel = (() => {
   return { render, setup };
 })();
 
-// ─── Grid frequency bridge ──────────────────────────────────────────────────
-
-
 async function init() {
   setupAddForm();
   setupDefaultsToggle();
@@ -389,8 +372,8 @@ async function init() {
   setupSnapshotsDialog();
   backfillLogs();
   setupOverridesPill();
-  // The topology canvas calls back to showComponent / clearSide on
-  // node click + canvas click (declared further down). Wire it up
+  // The topology canvas calls back to showComponent / clearSide
+  // (from inspect.js) on node click + canvas click. Wire it up
   // before the first apply so the listeners are in place.
   topology.setSelectionHandler(showComponent, clearSide);
   // Editor-style keyboard shortcuts. All check that focus isn't in
