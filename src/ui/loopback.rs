@@ -65,8 +65,7 @@ pub fn spawn_microgrid_loopback(grpc_url: String, slot: SharedMicrogrid, site: M
 /// slot swap. The shared `MicrogridClientActor` caches a
 /// `broadcast::Sender` per component and its backing tonic stream
 /// task exits the moment it sees `receiver_count == 0` between
-/// upstream samples (see
-/// <https://github.com/frequenz-floss/frequenz-microgrid-rs/issues/…>).
+/// upstream samples (tracked upstream in frequenz-microgrid-rs).
 /// Subscribing the new LM first keeps that count ≥ 1 across the
 /// handoff, so the stream task survives and samples reach the new
 /// forwarders without a multi-second silence.
@@ -219,10 +218,9 @@ async fn subscribe_power_forwarders(
     // `TypedFormulaResponseSender` branches only on Power /
     // Voltage / ReactivePower / Current — calling `.subscribe()`
     // on the Frequency formula returns `Internal: Can't create
-    // TypedFormulaResponseSender for ...Frequency`. See
-    // /vagrant/upstream-frequency-formula.md. Until that lands
-    // upstream, frequency stays on the per-component
-    // /api/history?metric=frequency_hz path.
+    // TypedFormulaResponseSender for ...Frequency` (reported
+    // upstream). Until that lands, frequency stays on the
+    // per-component /api/history?metric=frequency_hz path.
     // BatteryPool takes &mut self for power() / power_bounds() (it
     // caches subscriber refs); build it once and let it go out of
     // scope after both subscriptions resolve.
