@@ -2,7 +2,7 @@
 // poll the corresponding /api endpoint, render a card grid, and
 // respond to clicks / WS pushes by re-fetching + re-rendering.
 
-import { escapeHtml, selectMicrogrid } from "./app.js";
+import { escapeHtml, notify, selectMicrogrid } from "./app.js";
 import { clockState } from "./chrome.js";
 
 export const microgridsPanel = (() => {
@@ -52,7 +52,7 @@ export const microgridsPanel = (() => {
           return r.json();
         })
         .then((m) => selectMicrogrid(m.id))
-        .catch((e) => alert(`Create failed: ${e.message}`));
+        .catch((e) => notify(`Create failed: ${e.message}`));
     });
     grid.appendChild(newCard);
   }
@@ -348,7 +348,7 @@ export const scenariosPanel = (() => {
     });
     if (!r.ok) {
       const body = await r.text();
-      alert(`${action} failed: ${body}`);
+      notify(`${action} failed: ${body}`);
     }
     await refresh();
   }

@@ -181,7 +181,7 @@ export function setupSnapshotsDialog() {
             body: JSON.stringify({ name }),
           });
           if (!r.ok) {
-            alert(`Load failed: ${await r.text()}`);
+            notify(`Load failed: ${await r.text()}`);
             return;
           }
           dlg.close();
@@ -211,7 +211,7 @@ export function setupSnapshotsDialog() {
       body: JSON.stringify({ name }),
     });
     if (!r.ok) {
-      alert(`Save failed: ${await r.text()}`);
+      notify(`Save failed: ${await r.text()}`);
       return;
     }
     input.value = "";
