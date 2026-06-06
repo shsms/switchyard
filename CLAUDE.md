@@ -9,7 +9,8 @@ is wiring the topology + animating the environment.
 - `src/lib.rs` — module roots
 - `src/sim/` — components + scheduler
   - `component.rs` — `SimulatedComponent` trait, `ComponentHandle`, `Telemetry`
-  - `microgrid_site.rs` — per-microgrid registry, physics tick, grid state, topology
+  - `microgrid_site/` — per-microgrid registry, physics tick, grid state,
+    topology (+ `history.rs` sampler, `scenarios.rs` event log)
   - `microgrids.rs` — enterprise registry + per-mg routing
   - `dispatch.rs` — enterprise dispatch store (per-`microgrid_id`, id
     allocator, lifecycle broadcast); backs the dispatch gRPC + UI
@@ -19,9 +20,24 @@ is wiring the topology + animating the environment.
   - `battery.rs`, `meter.rs`, `grid.rs`, `chp.rs`, `ev_charger.rs`,
     `inverter/{battery,solar}_inverter.rs`
 - `src/lisp/` — config DSL glue
-  - `mod.rs` — `Config`, runtime defuns, tulisp-async wiring
+  - `mod.rs` — `Config` (fields, accessors, reload)
+  - `boot.rs` — `Config::new`: interpreter setup, defun registration,
+    tulisp-async wiring, background loops
+  - `defuns/` — every `register_*` installer, one file per topic
+    (clock, scenarios, microgrids, metadata, runtime_modes, …)
+  - `overrides.rs` / `snapshots.rs` — per-mg override-file persistence
+    + snapshot save/load on `Config`
   - `make.rs` — `(make-*)` constructors via `AsPlist!`
   - `handle.rs` — `ComponentHandle` ↔ `Shared<dyn TulispAny>` round trip
+- `src/ui/` — embedded web UI server
+  - `mod.rs` — axum router + serve entry points
+  - `handlers/` — HTTP handlers, one file per topic (topology, eval,
+    scenarios, dispatches, …)
+  - `state.rs` / `loopback.rs` / `events_ws.rs` — loopback client cache,
+    gRPC loopback supervisor, WS event push
+- `ui-assets/` — the SPA as hand-rolled ES modules (`app.js` is the
+  entry; `topology.js`, `dashboard.js`, `inspect.js`, `repl.js`,
+  `routing.js`, `dialogs.js`, `editor.js`, … own one concern each)
 - `src/server.rs` — `Microgrid` gRPC service
 - `src/assets_server.rs` — `PlatformAssets` gRPC service (shared port)
 - `src/dispatch_server.rs` — `MicrogridDispatchService` gRPC service
@@ -177,8 +193,8 @@ config.lisp does.
 
 1. Field on the component config struct + plist arg in `src/lisp/make.rs`.
 2. (If runtime-mutable) trait method override + `MicrogridSite` setter + Lisp defun
-   in `src/lisp/mod.rs`. Use `(every …)` or `(run-with-timer …)` from the
-   config to script behaviour over time.
+   in the matching `src/lisp/defuns/` file. Use `(every …)` or
+   `(run-with-timer …)` from the config to script behaviour over time.
 3. Demonstrate via a new line in `config.lisp` and verify via swctl.
 
 ## Roadmap and deferred work
