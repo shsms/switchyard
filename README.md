@@ -13,6 +13,10 @@ The simulator exposes three surfaces:
   explicit port with `:grpc-port` on `(make-microgrid …)`.
   Downstream apps written against the production API talk to
   switchyard the same way they'd talk to a real microgrid.
+  Two enterprise-wide services ride alongside on their own
+  sockets: `PlatformAssets` (`[::1]:9900`) and the
+  `MicrogridDispatchService` store-and-serve dispatch API
+  (`[::1]:8900`), each keyed by `microgrid_id` per request.
 - **Web UI** (`http://127.0.0.1:8801`) — multi-microgrid SPA
   with a topology canvas (per-mg undo / redo of edits), a
   per-component chart dashboard, and a scenario panel. Raw
@@ -33,10 +37,11 @@ microgrid id, and animates the AC environment. Saving the file
 hot-reloads the world. See `sim/defaults.lisp` for the per-category
 default knobs and `sim/common.lisp` for the runtime helpers.
 
-The gRPC build pulls in
-[frequenz-floss/frequenz-api-microgrid](https://github.com/frequenz-floss/frequenz-api-microgrid).
-The default search path is `../microsim/submodules/frequenz-api-microgrid`;
-override with `SWITCHYARD_PROTO_ROOT` if it lives elsewhere.
+The proto roots ([frequenz-api-microgrid](https://github.com/frequenz-floss/frequenz-api-microgrid),
+frequenz-api-assets, frequenz-api-dispatch) are vendored as git
+submodules under `submodules/` — run `git submodule update --init`
+once after cloning. `SWITCHYARD_PROTO_ROOT` overrides the microgrid
+proto root for downstream packagers with a private mirror.
 
 ## Scenarios
 
@@ -73,6 +78,8 @@ swctl scenario report                                       # ad-hoc journal ver
 swctl scenarios start sunny                                 # registered multi-stage
 swctl snapshot save before-test                             # persist overrides
 swctl dashboard --tail                                      # one-line/sec pulse bar
+swctl dispatch list 1                                       # dispatch API CRUD
+swctl dispatch create 1 SET_POWER battery --duration 3600
 ```
 
 `--addr` (default `http://[::1]:8800`) points the gRPC client
