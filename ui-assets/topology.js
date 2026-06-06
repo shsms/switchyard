@@ -326,8 +326,6 @@ export const topology = (() => {
       if (!levels.has(lvl)) levels.set(lvl, []);
       levels.get(lvl).push(id);
     }
-    const _sortedLevels = [...levels.keys()].sort((a, b) => a - b);
-
     // Two adjacency maps split by level direction. Same-level edges
     // are ignored — they don't tell us anything about top-down or
     // bottom-up alignment.
