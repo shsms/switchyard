@@ -12,20 +12,15 @@ env:
 jobs:
   # Format + clippy + cargo test (lib, bin, integration). tulisp /
   # tulisp-async / tulisp-fmt come from their git remotes per
-  # Cargo.toml; only the proto checkout (frequenz-api-microgrid
-  # with two protobuf submodules) lands as a sibling checkout
-  # exposed via SWITCHYARD_PROTO_ROOT.
+  # Cargo.toml; the proto roots (microgrid, assets, dispatch) are
+  # vendored as this repo's own submodules, so `submodules:
+  # recursive` is all the checkout needs.
   rust:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Check out frequenz-api-microgrid (proto root)
-        uses: actions/checkout@v4
         with:
-          repository: frequenz-floss/frequenz-api-microgrid
           submodules: recursive
-          path: frequenz-api-microgrid
 
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
@@ -45,13 +40,9 @@ jobs:
         run: cargo fmt --check
 
       - name: clippy
-        env:
-          SWITCHYARD_PROTO_ROOT: ${{ github.workspace }}/frequenz-api-microgrid
         run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: cargo test
-        env:
-          SWITCHYARD_PROTO_ROOT: ${{ github.workspace }}/frequenz-api-microgrid
         run: cargo test --all-features
 
   # Lint the hand-written JS in ui-assets/. Vendored libs and
@@ -65,7 +56,7 @@ jobs:
         with:
           node-version: 22
       - name: biome lint
-        run: npx --yes @biomejs/biome lint ui-assets/app.js
+        run: npx --yes @biomejs/biome lint ui-assets/*.js
 
   # Smoke test: boot the binary against the sample config.lisp and
   # curl /api/topology to confirm the server stood up. Catches
@@ -75,13 +66,8 @@ jobs:
     needs: rust
     steps:
       - uses: actions/checkout@v4
-
-      - name: Check out frequenz-api-microgrid (proto root)
-        uses: actions/checkout@v4
         with:
-          repository: frequenz-floss/frequenz-api-microgrid
           submodules: recursive
-          path: frequenz-api-microgrid
 
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
@@ -96,8 +82,6 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
 
       - name: Build switchyard binary
-        env:
-          SWITCHYARD_PROTO_ROOT: ${{ github.workspace }}/frequenz-api-microgrid
         run: cargo build --bin switchyard
 
       - name: Boot + curl /api/topology

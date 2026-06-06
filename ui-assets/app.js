@@ -201,7 +201,7 @@ export const dispatchesPanel = (() => {
       payload === "—"
         ? "—"
         : `<code title="${escapeHtml(payload).replace(/"/g, "&quot;")}">${escapeHtml(
-            payload.length > 60 ? payload.slice(0, 59) + "…" : payload,
+            payload.length > 60 ? `${payload.slice(0, 59)}…` : payload,
           )}</code>`;
     const toggle = d.active ? "Pause" : "Resume";
     return `<tr>
