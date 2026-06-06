@@ -32,9 +32,8 @@ export const microgridsPanel = (() => {
       card.addEventListener("click", () => selectMicrogrid(m.id));
       grid.appendChild(card);
     }
-    // Trailing [+ New microgrid] card. D4 wires the form; for now
-    // it's a placeholder visible from the list to make the create
-    // path discoverable.
+    // Trailing [+ New microgrid] card: prompts for a name and
+    // POSTs /api/microgrids/create, then selects the new entry.
     const newCard = document.createElement("button");
     newCard.type = "button";
     newCard.className = "mglist-card mglist-new";
