@@ -55,7 +55,7 @@ pub(in crate::lisp) fn register(
     grid_frequency: crate::sim::frequency::SharedFrequency,
 ) {
     // Read-only accessors scripts use to dispatch on the active
-    // microgrid (E2 of gridpool-support.org). Outside a per-mg
+    // microgrid. Outside a per-mg
     // context (e.g. boot before any (make-microgrid) form, or a
     // legacy /api/eval call without an mg scope) they fall back
     // to the first registry entry so single-microgrid configs

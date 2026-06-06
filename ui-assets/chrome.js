@@ -155,18 +155,20 @@ export function renderClockNow() {
 }
 // ─── Pulse bar ─────────────────────────────────────────────────────────────
 //
-// Always-on system pulse strip. Three live sources today:
+// Always-on system pulse strip. The live sources:
 //   - Setpoint sparkbar: rate of /ws/events kind="setpoint" frames,
 //     bucketed into 12 × 5 s windows over the last minute.
 //   - Health pill: rolling counters from /api/topology's health
 //     field — recomputed every refreshTopology() call (WS push on
 //     topology_changed already drives this).
+//   - Graph pill: /api/topology's graph_status — ✓ when the
+//     component-graph validator accepted the topology, ⚠ (with the
+//     error on click) when it rejected.
 //   - Loopback pill: /api/microgrid/status polled every 5 s. ✓ when
-//     connected, ⚠ when still booting. The future Z6 graph-pill is
-//     a sibling.
+//     connected, ⚠ when still booting.
 //   - Wall clock at the right edge, ticked every second.
 //
-// All four panels are read-only and tolerant of partial data — a
+// All panels are read-only and tolerant of partial data — a
 // page loaded before the loopback comes up shows ⚠ and flips to
 // ✓ on the next poll. Mirrors tradingsim's `.pulse` shape so the
 // developer sees the same "is the sim alive" pattern across both

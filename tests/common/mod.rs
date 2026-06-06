@@ -83,8 +83,8 @@ impl TestServer {
         let mut handles = Vec::new();
 
         let ui_config = config.clone();
-        // Loopback Microgrid client: same shape the binary uses
-        // (see UI-design.org §Z2). The grpc_addr we just bound is
+        // Loopback Microgrid client: same shape the binary uses.
+        // The grpc_addr we just bound is
         // the URL — try_new retries lazily until the gRPC server
         // task below comes up. Integration tests for the
         // /api/microgrid/* endpoints exercise this whole loop.

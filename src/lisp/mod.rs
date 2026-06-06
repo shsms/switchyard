@@ -104,8 +104,8 @@ pub struct Config {
     /// `None` = healthy; `Some(message)` = the validator rejected the
     /// current site. `boot::log_topology_validation` updates this on
     /// every boot + reload; `/api/topology` exposes it so the pulse-
-    /// bar graph pill (see UI-design.org §Z6) can flip between ✓ and
-    /// ⚠ without polling a separate endpoint.
+    /// bar graph pill can flip between ✓ and ⚠ without polling a
+    /// separate endpoint.
     pub(crate) graph_status: Arc<RwLock<Option<String>>>,
     /// Configured display timezone. UI's TZ toggle reads the IANA
     /// name from /api/clock and formats timestamps client-side via
@@ -257,7 +257,7 @@ impl Config {
     /// the site is empty); `Some(msg)` = it rejected, with the
     /// human-readable error. `/api/topology` serialises this so
     /// the pulse-bar graph pill flips to ⚠ + opens-on-click with
-    /// the message (see UI-design.org §Z6).
+    /// the message.
     pub fn graph_status(&self) -> Option<String> {
         self.graph_status.read().clone()
     }

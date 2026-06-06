@@ -480,8 +480,8 @@ impl Config {
 /// `GridConnectionPoint` and rejects empty graphs — test fixtures
 /// that wire up `Config` against `""` would otherwise fail.
 /// Non-empty worlds that fail validation surface as a `log::warn!`
-/// the dev sees in the simulator log; the future pulse-bar pill
-/// (Z6 in UI-design.org) will surface this in the UI too.
+/// in the simulator log and as a ⚠ on the pulse bar's graph pill
+/// (via [`Config::graph_status`] on `/api/topology`).
 ///
 /// On success the log line includes a one-line summary so a dev
 /// reading the log can confirm switchyard parsed the topology the

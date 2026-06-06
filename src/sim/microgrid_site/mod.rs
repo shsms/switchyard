@@ -90,8 +90,8 @@ struct MicrogridSiteInner {
     physics_tick_ms: AtomicU64,
     /// *Process-wide* component-id allocator, cloned across every
     /// `MicrogridSite` in the enterprise so component ids stay
-    /// globally unique across microgrids (the spec choice in
-    /// gridpool-support.org). Two sites in the same registry
+    /// globally unique across microgrids — matching the platform,
+    /// where ids are enterprise-scoped. Two sites in the same registry
     /// share the same `Arc<AtomicU64>`; calling `next_id` on
     /// either advances the same counter.
     ///
@@ -178,8 +178,8 @@ impl MicrogridSite {
     /// allocator with whichever other sites already hold a clone.
     /// `(make-microgrid …)` uses this so every site in the
     /// registry draws auto-ids from one process-wide counter and
-    /// the global-uniqueness invariant from gridpool-support.org
-    /// holds without coordination on the lisp side.
+    /// the enterprise-wide id-uniqueness invariant holds without
+    /// coordination on the lisp side.
     pub fn with_id_allocator(next_id: Arc<AtomicU64>) -> Self {
         Self {
             inner: Arc::new(MicrogridSiteInner {

@@ -410,7 +410,7 @@ export const batteryPairs = (() => {
 // `fmtValue` formats both the marker readout and the hover-tooltip
 // endpoints; callers pass it pre-bound to whatever unit family the
 // row deals in (W / kW for Power, % for Percentage, etc.) — keeps
-// the helper agnostic of Z3's quantity table.
+// the helper agnostic of the tiles' quantity table.
 function envelopeBar(lower, current, upper, fmtValue) {
   const finite = (v) => v != null && Number.isFinite(v);
   if (!finite(lower) || !finite(upper) || upper <= lower) {
