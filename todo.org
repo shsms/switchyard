@@ -325,6 +325,50 @@ Localized hardening / contract items from the same review:
   loop on a single transient HTTP error; warn and continue to the next
   tick instead.
 
+* Review backlog — 2026-06-06
+
+Follow-up review after the dispatch series + module splits merged.
+The small items (stale comments, doc drift, CI submodule checkout,
+unescaped dashboard names, csv-lookup NaN guard, snapshot-load
+atomicity, dispatch phantom-update) were fixed in the same pass; the
+items below need more than a local change.
+
+** TODO swctl --json emits Rust Debug output for gRPC-backed commands
+
+=--json= is documented as "emit JSON … where applicable", and the
+HTTP-routed verbs (=scenario=, =scenarios=, =snapshot=, =pool=) do
+emit real JSON via serde. But every gRPC-backed command (=info=,
+=list=, =connections=, =stream=, the whole =dispatch= family) prints
+=println!("{resp:#?}")= — prost types don't implement =Serialize=,
+and Debug format is not parseable JSON, so scripting against these
+verbs silently gets a different language. Options: hand-rolled
+=serde_json::json!= views per response (the dispatch family already
+has =DispatchView=-shaped conversions in =src/ui/handlers/dispatches.rs=
+to crib from), a =prost-wkt= style reflection dependency, or
+documenting the limitation honestly in =--json='s help text. Either
+fix or rename until fixed.
+
+** TODO Dispatch update is a lock-free read-modify-write
+
+=update_microgrid_dispatch= (=src/dispatch_server.rs=) does get →
+merge → replace without holding the store lock across the sequence,
+so two concurrent updates to the same dispatch can lose one of the
+two writes (last replace wins wholesale). The mid-flight delete is
+now reported as NotFound, but the lost-update window remains. Fix
+shape: a =DispatchStore::update_with(microgrid_id, dispatch_id,
+FnOnce(&mut Dispatch))= that applies the merge under the inner write
+lock, used by both the gRPC update and =set_active=.
+
+** TODO index.html + style.css fail biome's recommended rules
+
+CI lints only the hand-written JS (all clean). Running biome over
+=ui-assets/= also flags 17 errors + ~29 warnings in =index.html= and
+=style.css=: missing =type= on =<button>=s, =<svg>=s without titles
+(a11y), =noDescendingSpecificity= and a clutch of =!important=s in
+the stylesheet. Worth a dedicated cleanup pass that then widens the
+CI lint to the whole directory; mechanical but touches a lot of
+lines, and the specificity fixes need visual verification.
+
 * Open design questions
 
 ** d1. Rethink ~file-exists-p~ resolving against the config's load dir
