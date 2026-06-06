@@ -5,7 +5,7 @@
 // innerHTML — no virtual DOM; the grid is small and the writes are
 // batched per render() call.
 
-import { jumpToTopology, mgPath } from "./app.js";
+import { escapeHtml, jumpToTopology, mgPath } from "./app.js";
 import { loadFormulas } from "./formulas.js";
 
 // Aggregated metrics from the loopback Microgrid client flow into the
@@ -259,7 +259,7 @@ export const batteryPairs = (() => {
       batCell.className = "tier2-row";
       batCell.dataset.id = id;
       batCell.innerHTML = `
-        <span class="tier2-name">${b.name}</span>
+        <span class="tier2-name">${escapeHtml(b.name)}</span>
         <span class="tier2-subtype">—</span>
         <span class="tier2-health ${bhCls}">${b.health}</span>
         <span class="tier2-soc-wrap">
@@ -277,7 +277,7 @@ export const batteryPairs = (() => {
         if (invPinned(inv)) invCell.classList.add("pinned");
         const ihCls = inv.health === "ok" ? "health-ok" : "health-bad";
         invCell.innerHTML = `
-          <span class="tier3-name">${inv.name}</span>
+          <span class="tier3-name">${escapeHtml(inv.name)}</span>
           <span class="tier3-subtype muted">${inv.subtype || "—"}</span>
           <span class="tier3-health ${ihCls}">${inv.health}</span>
           ${envelopeBar(inv.lower, inv.measured, inv.upper, fmtRowPower)}
@@ -482,7 +482,7 @@ export const pvRows = (() => {
       if (invPinned(d)) row.classList.add("pinned");
       const healthCls = d.health === "ok" ? "health-ok" : "health-bad";
       row.innerHTML = `
-        <span class="tier3-name">${d.name}</span>
+        <span class="tier3-name">${escapeHtml(d.name)}</span>
         <span class="tier3-subtype muted">${d.subtype || "—"}</span>
         <span class="tier3-health ${healthCls}">${d.health}</span>
         ${envelopeBar(d.lower, d.measured, d.upper, fmtRowPower)}
@@ -567,7 +567,7 @@ export const evRows = (() => {
       const healthCls = d.health === "ok" ? "health-ok" : "health-bad";
       const socPct = d.soc == null ? 0 : Math.max(0, Math.min(100, d.soc));
       row.innerHTML = `
-        <span class="tier5-name">${d.name}</span>
+        <span class="tier5-name">${escapeHtml(d.name)}</span>
         <span class="tier5-cat muted">ev-charger</span>
         <span class="tier5-health ${healthCls}">${d.health}</span>
         <span class="tier5-soc-wrap">
@@ -645,7 +645,7 @@ export const chpRows = (() => {
       row.dataset.id = id;
       const healthCls = d.health === "ok" ? "health-ok" : "health-bad";
       row.innerHTML = `
-        <span class="tier5-name">${d.name}</span>
+        <span class="tier5-name">${escapeHtml(d.name)}</span>
         <span class="tier5-cat muted">chp</span>
         <span class="tier5-health ${healthCls}">${d.health}</span>
         <span class="tier5-soc-wrap muted">—</span>
