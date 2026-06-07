@@ -165,25 +165,17 @@
       </div>
       <div id="dispatches" hidden>
         <header class="dispatches-header">
-          <h2>Dispatches</h2>
-          <p class="hint">
-            Dispatches the dispatch API (<code>frequenz.api.dispatch.v1</code>)
-            holds for this microgrid — create one below, or with the
-            dispatch CLI / <code>swctl dispatch</code>. Switchyard serves
-            them to downstream control apps.
-          </p>
+          <div>
+            <h2>Dispatches</h2>
+            <p class="hint">
+              Dispatches the dispatch API (<code>frequenz.api.dispatch.v1</code>)
+              holds for this microgrid — create one here, or with the
+              dispatch CLI / <code>swctl dispatch</code>. Switchyard serves
+              them to downstream control apps.
+            </p>
+          </div>
+          <button id="dispatch-new-btn" class="hdr-btn primary" type="button">＋ New dispatch</button>
         </header>
-        <form id="dispatch-create-form" class="disp-create" autocomplete="off">
-          <input class="disp-in" name="type" placeholder="enter dispatch type" required />
-          <input class="disp-in" name="target" placeholder="target — BATTERY or 1,2,3" required />
-          <input class="disp-in disp-in-num" name="duration" type="number" min="0"
-                 placeholder="duration s (∞ if blank)" />
-          <input class="disp-in disp-in-wide" name="payload"
-                 placeholder='payload JSON — {"target_power_w":5000}' />
-          <label class="disp-check"><input type="checkbox" name="active" checked /> active</label>
-          <label class="disp-check"><input type="checkbox" name="dry_run" /> dry-run</label>
-          <button type="submit" class="hdr-btn primary">Create</button>
-        </form>
         <div id="dispatches-body"></div>
       </div>
       <!-- Floating left: summon the Add-component panel (topology only). -->

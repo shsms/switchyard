@@ -1745,8 +1745,16 @@ body.compact main { height: calc(100vh - 41px - 22px); }
   overflow-y: auto;
   align-content: start;
 }
+.dispatches-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
 .dispatches-header h2 { margin: 0 0 4px 0; font-size: 16px; }
-.dispatches-header .hint { margin: 0 0 14px 0; }
+.dispatches-header .hint { margin: 0; }
+#dispatch-new-btn { flex-shrink: 0; }
 .disp-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .disp-table th {
   text-align: left;
@@ -1796,35 +1804,6 @@ body.compact main { height: calc(100vh - 41px - 22px); }
 }
 body.compact #dispatches { padding: 8px; }
 
-/* Create form — a single wrapping row of inputs above the table. */
-.disp-create {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 14px;
-  padding-bottom: 14px;
-  border-bottom: 1px solid var(--border);
-}
-.disp-in {
-  background: var(--bg-elev);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 5px 8px;
-  font-size: 13px;
-  color: var(--fg);
-  min-width: 150px;
-}
-.disp-in-num { min-width: 90px; max-width: 150px; }
-.disp-in-wide { flex: 1 1 220px; min-width: 220px; font-family: var(--font-mono); font-size: 12px; }
-.disp-check {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 12px;
-  color: var(--muted);
-  white-space: nowrap;
-}
 .disp-actions { white-space: nowrap; }
 .disp-actions .link-btn { margin-right: 8px; }
 .disp-del { color: var(--bad); }

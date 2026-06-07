@@ -28,6 +28,7 @@ import {
 import { backfillLogs, openWebSocket, setupRepl } from "./repl.js";
 import { dashboardTiles } from "./dashboard.js";
 import { clockState, pulseBar } from "./chrome.js";
+import { dispatchForm } from "./dispatch-form.js";
 import { setupFormulaTileClicks } from "./formulas.js";
 import { scenariosPanel } from "./panels.js";
 import {
@@ -238,50 +239,7 @@ export const dispatchesPanel = (() => {
   }
 
   function emptyHtml() {
-    return `<p class="hint">No dispatches for this microgrid yet — create one with the form above, <code>swctl dispatch create</code>, or the dispatch CLI.</p>`;
-  }
-
-  async function create(form) {
-    if (currentMg == null) return;
-    const fd = new FormData(form);
-    const type = String(fd.get("type") || "").trim();
-    const target = String(fd.get("target") || "").trim();
-    if (!type || !target) {
-      notify("type and target are required");
-      return;
-    }
-    const body = {
-      type,
-      target,
-      active: fd.get("active") === "on",
-      dry_run: fd.get("dry_run") === "on",
-    };
-    const dur = String(fd.get("duration") || "").trim();
-    if (dur !== "") {
-      const n = Number(dur);
-      if (!Number.isFinite(n) || n < 0) {
-        notify("duration must be a non-negative number of seconds");
-        return;
-      }
-      body.duration_s = Math.floor(n);
-    }
-    const payloadRaw = String(fd.get("payload") || "").trim();
-    if (payloadRaw !== "") {
-      try {
-        body.payload = JSON.parse(payloadRaw);
-      } catch (_) {
-        notify("payload must be valid JSON");
-        return;
-      }
-    }
-    try {
-      await mutate("POST", `/api/mg/${currentMg}/dispatches`, body);
-      form.reset();
-      notify("dispatch created", "info");
-      render(currentMg);
-    } catch (err) {
-      notify(`create failed: ${err.message}`);
-    }
+    return `<p class="hint">No dispatches for this microgrid yet — create one with the ＋ New dispatch button, <code>swctl dispatch create</code>, or the dispatch CLI.</p>`;
   }
 
   async function setActive(id, active) {
@@ -335,16 +293,24 @@ export const dispatchesPanel = (() => {
     </table>`;
   }
 
-  // Wire the create form + row-action delegation once at startup. The
-  // form and #dispatches-body are static in index.html, so the
-  // listeners survive every render() (which only swaps innerHTML).
+  // Wire the New-dispatch button + row-action delegation once at
+  // startup. The button and #dispatches-body are static in
+  // index.html, so the listeners survive every render() (which only
+  // swaps innerHTML). Creation itself lives in the dispatch-form
+  // dialog; it re-renders this panel via its onCreated callback.
   function setup() {
-    const form = document.getElementById("dispatch-create-form");
-    if (form) {
-      form.addEventListener("submit", (e) => {
-        e.preventDefault();
-        create(form);
-      });
+    // Refresh only if the panel still shows the microgrid the
+    // dispatch was created for — a slow create settling after the
+    // user navigated away must not repaint (and repoint) the panel
+    // to the old microgrid.
+    dispatchForm.setup({
+      onCreated: (mg) => {
+        if (mg === currentMg) render(mg);
+      },
+    });
+    const newBtn = document.getElementById("dispatch-new-btn");
+    if (newBtn) {
+      newBtn.addEventListener("click", () => dispatchForm.open(currentMg));
     }
     const body = host();
     if (body) {
