@@ -144,7 +144,10 @@ export const liveCharts = (() => {
 // command-mode (timeout / error fault simulation) only makes sense
 // for these — grids and meters have no setpoint surface, so we hide
 // the dropdown rather than offering a knob that does nothing.
-const ACCEPTS_SETPOINTS = new Set(["battery", "inverter", "ev-charger", "chp"]);
+// Categories whose components accept setpoint commands. Shared with
+// the dispatch dialog's target pickers, so "controllable" means the
+// same thing in both places.
+export const ACCEPTS_SETPOINTS = new Set(["battery", "inverter", "ev-charger", "chp"]);
 
 // Per-category runtime knobs the inspector exposes as numeric
 // inputs. Each one binds to an existing Lisp setter — so this is

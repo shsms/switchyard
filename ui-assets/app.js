@@ -143,6 +143,23 @@ function setupFloatingPanels() {
     .addEventListener("click", () => addPanel.classList.remove("open"));
 }
 
+// JSON mutation helper shared by the dispatches panel's row actions
+// and the dispatch-form dialog: a non-2xx surfaces the server's
+// error text (the store's 400 / 404 messages) as a thrown Error.
+export async function mutate(method, path, body) {
+  const opts = { method };
+  if (body !== undefined) {
+    opts.headers = { "content-type": "application/json" };
+    opts.body = JSON.stringify(body);
+  }
+  const res = await fetch(path, opts);
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(txt || `HTTP ${res.status}`);
+  }
+  return res;
+}
+
 // ─── Dispatches (per-microgrid) ─────────────────────────────────────────────
 //
 // Read-only table of the dispatches switchyard's dispatch API holds for
@@ -222,22 +239,6 @@ export const dispatchesPanel = (() => {
 
   function emptyHtml() {
     return `<p class="hint">No dispatches for this microgrid yet — create one with the form above, <code>swctl dispatch create</code>, or the dispatch CLI.</p>`;
-  }
-
-  // All mutations funnel through here; a non-2xx surfaces the server's
-  // error text (the store's 400 / 404 messages) to the toast.
-  async function mutate(method, path, body) {
-    const opts = { method };
-    if (body !== undefined) {
-      opts.headers = { "content-type": "application/json" };
-      opts.body = JSON.stringify(body);
-    }
-    const res = await fetch(path, opts);
-    if (!res.ok) {
-      const txt = await res.text().catch(() => "");
-      throw new Error(txt || `HTTP ${res.status}`);
-    }
-    return res;
   }
 
   async function create(form) {
