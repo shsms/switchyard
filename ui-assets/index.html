@@ -276,6 +276,125 @@
         </p>
       </div>
     </dialog>
+    <dialog id="dispatch-dialog">
+      <header>
+        <h3>New dispatch</h3>
+        <button id="dispatch-dialog-close" type="button" title="Close">×</button>
+      </header>
+      <form id="dispatch-form" autocomplete="off" novalidate>
+        <div class="dd-body">
+          <section class="dd-field">
+            <label class="dd-label" for="dd-type">Type</label>
+            <input id="dd-type" name="type" class="dd-input"
+                   placeholder="enter dispatch type" />
+            <p class="dd-hint">Free-form tag; the downstream actor decides what it means.</p>
+          </section>
+
+          <section class="dd-field">
+            <span class="dd-label">Target</span>
+            <div class="dd-seg" role="group" aria-label="target mode">
+              <button type="button" class="dd-seg-btn active" data-mode="categories">By category</button>
+              <button type="button" class="dd-seg-btn" data-mode="components">By component</button>
+            </div>
+            <div id="dd-target-categories" class="dd-chiprow"></div>
+            <div id="dd-target-components" class="dd-complist" hidden></div>
+            <p class="dd-hint" id="dd-target-hint"></p>
+          </section>
+
+          <div class="dd-row2">
+            <section class="dd-field">
+              <span class="dd-label">Start</span>
+              <div class="dd-choice-col">
+                <label class="dd-choice">
+                  <input type="radio" name="dd-start-mode" value="now" checked />
+                  <span>Immediately</span>
+                </label>
+                <label class="dd-choice">
+                  <input type="radio" name="dd-start-mode" value="at" />
+                  <span>At</span>
+                  <input type="datetime-local" id="dd-start-at" class="dd-input dd-input-inline" disabled />
+                </label>
+              </div>
+            </section>
+
+            <section class="dd-field">
+              <span class="dd-label">Duration</span>
+              <div class="dd-choice-col">
+                <label class="dd-choice">
+                  <input type="radio" name="dd-duration-mode" value="indefinite" checked />
+                  <span>Indefinite</span>
+                </label>
+                <label class="dd-choice">
+                  <input type="radio" name="dd-duration-mode" value="for" />
+                  <span>For</span>
+                  <input type="number" id="dd-duration-value" class="dd-input dd-input-num"
+                         min="0" step="1" value="1" disabled />
+                  <select id="dd-duration-unit" class="dd-input dd-input-inline" disabled>
+                    <option value="1">seconds</option>
+                    <option value="60">minutes</option>
+                    <option value="3600" selected>hours</option>
+                    <option value="86400">days</option>
+                  </select>
+                </label>
+              </div>
+            </section>
+          </div>
+
+          <div class="dd-row2">
+            <section class="dd-field">
+              <label class="dd-label" for="dd-recur-freq">Repeat</label>
+              <div class="dd-inline">
+                <select id="dd-recur-freq" class="dd-input dd-input-inline">
+                  <option value="once" selected>once</option>
+                  <option value="minutely" data-unit="minutes">minutely</option>
+                  <option value="hourly" data-unit="hours">hourly</option>
+                  <option value="daily" data-unit="days">daily</option>
+                  <option value="weekly" data-unit="weeks">weekly</option>
+                  <option value="monthly" data-unit="months">monthly</option>
+                  <option value="yearly" data-unit="years">yearly</option>
+                </select>
+                <span id="dd-recur-every" class="dd-inline" hidden>
+                  <span>every</span>
+                  <input type="number" id="dd-recur-interval" class="dd-input dd-input-num"
+                         min="1" step="1" value="1" />
+                  <span id="dd-recur-unit">days</span>
+                </span>
+              </div>
+            </section>
+
+            <section class="dd-field">
+              <span class="dd-label">Options</span>
+              <div class="dd-choice-col">
+                <label class="dd-choice">
+                  <input type="checkbox" id="dd-active" checked />
+                  <span>Active on creation</span>
+                </label>
+                <label class="dd-choice">
+                  <input type="checkbox" id="dd-dry-run" />
+                  <span>Dry run <span class="dd-hint-inline">— delivered but not acted on</span></span>
+                </label>
+              </div>
+            </section>
+          </div>
+
+          <section class="dd-field">
+            <span class="dd-label">Payload</span>
+            <div id="dd-payload-rows" class="dd-kv-rows"></div>
+            <button type="button" id="dd-payload-add" class="link-btn">+ Add field</button>
+            <p class="dd-hint">
+              Optional key → value pairs delivered verbatim to the consumer.
+              Values that parse as JSON (numbers, true/false, arrays, objects)
+              keep their type; anything else is sent as a string.
+            </p>
+          </section>
+        </div>
+        <p id="dd-error" class="dd-error" hidden></p>
+        <footer class="dd-footer">
+          <button type="button" id="dd-cancel" class="hdr-btn">Cancel</button>
+          <button type="submit" class="hdr-btn primary">Create dispatch</button>
+        </footer>
+      </form>
+    </dialog>
     <dialog id="help-dialog">
       <header>
         <h3>Switchyard reference</h3>

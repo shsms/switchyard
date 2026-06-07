@@ -107,7 +107,8 @@ header strong {
 .active-scenarios:hover { border-color: var(--good, #6bd97b); }
 
 dialog#pending-dialog,
-dialog#help-dialog {
+dialog#help-dialog,
+dialog#dispatch-dialog {
   background: var(--bg-elev);
   color: var(--fg);
   border: 1px solid var(--border);
@@ -118,11 +119,13 @@ dialog#help-dialog {
   max-height: 80vh;
 }
 dialog#pending-dialog::backdrop,
-dialog#help-dialog::backdrop {
+dialog#help-dialog::backdrop,
+dialog#dispatch-dialog::backdrop {
   background: rgba(0, 0, 0, 0.55);
 }
 dialog#pending-dialog header,
-dialog#help-dialog header {
+dialog#help-dialog header,
+dialog#dispatch-dialog header {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -131,14 +134,16 @@ dialog#help-dialog header {
   background: var(--bg);
 }
 dialog#pending-dialog header h3,
-dialog#help-dialog header h3 {
+dialog#help-dialog header h3,
+dialog#dispatch-dialog header h3 {
   margin: 0;
   font-family: var(--font-mono);
   font-size: 14px;
   color: var(--accent);
 }
 dialog#pending-dialog header button,
-dialog#help-dialog header button {
+dialog#help-dialog header button,
+dialog#dispatch-dialog header button {
   background: none;
   border: none;
   color: var(--muted);
@@ -148,7 +153,8 @@ dialog#help-dialog header button {
   padding: 0 4px;
 }
 dialog#pending-dialog header button:hover,
-dialog#help-dialog header button:hover { color: var(--fg); }
+dialog#help-dialog header button:hover,
+dialog#dispatch-dialog header button:hover { color: var(--fg); }
 #pending-dialog-content,
 #help-dialog-content {
   overflow-y: auto;
@@ -1822,3 +1828,159 @@ body.compact #dispatches { padding: 8px; }
 .disp-actions { white-space: nowrap; }
 .disp-actions .link-btn { margin-right: 8px; }
 .disp-del { color: var(--bad); }
+
+/* ── New-dispatch dialog ───────────────────────────────────────────
+   One column of labelled sections; Start/Duration and Repeat/Options
+   pair up side-by-side. Mode-dependent inputs (datetime, duration
+   value, recurrence interval) stay visible-but-disabled until their
+   mode is picked, so the layout never jumps. */
+dialog#dispatch-dialog { max-width: 640px; }
+#dispatch-form .dd-body {
+  overflow-y: auto;
+  max-height: calc(80vh - 130px);
+  padding: 0.9rem 1rem 0.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.dd-row2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+.dd-field { display: flex; flex-direction: column; gap: 6px; }
+.dd-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+.dd-input {
+  background: var(--bg-deep, #1b1f27);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--fg);
+  padding: 6px 8px;
+  font-size: 13px;
+}
+.dd-input:focus { outline: none; border-color: var(--accent); }
+.dd-input:disabled { opacity: 0.45; }
+.dd-input-inline { padding: 3px 6px; font-size: 12px; }
+.dd-input-num { width: 64px; padding: 3px 6px; font-size: 12px; }
+.dd-hint { margin: 0; font-size: 11px; color: var(--muted); }
+.dd-hint-inline { color: var(--muted); font-size: 11px; }
+
+/* Segmented target-mode toggle, shaped like the chrome mode toggle. */
+.dd-seg {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  overflow: hidden;
+  align-self: flex-start;
+}
+.dd-seg-btn {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 12px;
+  padding: 4px 12px;
+  cursor: pointer;
+}
+.dd-seg-btn + .dd-seg-btn { border-left: 1px solid var(--border); }
+.dd-seg-btn.active { background: var(--bg-elev); color: var(--accent); }
+.dd-seg-btn:hover:not(.active) { color: var(--fg); }
+
+/* Category chips: toggleable, count badge per category. */
+.dd-chiprow { display: flex; flex-wrap: wrap; gap: 6px; }
+.dd-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-deep, #1b1f27);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  color: var(--fg);
+  font-size: 12px;
+  padding: 4px 12px;
+  cursor: pointer;
+}
+.dd-chip:hover { border-color: var(--accent); }
+.dd-chip.active {
+  border-color: var(--accent);
+  background: rgba(121, 184, 255, 0.12);
+  color: var(--accent);
+}
+.dd-chip-n { color: var(--muted); font-size: 11px; }
+.dd-chip.active .dd-chip-n { color: inherit; opacity: 0.8; }
+
+/* Component multi-select: scrollable checkbox list, grouped. */
+.dd-complist {
+  max-height: 180px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-deep, #1b1f27);
+  padding: 4px 0;
+}
+.dd-comp-group {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  padding: 6px 10px 2px;
+}
+.dd-comp {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.dd-comp:hover { background: var(--bg-elev); }
+.dd-comp .dd-comp-id { font-family: var(--font-mono); color: var(--muted); }
+
+/* Radio / checkbox stacks. */
+.dd-choice-col { display: flex; flex-direction: column; gap: 6px; }
+.dd-choice {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.dd-inline { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; }
+
+/* Payload key → value rows. */
+.dd-kv-rows { display: flex; flex-direction: column; gap: 6px; }
+.dd-kv-row {
+  display: grid;
+  grid-template-columns: 1fr 16px 1.4fr 24px;
+  align-items: center;
+  gap: 6px;
+}
+.dd-kv-row .dd-kv-arrow { color: var(--muted); text-align: center; }
+.dd-kv-row .dd-kv-del {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 0;
+}
+.dd-kv-row .dd-kv-del:hover { color: var(--bad); }
+#dd-payload-add { align-self: flex-start; }
+
+.dd-error {
+  margin: 6px 1rem 0;
+  font-size: 12px;
+  color: var(--bad);
+}
+.dd-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 0.75rem 1rem;
+  border-top: 1px solid var(--border);
+  margin-top: 10px;
+}
