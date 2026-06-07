@@ -79,7 +79,7 @@ swctl scenarios start sunny                                 # registered multi-s
 swctl snapshot save before-test                             # persist overrides
 swctl dashboard --tail                                      # one-line/sec pulse bar
 swctl dispatch list 1                                       # dispatch API CRUD
-swctl dispatch create 1 SET_POWER battery --duration 3600
+swctl dispatch create 1 <type> battery --duration 3600
 ```
 
 `--addr` (default `http://[::1]:8800`) points the gRPC client

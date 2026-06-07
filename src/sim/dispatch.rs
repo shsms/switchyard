@@ -2,9 +2,9 @@
 //! gRPC surface (`src/dispatch_server.rs`) and the per-microgrid
 //! Dispatches view in the UI.
 //!
-//! Switchyard is a *store-and-serve* dispatch backend, in the spirit
-//! of the sibling `dispatchsim` mock: the python dispatch CLI (or any
-//! `frequenz-client-dispatch`) creates / updates / deletes dispatches
+//! Switchyard is a *store-and-serve* dispatch backend: the python
+//! dispatch CLI (or any `frequenz-client-dispatch`) creates /
+//! updates / deletes dispatches
 //! here, the UI lists them, and downstream control apps (e.g. the
 //! edge-app) consume the stream and act on them. Switchyard itself
 //! never executes a dispatch against its simulated components.
@@ -548,9 +548,9 @@ mod tests {
     #[test]
     fn insert_get_list_remove_roundtrip() {
         let store = new_store();
-        store.insert(261, dispatch(1, "SET_POWER"));
-        store.insert(261, dispatch(2, "CHARGE"));
-        store.insert(900, dispatch(3, "SET_POWER"));
+        store.insert(261, dispatch(1, "alpha"));
+        store.insert(261, dispatch(2, "beta"));
+        store.insert(900, dispatch(3, "alpha"));
 
         assert_eq!(store.total(), 3);
         // list_mg is scoped to the microgrid and ascending by id.
@@ -565,7 +565,7 @@ mod tests {
         assert!(store.get(900, 1).is_none());
 
         let removed = store.remove(261, 1).expect("dispatch 1 present");
-        assert_eq!(removed.data.unwrap().r#type, "SET_POWER");
+        assert_eq!(removed.data.unwrap().r#type, "alpha");
         assert!(store.get(261, 1).is_none());
         assert_eq!(store.total(), 2);
     }
@@ -586,27 +586,27 @@ mod tests {
         let store = new_store();
         let mut rx = store.subscribe();
 
-        store.insert(261, dispatch(1, "SET_POWER"));
+        store.insert(261, dispatch(1, "alpha"));
         let ev = rx.try_recv().expect("created event");
         assert_eq!(ev.microgrid_id, 261);
         assert_eq!(ev.change, DispatchChange::Created);
         assert_eq!(ev.dispatch_id(), 1);
 
-        store.replace(261, dispatch(1, "SET_POWER_V2"));
+        store.replace(261, dispatch(1, "alpha-v2"));
         assert_eq!(rx.try_recv().unwrap().change, DispatchChange::Updated);
 
         store.remove(261, 1);
         let ev = rx.try_recv().expect("deleted event");
         assert_eq!(ev.change, DispatchChange::Deleted);
         // The deleted record rides along even though it's gone from the store.
-        assert_eq!(ev.dispatch.data.unwrap().r#type, "SET_POWER_V2");
+        assert_eq!(ev.dispatch.data.unwrap().r#type, "alpha-v2");
     }
 
     #[test]
     fn create_stamps_id_times_and_end() {
         let store = new_store();
         let data = pb::DispatchData {
-            r#type: "SET_POWER".to_string(),
+            r#type: "alpha".to_string(),
             duration: Some(3600),
             ..Default::default()
         };

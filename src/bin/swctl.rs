@@ -226,7 +226,7 @@ enum DispatchCmd {
     Create {
         /// Microgrid id.
         microgrid_id: u64,
-        /// Dispatch type the downstream actor keys on (e.g. SET_POWER).
+        /// Dispatch type the downstream actor keys on.
         #[arg(name = "type")]
         type_: String,
         /// Target components.

@@ -61,8 +61,7 @@ pub struct Metadata {
     /// gRPC service binds to. One service fronts every microgrid,
     /// keyed by `microgrid_id` in each request, so it gets its own
     /// socket — distinct from any microgrid's `grpc_port` and from
-    /// the assets server. Default matches the sibling `dispatchsim`
-    /// mock so existing dispatch-client wiring keeps working.
+    /// the assets server.
     /// Overridable from lisp via `(set-dispatch-socket-addr "…")`.
     pub dispatch_socket_addr: String,
     /// Fallback request lifetime when a `SetElectricalComponentPower`

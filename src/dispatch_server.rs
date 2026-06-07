@@ -14,8 +14,7 @@
 //! `microgrid_id`, so unlike the per-port Microgrid API this binds a
 //! single socket (default `[::1]:8900`, see `dispatch_socket_addr`).
 //! Auth is intentionally ignored — request metadata (auth key /
-//! signature) is never inspected, matching the sim context and the
-//! sibling `dispatchsim` mock.
+//! signature) is never inspected, matching the sim context.
 
 use std::pin::Pin;
 
@@ -565,7 +564,7 @@ mod tests {
     #[tokio::test]
     async fn create_assigns_id_and_stamps_times() {
         let srv = server();
-        let d = create(&srv, 2200, data("SET_POWER", true)).await;
+        let d = create(&srv, 2200, data("alpha", true)).await;
         let meta = d.metadata.unwrap();
         assert_eq!(meta.dispatch_id, 1);
         assert!(meta.create_time.is_some());
@@ -674,7 +673,7 @@ mod tests {
     async fn list_filters_by_query_and_ids() {
         let srv = server();
         create(&srv, 1, data("peak_shave", true)).await; // id 1
-        create(&srv, 1, data("set_power", true)).await; // id 2
+        create(&srv, 1, data("load_shift", true)).await; // id 2
         create(&srv, 1, data("peak_trim", true)).await; // id 3
 
         // Free-text token: substring match on type.

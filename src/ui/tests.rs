@@ -491,7 +491,7 @@ fn seed_dispatch(
 async fn dispatches_endpoint_lists_microgrid_dispatches_newest_first() {
     let cfg = config_with("").await;
     let store = cfg.dispatches();
-    seed_dispatch(&store, 2200, 1, "SET_POWER", true);
+    seed_dispatch(&store, 2200, 1, "ALPHA", true);
     seed_dispatch(&store, 2200, 2, "PEAK_SHAVE", false);
     // A dispatch for another microgrid must not leak into 2200's list.
     seed_dispatch(&store, 999, 3, "OTHER", true);
@@ -506,7 +506,7 @@ async fn dispatches_endpoint_lists_microgrid_dispatches_newest_first() {
     assert_eq!(arr[0]["type"], "PEAK_SHAVE");
     assert_eq!(arr[0]["active"], false);
     assert_eq!(arr[1]["id"], 1);
-    assert_eq!(arr[1]["type"], "SET_POWER");
+    assert_eq!(arr[1]["type"], "ALPHA");
     assert_eq!(arr[1]["active"], true);
 }
 
@@ -551,13 +551,13 @@ async fn dispatch_create_endpoint_stores_and_returns_view() {
         cfg.clone(),
         post_json(
             "/api/mg/2200/dispatches",
-            r#"{"type":"SET_POWER","target":"BATTERY","payload":{"target_power_w":5000}}"#,
+            r#"{"type":"ALPHA","target":"BATTERY","payload":{"target_power_w":5000}}"#,
         ),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(v["type"], "SET_POWER");
+    assert_eq!(v["type"], "ALPHA");
     assert_eq!(v["active"], true);
     assert_eq!(v["target"], "BATTERY");
     assert_eq!(v["payload"]["target_power_w"], 5000.0);
