@@ -567,6 +567,50 @@ async fn dispatch_create_endpoint_stores_and_returns_view() {
 }
 
 #[tokio::test]
+async fn dispatch_create_endpoint_accepts_recurrence() {
+    let cfg = config_with("").await;
+    let (status, body) = call(
+        cfg.clone(),
+        post_json(
+            "/api/mg/2200/dispatches",
+            r#"{"type":"ALPHA","target":"battery","duration_s":3600,
+                "recurrence":{"freq":"daily","interval":2}}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["recurrence"], "daily ×2");
+    // Recurring dispatches have no single predetermined end, even
+    // with a per-occurrence duration set.
+    assert!(v["end_ms"].is_null());
+
+    // freq "once" is the explicit no-recurrence spelling.
+    let (status, body) = call(
+        cfg.clone(),
+        post_json(
+            "/api/mg/2200/dispatches",
+            r#"{"type":"ALPHA","target":"battery","recurrence":{"freq":"once"}}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(v["recurrence"].is_null());
+
+    // Unknown frequency names are a client bug — reject loudly.
+    let (status, _) = call(
+        cfg,
+        post_json(
+            "/api/mg/2200/dispatches",
+            r#"{"type":"ALPHA","target":"battery","recurrence":{"freq":"fortnightly"}}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn dispatch_create_endpoint_rejects_bad_target() {
     let cfg = config_with("").await;
     let (status, _) = call(

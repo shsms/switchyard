@@ -55,7 +55,8 @@ pub(in crate::ui) async fn dispatches_for_mg(
 /// Body for `POST /api/mg/{id}/dispatches`. `target` is the same
 /// human syntax the dispatch CLI takes (category names or numeric
 /// ids); `payload` is free JSON (must be an object). With no
-/// `start_ms` the dispatch starts immediately.
+/// `start_ms` the dispatch starts immediately. `recurrence` is
+/// optional — omitted (or `freq: "once"`) creates a one-off.
 #[derive(Deserialize)]
 pub(in crate::ui) struct DispatchCreateReq {
     #[serde(rename = "type")]
@@ -71,6 +72,51 @@ pub(in crate::ui) struct DispatchCreateReq {
     payload: Option<serde_json::Value>,
     #[serde(default)]
     start_ms: Option<i64>,
+    #[serde(default)]
+    recurrence: Option<RecurrenceReq>,
+}
+
+/// Recurrence shape the create form submits: a frequency name plus
+/// "every N" interval. Maps onto the proto `RecurrenceRule`; the
+/// by-minute / by-weekday refinements the proto also carries aren't
+/// exposed here — the dispatch CLI covers those.
+#[derive(Deserialize)]
+pub(in crate::ui) struct RecurrenceReq {
+    freq: String,
+    #[serde(default)]
+    interval: Option<u32>,
+}
+
+/// Map the form's frequency name onto the proto enum. `"once"` (or
+/// empty) means no recurrence rule at all — distinct from
+/// `FREQUENCY_UNSPECIFIED`, which the store also treats as
+/// non-recurring but would still carry a pointless rule object.
+/// Names derive from the proto enum's own `FREQUENCY_*` spelling
+/// (the inverse of `recurrence_to_string`), so a frequency added
+/// upstream is accepted here without touching this function.
+fn recurrence_from_req(
+    req: Option<&RecurrenceReq>,
+) -> Result<Option<crate::proto::dispatch::RecurrenceRule>, String> {
+    use crate::proto::dispatch::recurrence_rule::Frequency;
+    let Some(req) = req else { return Ok(None) };
+    let lowered = req.freq.to_lowercase();
+    if lowered.is_empty() || lowered == "once" {
+        return Ok(None);
+    }
+    let freq = Frequency::from_str_name(&format!("FREQUENCY_{}", lowered.to_uppercase()))
+        .filter(|f| *f != Frequency::Unspecified)
+        .ok_or_else(|| {
+            format!(
+                "unknown recurrence frequency {:?}; expected once or one of the \
+                 frequencies the dispatch API defines (hourly, daily, weekly, …)",
+                req.freq
+            )
+        })?;
+    Ok(Some(crate::proto::dispatch::RecurrenceRule {
+        freq: freq as i32,
+        interval: req.interval.unwrap_or(1).max(1),
+        ..Default::default()
+    }))
 }
 
 /// Create a dispatch from the UI. Parses the human target / payload,
@@ -90,6 +136,8 @@ pub(in crate::ui) async fn dispatch_create_for_mg(
                 .map_err(|e| (StatusCode::BAD_REQUEST, e))?,
         ),
     };
+    let recurrence =
+        recurrence_from_req(req.recurrence.as_ref()).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
     let start_immediately = req.start_ms.is_none();
     let start_time = req.start_ms.map(|ms| prost_types::Timestamp {
         seconds: ms.div_euclid(1000),
@@ -103,7 +151,7 @@ pub(in crate::ui) async fn dispatch_create_for_mg(
         is_active: req.active.unwrap_or(true),
         is_dry_run: req.dry_run.unwrap_or(false),
         payload,
-        recurrence: None,
+        recurrence,
     };
     let dispatch = config
         .dispatches()
