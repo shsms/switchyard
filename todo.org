@@ -187,6 +187,47 @@ Why deferred: requires either a tulisp-side reflection API or a
 =switchyard::lisp::make= self-describing module. Hardcoded JS works
 fine for the current category count.
 
+** P. Physics realism upgrades
+
+The electrical layer is deliberately behavioral (no power flow, no
+losses) — see the architecture notes in CLAUDE.md. The two items
+below are the cheapest upgrades that a downstream control app's own
+accounting would actually notice; island-mode frequency coupling
+(swing equation) was considered and deferred — not needed while
+every scenario runs grid-tied.
+
+*** TODO P1. Battery round-trip efficiency + idle draw
+
+Today charging and discharging both move SoC at 100 % efficiency and
+an idle battery holds SoC forever. A control app that schedules
+charge/discharge cycles and audits the energy balance sees numbers a
+real site never produces. Add to =BatteryConfig=:
+
+- =:efficiency-pct= (round-trip, default ~92): apply √η on each leg —
+  charging stores =P·dt·√η=, discharging draws =P·dt/√η= — so a full
+  cycle loses the configured fraction and the loss is visible on
+  whichever leg the app measures.
+- =:idle-draw-w= (default a few W): constant self-discharge +
+  BMS/electronics draw integrated every tick regardless of setpoint,
+  so SoC sags slowly over a long soak run.
+
+Both default-off-able for configs that want the old ideal behaviour
+(=:efficiency-pct 100 :idle-draw-w 0=). SoC integration stays in
+=Battery::tick=; the meter aggregation path is untouched (losses are
+internal to the battery, the inverter still reports commanded AC).
+
+*** TODO P2. Battery voltage-vs-SoC curve
+
+=dc_voltage_v= is a constant from config, so =dc_current_a=
+(= apparent/V) never varies with state of charge — real packs sag
+toward the bottom and rise toward the top of the SoC window, and
+BMS dashboards key on exactly that. Replace the constant with a
+simple piecewise-linear curve parameterised by (=:voltage-min=,
+=:voltage-nominal=, =:voltage-max=) anchored at (soc_lower, 50 %,
+soc_upper), keeping =:voltage-v= as the nominal for backward
+compatibility. Telemetry-only change — power physics stays on W, so
+no setpoint / bounds behaviour shifts.
+
 * Review backlog — 2026-06-01
 
 Whole-codebase review (8-agent subsystem fan-out + clippy/fmt; clippy
