@@ -1,0 +1,11 @@
+microgrid_api_endpoint: "http://[::1]:8800"
+active_power_limiter:
+  # min/max unset -> limits come from the GCP rated bounds (-20 kW .. +50 kW)
+  breach_buffer_percentage: 25
+  block_duration_s: 10
+  relax_bounds_interval_s: 5
+  relax_bounds_step_percentage: 25
+  repeat_bounds_interval_s: 1
+logical_meter:
+  resampling_interval_s: 1
+dry_run: false
