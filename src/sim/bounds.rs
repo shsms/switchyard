@@ -225,6 +225,16 @@ struct Aug {
     lifetime: Duration,
 }
 
+impl Aug {
+    /// Live at `now` if `now` is before the advertised `valid_until`
+    /// (create_ts + lifetime) — the same inclusive horizon handed back
+    /// to the client.
+    fn live_at(&self, now: DateTime<Utc>) -> bool {
+        let ttl = chrono::Duration::from_std(self.lifetime).unwrap_or(chrono::Duration::zero());
+        self.create_ts + ttl > now
+    }
+}
+
 impl ComponentBounds {
     pub fn rated(lower: f32, upper: f32) -> Self {
         Self {
@@ -262,22 +272,29 @@ impl ComponentBounds {
         // Augmentations are stored in arrival order, but lifetimes are
         // per-request, so expiry order need not match arrival order — a
         // front-only pop would strand a short-lived entry behind a
-        // longer-lived one and leak it. Scan the whole deque. Drop at
-        // the advertised `valid_until` (create_ts + lifetime), matching
-        // the inclusive horizon handed back to the client.
-        self.augmented.retain(|a| {
-            let ttl = chrono::Duration::from_std(a.lifetime).unwrap_or(chrono::Duration::zero());
-            a.create_ts + ttl > now
-        });
+        // longer-lived one and leak it. Scan the whole deque.
+        self.augmented.retain(|a| a.live_at(now));
     }
 
-    /// Effective bounds: rated ∩ all live augmentations.
-    pub fn effective(&self) -> VecBounds {
+    /// Effective bounds at `now`: rated ∩ augmentations still live at
+    /// `now`. Expired augmentations are skipped even if `drop_expired`
+    /// has not reaped them yet, so a gate that runs between ticks sees
+    /// the same envelope the client does — not a stale one lingering up
+    /// to a tick past its `valid_until`.
+    pub fn effective_at(&self, now: DateTime<Utc>) -> VecBounds {
         let mut out = self.rated.clone();
         for a in &self.augmented {
-            out = out.intersect(&a.bounds);
+            if a.live_at(now) {
+                out = out.intersect(&a.bounds);
+            }
         }
         out
+    }
+
+    /// Effective bounds now: rated ∩ all augmentations live at the
+    /// current instant. See [`Self::effective_at`].
+    pub fn effective(&self) -> VecBounds {
+        self.effective_at(Utc::now())
     }
 
     pub fn contains(&self, value: f32) -> bool {
@@ -325,5 +342,37 @@ mod tests {
         assert_eq!(eff.0.len(), 1);
         assert_eq!(eff.0[0].lower, Some(-50.0));
         assert_eq!(eff.0[0].upper, Some(50.0));
+    }
+
+    #[test]
+    fn effective_at_skips_expired_augmentation_before_reaping() {
+        // A tight augment loop (e.g. a GCP limiter) can push a fresh
+        // augmentation in the sub-tick window after an old one's TTL
+        // lapses but before `drop_expired` reaps it. `effective_at` must
+        // already ignore the lapsed entry so the validation gate sees the
+        // real envelope, not a stale one lingering up to a tick.
+        let mut cb = ComponentBounds::rated(-100.0, 100.0);
+        let t0 = Utc::now();
+        cb.add_augmentation(t0, VecBounds::single(-30.0, 0.0), Duration::from_secs(5));
+
+        // Still live a second in: rated ∩ augmentation.
+        let live = cb.effective_at(t0 + chrono::Duration::seconds(1));
+        assert_eq!((live.0[0].lower, live.0[0].upper), (Some(-30.0), Some(0.0)));
+
+        // A second past its valid_until, with drop_expired NOT called
+        // (the deque still holds it): the augmentation is ignored, back
+        // to rated — so a fresh augmentation disjoint from the lapsed one
+        // (e.g. [50, 100]) is no longer spuriously rejected as disjoint.
+        let after = cb.effective_at(t0 + chrono::Duration::seconds(6));
+        assert_eq!(
+            (after.0[0].lower, after.0[0].upper),
+            (Some(-100.0), Some(100.0))
+        );
+        assert!(
+            !after
+                .intersect(&VecBounds::single(50.0, 100.0))
+                .0
+                .is_empty()
+        );
     }
 }
