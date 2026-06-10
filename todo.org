@@ -763,6 +763,124 @@ the stylesheet. Worth a dedicated cleanup pass that then widens the
 CI lint to the whole directory; mechanical but touches a lot of
 lines, and the specificity fixes need visual verification.
 
+* Review backlog — 2026-06-10
+
+Exhaustive whole-codebase review: a 14-agent subsystem fan-out with an
+adversarial verifier per finding, deduped against the prior backlogs. 40
+raw findings → 13 refuted on a second read, 18 already tracked, 9
+confirmed new (below). First full pass over the post-refactor
+=ui-assets/= ES-module split and the =src/lisp/defuns/= tree — and the
+split is where the three High items come from: it dropped imports, so
+several UI flows are dead on the current build.
+
+** TODO [#A] editor.js calls readSelectedMg without importing it — canvas editing is dead :ui:
+=editor.js= uses =readSelectedMg()= in =undoMgr.record/undo/redo= (lines
+80/94/118) but imports only =notify=, =showComponent=, =mgPath=,
+=topology=; =readSelectedMg= is exported from =routing.js=. =record()= is
+awaited as the first step of every canvas mutation (paste, delete, add,
+connect via =topology.js=, and =inspect.js='s =evalQuoted= → rename /
+health / command-mode / knob / disconnect), and the call sits outside its
+try/catch — so it throws =ReferenceError= before any mutation fetch runs.
+All visual editing silently no-ops with an unhandled rejection in the
+console; Ctrl-Z/Y throw too.
+
+Fix: =import { readSelectedMg } from "./routing.js"=.
+
+** TODO [#A] dialogs.js Save calls evalQuoted without importing it — Defaults editor is dead :ui:
+=renderDefaults='s Save handler calls =await evalQuoted(expr)=
+(=dialogs.js:382=), but =dialogs.js= imports only =clearSide= /
+=startScenarioReportLoop= from =inspect.js=, not =evalQuoted= (also
+exported there). Saving any per-category default throws =ReferenceError=,
+the =setq= never reaches the server, and nothing surfaces but an uncaught
+console rejection.
+
+Fix: add =evalQuoted= to the =inspect.js= import.
+
+** TODO [#A] panels.js microgrids panel uses readSelectedMg / renderReplMgChip unimported — breaks on load :ui:
+=microgridsPanel.renderBreadcrumb()= calls =readSelectedMg()=
+(=panels.js:61=) and =refresh()= calls =renderReplMgChip()= (=:84=), but
+=panels.js= imports neither. =readSelectedMg= is exported from
+=routing.js=; =renderReplMgChip= is *not exported at all* (only
+=setupReplMgChip= is). =refresh()= runs on initial load via
+=applyInitialRoute → applyMode=, so it renders the list then throws in
+=renderBreadcrumb()= — the breadcrumb and REPL-target chip never paint and
+the 5 s list poll never starts.
+
+Fix: import =readSelectedMg=; =export= =renderReplMgChip= and import it
+(or route the chip refresh through =setupReplMgChip='s exported path).
+
+** TODO [#B] Battery tick f32::clamp panics on a NaN bound, freezing the physics loop :hardening:
+=Battery::tick= (=src/sim/battery.rs:163=) does
+=total_p.clamp(effective_lower_w, effective_upper_w)= with std
+=f32::clamp=, which panics on a NaN bound. The bounds are
+=rated_* * bounded_exp_decay(...)= and =rated_lower_w/upper_w= come
+straight from config (=make.rs=) with no finiteness check, so
+=(make-battery :rated-upper (/ 0.0 0.0))= yields a NaN bound. The tick
+runs in a bare =tokio::spawn= with no =catch_unwind=, so the panic kills
+that microgrid's physics task permanently while gRPC keeps serving stale
+telemetry — a silently dead site. The codebase already guards this exact
+hazard elsewhere (=Ramp= rejects NaN; =VecBounds::clamp= is hand-written
+NaN-safe).
+
+Fix: validate rated bounds for finiteness at construction, or use a
+NaN-safe clamp; consider wrapping =c.tick()= in =catch_unwind= so one bad
+component can't freeze the whole site.
+
+** TODO [#B] (set-frequency) accepts NaN/Inf and permanently poisons the shared OU state :lisp:hardening:
+=(set-frequency HZ)= (=src/lisp/defuns/frequency.rs:64=) writes
+=current_hz = hz as f32= unchecked. =(set-frequency (/ 0.0 0.0))= via
+=/api/eval= stores NaN; the OU =step()= does =current_hz += drift + noise=
+so it stays NaN forever. The same =SharedFrequency= is handed to every
+=MicrogridSite= (one AC grid → one frequency), so one bad call NaNs the
+frequency telemetry of *every* microgrid until restart.
+
+Fix: reject non-finite =hz= in the defun (and optionally reset =step()= to
+nominal if =current_hz= goes non-finite).
+
+** TODO [#C] parent_count doc is inverted — hidden edges are counted, not suppressed :docs:
+=parent_count='s doc (=microgrid_site/mod.rs:480=) claims it returns 0 for
+hidden children and callers clamp with =.max(1)=; in fact it iterates the
+raw =connections= vec, which includes hidden edges (=connect()= pushes
+all; only =connections()= / =hidden_connections()= filter). A connected
+hidden child has =parent_count ≥ 1=; =.max(1)= only ever guards a
+fully-unconnected child. Runtime behavior is correct — the comment just
+misstates the data flow (and would mislead the parallel-share divisor
+work).
+
+Fix: correct the comment.
+
+** TODO [#C] (make-microgrid :grpc-port N) silently truncates ports > 65535 :lisp:
+=microgrids.rs:118= does =Some(p) if p > 0 => p as u16=, so
+=:grpc-port 70000= wraps to 4464 (mod 65536): the microgrid binds a
+different port than asked, with no error, and may collide with an
+auto-allocated port.
+
+Fix: =Some(p) if (1..=65535).contains(&p) => p as u16=, else an
+=invalid_argument= naming the bad port.
+
+** TODO [#C] make-microgrid registers + announces before the :topology lambda is validated :lisp:hardening:
+=make-microgrid= inserts into the registry (=microgrids.rs:139=) and fires
+=registered_tx.send(id)= (=:150=) before funcalling the =:topology= lambda
+with =result?= (=:159=). On a runtime =/api/eval= / =/api/mg/{id}/eval= a
+failing topology leaves a zombie microgrid registered (counted by
+=/api/microgrids=, announced to WS) with a half-built site until the next
+full reload (the reload path clears the registry first, so it only
+self-heals there).
+
+Fix: build the site and run =:topology= first; insert + announce only on
+success (or remove on the error path).
+
+** TODO [#C] dispatchesPanel.render paints stale data on a navigation/WS race :ui:concurrency:
+=render(mgId)= (=app.js:268=) sets =currentMg= then awaits the dispatches
+fetch into the shared =#dispatches-body= with no generation/abort guard. A
+=dispatch_changed= for mg A racing a navigation to mg B's Dispatches tab
+can paint A's rows under B (last fetch wins); the row handlers then act on
+=currentMg=B= against A's rows. Partly mitigated by =repl.js='s
+=selectedMg= guard, but the nav-vs-WS interleave is still reachable.
+
+Fix: stamp each render with a generation / AbortController and drop a
+response whose mgId no longer matches.
+
 * Open design questions
 
 ** d1. Rethink ~file-exists-p~ resolving against the config's load dir :design:lisp:
