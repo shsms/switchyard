@@ -228,6 +228,55 @@ soc_upper), keeping =:voltage-v= as the nominal for backward
 compatibility. Telemetry-only change — power physics stays on W, so
 no setpoint / bounds behaviour shifts.
 
+** I. Testing apps that drive bounds (closed-loop)
+
+Surfaced while using switchyard to test the =fz-microgrid-protector=
+GCP active-power limiter — an external app whose whole job is to push
+=AugmentElectricalComponentBounds= and watch =power_bounds= react. It
+ran against a 2-PV microgrid (=protector-test.lisp=,
+=scenarios/protector-cases.lisp=); the gaps below are what made that
+harder than it should be.
+
+*** IN-PROGRESS I2. Scenario-level assertions (expect / assert)      :testing:
+:LOGBOOK:
+- State "INPROGRESS" from "TODO"       [2026-06-09 Di 15:59]
+:END:
+
+Scenarios drive perturbations and journal events but can't *assert*
+expected state — so verifying a run means eyeballing logs (or, for an
+external app, scraping the app's own logs). Add an assertion verb that
+checks a component's power / bounds or grid state and records pass/fail
+into =/api/scenario/report= + =swctl scenario report=, turning
+scenarios into self-checking integration tests. eg.
+=(scenario-expect :component 200 :metric active-power-bounds-lower
+:approx -15000.0 :tol 500.0)=.
+
+*** IN-PROGRESS I3. Disambiguate health vs availability vs output :telemetry:docs:
+:LOGBOOK:
+- State "INPROGRESS" from "TODO"       [2026-06-09 Di 15:59]
+:END:
+
+Partly resolved by =27e079d=: a non-Ok inverter now trips to zero output
+(the "outage mode that zeroes output" option), so a "downed" inverter
+*does* change the grid. What remains is the telemetry state axis —
+=component_state= is still derived from power sign, so an errored
+inverter reports *idle* (not ERROR) unless =TelemetryMode::ErrorEmpty=
+is also set (see the 2026-06-04 review's "state-code decoupled from
+health" item). Decide whether health should drive an ERROR state
+snapshot or stay an orthogonal knob, and document the three axes (stream
+health, bounds-availability, physical output).
+
+*** IN-PROGRESS I4. Record a component's bounds + received setpoints over time :testing:
+:LOGBOOK:
+- State "INPROGRESS" from "TODO"       [2026-06-09 Di 15:59]
+:END:
+
+=scenario-record-csv= captures telemetry, but for testing a bound-
+setting app you also want the *inputs it pushed*: a per-component log of
+AugmentBounds / SetPower requests received (value + ttl + arrival time)
+and the effective-bounds timeline. Lets a scenario replay-assert "the
+app held a stable cap" vs "it oscillated" without an external log scrape.
+
 * Review backlog — 2026-06-01
 
 Whole-codebase review (8-agent subsystem fan-out + clippy/fmt; clippy
@@ -365,6 +414,338 @@ Localized hardening / contract items from the same review:
 - =swctl= dashboard / pool =--tail= (=src/bin/swctl.rs=) aborts the whole
   loop on a single transient HTTP error; warn and continue to the next
   tick instead.
+
+* Review backlog — 2026-06-04
+
+Second whole-codebase pass (5-agent subsystem fan-out; consistency /
+integration / simulation-fidelity lens), verified against source. Fixed
+this pass as small commits: validate request lifetime before actuating
+(=88eb325=); always allow 0 W (=a93b69d=); reject malformed
+augmentations (=ddb529a=, closes the inverted-bounds Low item above);
+config-time =:command-mode= can no longer re-enable an errored device
+(=d6478cd=); an errored / standby inverter trips offline to zero output
+(=27e079d=). The items below were left deferred — each needs a design
+call or a non-local change.
+
+** Fidelity
+
+*** TODO [#B] Reactive config bounds sampled at live P, not rated — research first :reactive:fidelity:
+=make_component_proto= (=src/proto_conv.rs:107=) fills the static
+=AcPowerReactive= =MetricConfigBounds= from =c.reactive_bounds()=, whose
+inverter impls sample at *live* P (=battery_inverter= =measured_w=,
+=solar= =ramp.actual()=) — but the comment claims "full rated active P".
+So an idle PF-limited inverter advertises =(0, 0)= reactive capability in
+=ListElectricalComponents=, and a controller that caches the listing
+concludes it can't do Q.
+
+Research on the internet before fixing (not urgent): real inverters
+differ — some are fully reactive-capable up to the kVA circle at any
+active power (including P≈0), others can only source/sink Q as a
+percentage of the *current* active power. Decide which model(s)
+switchyard should expose and how the static config bounds (rated) vs the
+live telemetry bounds should each read. Likely answer: config bounds use
+rated P (=p_max=), telemetry keeps live-P. Check IEEE 1547-2018
+reactive-at-zero-P capability and typical nameplate Q ratings.
+
+*** TODO [#B] Reported PV bounds ignore sunlight curtailment :fidelity:bounds:
+=SolarInverter::effective_active_bounds()= returns rated ∩ augmentation,
+so telemetry advertises e.g. =[-30 kW, 0]= at 50% sun while the inverter
+only delivers -15 kW. I1 made the *output* curtail to =min_avail_w=, but
+the *bounds* still don't reflect irradiance, so a controller bidding max
+generation sees headroom that isn't there. Fold =min_avail_w= into the
+reported lower bound — but confirm against the real frequenz API (does it
+report irradiance-limited inclusion bounds for PV?).
+
+*** TODO [#B] No AC<->DC conversion loss (round-trip efficiency = 1.0) :fidelity:
+=BatteryInverter::tick= pushes the AC setpoint straight to the battery DC
+bus and integrates SoC at the full value, so efficiency is exactly 1.0.
+SoC / energy-balance prediction algorithms under test see a perfect
+integrator — the largest single model-vs-reality delta. Add a
+configurable charge/discharge efficiency; note the gateway's AC∩DC bounds
+intersection (=aggregate_child_bounds=) is only numerically correct at
+η=1 and must account for the conversion once efficiency lands.
+
+*** TODO [#B] kVA-circle not re-clamped when P drifts under a settled Q :reactive:
+=ReactivePath::step= (=src/sim/reactive.rs=) only re-clamps Q to
+=√(S²−P²)= when a command freshly promotes; if active power then drifts
+under a sustained Volt/VAR setpoint, published apparent power exceeds the
+rating until the next setpoint. Re-clamp the armed Q to the live envelope
+each tick.
+
+*** TODO [#B] dc_power_w is signed-apparent but its bounds are active-only :telemetry:reactive:
+A battery's =DcPower= telemetry value is =√(P²+Q²)·sign(P)= while the
+attached bounds are the active SoC-derated envelope (=battery.rs= /
+=proto_conv.rs=). Value and bounds sit on different scales whenever Q≠0;
+the scenario energy integrator also over-states charge/discharge Wh by up
+to the PF headroom. Report active P as the value, or attach apparent
+bounds.
+
+*** TODO [#B] CHP and Grid stream no power telemetry of their own :telemetry:
+=Chp= is a stub (parent meter carries =:power=) and =Grid::telemetry=
+emits only id+category (the downstream meter carries flow). Faithful to
+the "meter carries the literal" design, but a controller written to the
+real API (subscribe by category = Grid / Chp) gets an empty metric set.
+Document the convention at the API boundary, or synthesize an
+=AcPowerActive= sample on these components.
+
+*** TODO [#B] Telemetry state-code is decoupled from health       :telemetry:
+=component_state= is derived from power sign (=power_state(p)= →
+idle/charging/discharging); the ERROR =ElectricalComponentStateCode= only
+comes from =TelemetryMode::ErrorEmpty= (=proto_conv.rs:292=). So an
+=:health 'error= inverter (now zero-output after =27e079d=) still reports
+state *idle*, indistinguishable from a healthy parked one, unless its
+telemetry mode is also set. Decide whether health should drive an ERROR
+state snapshot or stay orthogonal, and document it. (This is the open
+part of I3.)
+
+** Consistency
+
+*** TODO [#B] AugmentBounds wrongly enforces the 10 s setpoint minimum :api:bounds:
+=resolve_lifetime= (=src/server.rs:34=) applies =REQUEST_LIFETIME_MIN_S =
+10= to AugmentBounds too, but the augment proto's minimum is 5 s
+(SetPower's is 10 s). A 5–9 s augmentation lifetime is wrongly rejected.
+Split the constant per RPC.
+
+*** TODO [#B] SetPower response never sets valid_until_time             :api:
+=do_set_power= always returns =valid_until_time: None=, though the proto
+says populate it with now+lifetime on success (AugmentBounds does). A
+client watching the field to time its refresh sees no expiry.
+
+*** TODO [#B] Two TTL clocks: Instant (setpoints) vs Utc (augmentations) :api:bounds:
+=TimeoutTracker= keys setpoint expiry on monotonic =Instant=;
+=ComponentBounds::drop_expired= uses wall-clock =Utc=. An NTP / VM clock
+step expires augmented bounds without touching setpoint timeouts, so the
+two TTL guarantees handed to clients clock against different references.
+
+*** TODO [#B] Reactive no-constraint fallback gives 0 Q at P=0     :reactive:
+=q_bounds_at= (=src/sim/reactive.rs=) falls back to =(-|P|, |P|)= when
+both =pf_limit= and =apparent_va= are =None= — an undocumented implicit
+PF=1, so a node clearing both caps expecting "unconstrained" gets *zero*
+Q at idle. Document the fallback as PF=1, or make "both None" mean the
+full kVA circle.
+
+** Structural / concurrency
+
+*** TODO [#B] make-microgrid probes id + port in separate unlocked steps :concurrency:lisp:
+=make-microgrid= (=src/lisp/mod.rs= ~1367) calls =next_free_id= then
+=next_free_port= under separate lock acquisitions before inserting, so a
+concurrent Lisp =make-microgrid= and HTTP =/api/microgrids/create= can
+hand out the same id / port. Pick both under one held guard
+(=next_free_id_in= / =next_free_port_in= already exist) and insert in the
+same critical section. (Distinct from the shared-id-allocator High item.)
+
+*** TODO [#B] register_arc / remove_component do non-atomic multi-lock writes :concurrency:
+=MicrogridSite::register_arc= writes =components=, =by_id=, =runtime=
+under three separate guards; =remove_component= removes from =by_id=
+before =components=. A concurrent =tick_once= (clones =components.read()=)
+or =get()= can observe a component present in one map and absent in
+another. Coordinate structural mutations under one lock, or document the
+interpreter-lock invariant precisely.
+
+*** TODO [#B] record_history_snapshot holds write locks across telemetry() :concurrency:
+=record_history_snapshot= (=src/sim/microgrid_site.rs=) holds =histories=
++ =scenario_csv= write guards while calling =c.telemetry()=, which
+re-enters =runtime= / =connections= reads — fragile lock ordering vs
+=reset()='s =components→by_id→runtime→histories= order. Collect telemetry
+outside the history lock, then take it only to push.
+
+*** TODO [#B] sum_single silently drops multi-band bounds            :bounds:
+=VecBounds::sum_single= (=src/sim/bounds.rs=) keeps only =.first()= of
+each child's bounds, so =aggregate_child_bounds= (the gateway setpoint
+gate) ignores later bands of a multi-band inverter. Single-band today,
+but unenforced — a future multi-band rated inverter regresses the gate
+silently.
+
+*** TODO [#B] aggregate_child_bounds skips the parallel-share divisor :bounds:fidelity:
+=aggregate_child_bounds= (=src/sim/microgrid_site.rs=) sums children's
+effective bounds without the =/ parent_count= share that =meter.rs:68=
+applies to power. A child shared between two parents contributes its full
+bounds to each gate but only half its power to each meter — the gateway
+then allows setpoints 2× the parallel-share semantic. (Couples to d3.)
+
+* Review backlog — 2026-06-05
+
+Second exhaustive pass (7-agent subsystem fan-out + an adversarial review
+of this session's commits =0439e76..ddb529a=, and first coverage of the
+UI backend, dispatch/assets services, bins, and lisp runtime). The seven
+commits held up under the adversarial pass — two flagged "regressions"
+were false positives (PV resuming an armed *curtailment* setpoint is
+intended, and =effective()= is always intersected with finite rated
+bounds so =clamp= is never a half-open identity). The items below are
+deferred; nothing fixed this pass.
+
+** Adversarial follow-ups to this session's commits
+
+*** TODO [#A] validate_augmentation reads effective bounds without dropping expired :bounds:
+=validate_augmentation= (=src/server.rs=) calls =effective_active_bounds()=,
+and =ComponentBounds::effective()= (=src/sim/bounds.rs=) does NOT
+=drop_expired= first (that only runs in =tick=, every ~100 ms). So within
+one tick of an old augmentation's TTL expiry, a fresh valid augmentation
+that is disjoint from the *stale* (expiring) envelope is spuriously
+rejected =InvalidArgument=. A tight augment loop (the protector, I2) is
+the exact caller that can hit it. Fix: drop expired before validating
+(make =effective_active_bounds= self-expire, or thread =now= in).
+
+*** TODO [#C] Document that health and command modes aren't fully orthogonal :docs:
+=set_health(Ok)= (=src/sim/microgrid_site.rs:903=) forces
+=command = Normal=, which clobbers an independently-set =Timeout= /
+=OverBound=. This is *required* for recovery (otherwise the =Error=
+coupling sticks and the device stays uncommandable), so it's a deliberate
+trade-off — but document that once health couples command, the two axes
+aren't independent across an Error→Ok cycle. Same applies make-time
+(=apply_initial_modes= drops a non-Normal =:command-mode= under
+=:health 'error=, which is correct since Error subsumes it).
+
+*** TODO [#C] Document E's Standby handling                            :docs:
+=27e079d= gates inverter output on =health != Ok=, so =Standby= is treated
+like =Error= (zero output; the battery inverter also clears its setpoint
+and awaits re-dispatch). Reasonable, but a =Standby→Ok= transition that
+drops the prior setpoint may surprise — decide whether Standby should
+preserve the setpoint (resume) rather than await re-dispatch, and document
+the choice. (Refines I3.)
+
+** Fidelity / consistency (new)
+
+*** TODO [#B] make_component_proto hardcodes microgrid_id: 0  :telemetry:api:
+Every =ElectricalComponent= in =ListElectricalComponents= and the assets
+=ListMicrogridElectricalComponents= carries =microgrid_id: 0=
+(=src/proto_conv.rs:122=). A multi-microgrid client that routes commands
+back by =component.microgrid_id= gets 0 for all of them. The
+=MicrogridServer= knows its own id; the assets server has it from the
+request — thread it through.
+
+*** TODO [#C] AugmentBounds logs a phantom setpoint for a not-found id :api:bounds:
+=augment_electrical_component_bounds= (=src/server.rs=) clones =site= and
+calls =log_setpoint= unconditionally, so a request to an unregistered id
+auto-creates a zombie =SetpointLog= entry that persists until reset. The
+SetPower path returns early on not-found before logging; make AugmentBounds
+match.
+
+*** TODO [#C] Timeout-mode setpoints never reach the setpoint log       :api:
+When =command == CommandMode::Timeout=, =gate_runtime_faults=
+(=src/server.rs=) parks in =future::pending()= until the client cancels,
+so neither SetPower nor AugmentBounds ever calls =log_setpoint=. The
+stuck-component case — exactly what a setpoint inspector exists to surface
+— is invisible. Log the attempt before parking.
+
+*** TODO [#B] Meter reactive aggregation drops :power-meter and CHP Q :reactive:telemetry:
+=Meter::aggregate_reactive= (=src/sim/meter.rs=) returns 0 when
+=power_source= is set, and =Chp= carries no reactive state, so a CHP /
+load modelled via a =:power= meter contributes no Q to its parent. The
+main meter's =reactive_power_var= (and any PF / apparent-power derived
+from it) under-reports.
+
+*** TODO [#C] OverBound fault is active-only                            :api:
+The =OverBound= setpoint fault (=src/server.rs=) fires only for
+=PowerType::Active= and non-zero power; a reactive setpoint to an
+=OverBound= component passes untouched. Minor — =OverBound= is the rarest
+fault mode — but the lie is incomplete.
+
+*** TODO [#C] Solar telemetry never sets component_state          :telemetry:
+=SolarInverter::telemetry= (=src/sim/inverter/solar_inverter.rs=) never
+sets =component_state=, so every frame carries an empty state snapshot and
+a controller can't read idle-vs-generating. The battery inverter reports
+=power_state(p)=. The idle/generating axis is fillable today with the same
+helper (=p < 0= = generating); this is distinct from the I3 *error*-state
+policy question. (Also: =telemetry_to_proto= pushes the empty snapshot at
+all — the known 2026-06-01 Low.)
+
+*** TODO [#C] Meter + assets status are always healthy            :telemetry:
+=Meter::telemetry= always reports state =ready= regardless of children
+health/flow; =assets_server= =get_microgrid= always returns
+=MicrogridStatus::Active= even when every component is errored. A client
+gating on degraded status never sees one. Cosmetic for a simulator but a
+fidelity gap.
+
+** Structural / concurrency (new)
+
+*** TODO [#A] reload() may not re-spawn physics for rebuilt sites  [confirm first] :concurrency:lisp:
+=Config::reload= (=src/lisp/mod.rs:979=) clears the registry and rebuilds
+every site via =make-microgrid= (fresh =MicrogridSite=, =:1395=) but does
+not call =spawn_physics= / =spawn_history_sampler=. Boot spawns them by
+iterating the registry (=switchyard.rs:97-104=); the only other spawn path
+is the =/api/microgrids/create= closure. =watch()→reload()= hits neither,
+so reloaded microgrids appear to get no physics loop (the boot-spawned
+loops keep ticking now-orphaned old sites). HIGH if real — but hot-reload
+is heavily used, so confirm the intended lifecycle before acting (maybe
+the orphaned-old-site keeps serving and only the config edit is lost).
+
+*** TODO [#B] dispatch_server update ignores a concurrent-delete race :dispatch:concurrency:
+=update_microgrid_dispatch= (=src/dispatch_server.rs=) is read-modify-write
+across two lock acquisitions and silently ignores =store.replace=='s
+=false= return (dispatch deleted in the window), returning OK with an
+unpersisted change. =set_active= handles the same race correctly; mirror it.
+
+*** TODO [#B] dispatch stream: double-delivery window + silent lag :dispatch:
+The stream takes =subscribe()= then the snapshot =list= without a lock
+between them (=src/dispatch_server.rs=), so a create in that window is
+delivered twice (at-most-twice, idempotent by id — document it). On a
+=Lagged= receiver the handler just =continue=s with no re-sync signal, so
+a streaming client silently diverges; send an error frame so it re-lists.
+
+*** TODO [#B] Per-mg dispatch create / set-active don't validate the mg id :dispatch:
+=dispatch_create_for_mg= / =dispatch_set_active_for_mg= (=src/ui/mod.rs=)
+and the gRPC create path don't check the microgrid exists, so a POST to
+=/api/mg/99999/dispatches= creates a phantom entry that accumulates with
+no TTL. Sibling per-mg routes (eval, overrides) guard with =contains_key=;
+make these consistent.
+
+*** TODO [#B] UI history ring never cleared on topology rebuild          :ui:
+=build_microgrid= (=src/ui/mod.rs=) clears =latest= on a rebuild but never
+=history=, so after a topology change that removes a stream category the
+stale ring keeps serving that series via =/api/mg/{id}/microgrid/history=
+indefinitely.
+
+*** TODO [#B] Lisp scenario-start/stop is current-site-only vs enterprise HTTP :lisp:
+The =(scenario-start)= / =(scenario-stop)= defuns (=src/lisp/mod.rs=)
+operate on =router.site()= (the current-microgrid pointer) while the HTTP
+=scenarios::start/stop= iterate all sites. A REPL/timer-driven scenario
+journals only the current mg and leaves others' journals open; per-mg
+reports diverge.
+
+*** TODO [#B] id_or_next casts a negative :id to a giant u64           :lisp:
+=id_or_next= (=src/lisp/make.rs:560=) does =explicit.map(|x| x as u64)=
+with no range check, so =:id -1= becomes =u64::MAX= — registers, never
+matches, leaks the map slot. =make-microgrid= guards =v > 0=; the
+per-component path doesn't. Reject =x <= 0=.
+
+*** TODO [#B] switchyard main: fire-and-forget UI/refresh, sequential join :hardening:
+=src/bin/switchyard.rs= awaits the gRPC server tasks sequentially and
+spawns the UI server + lisp refresh loop fire-and-forget, so a crash of
+either goes unnoticed and the process limps on degraded. Use a =JoinSet= /
+=select!= so a critical-task failure triggers a clean shutdown.
+
+** Robustness / UI hardening (latent until --ui-bind ships)
+
+*** TODO [#B] Add CORS + confirm body limits before --ui-bind  :hardening:ui:
+The UI is loopback-only today. Before =--ui-bind= lands: add a
+=tower-http= =CorsLayer= (a cross-origin page could otherwise POST
+=text/plain= Lisp to =/api/eval= and run arbitrary code incl. file
+writes), and apply =DefaultBodyLimit= to =/api/eval=, =/api/format=,
+overrides-text, and the =BulkRemoveBody.indices= vec (unbounded). The
+body-limit gap and the snapshot-save/load ambient-scope hazard are already
+recorded (2026-06-01) — fold them into the same hardening pass.
+
+** Low / minor (new)
+
+- =dynamic_scalar.rs= caches via =Ordering::Relaxed= across the refresh
+  thread and the physics tick; visibility relies implicitly on surrounding
+  locks. Upgrade to =Release=/=Acquire= to make the contract explicit.
+- =runtime_modes.rs= =From<Health/…> for TulispObject= emits a *string*,
+  not a symbol, so an enum round-tripped through a plist would type-mismatch
+  (=:health 'error= needs a symbol). Latent — no defun returns enum plists.
+- =swctl.rs=: =DispatchCreate= sends =Some(false)= for =start_immediately=
+  when a start time is given (prefer =None=); =snapshot --microgrid-id= is
+  silently ignored (warn instead).
+- =battery.rs= / =decay.rs=: no validation that
+  =soc_protect_margin_pct ≤ (upper−lower)/2=; an aggressive margin makes
+  both taper bands active mid-SoC, silently halving bounds both ways.
+- =solar_inverter.rs= =reset_setpoint= snaps to =min_avail_w()= (a power
+  step the upstream meter reflects) where the battery inverter ramps to 0;
+  inconsistent reset discontinuity.
+- =ui/mod.rs= =write_microgrid_stub= escapes only =\"= and =\\= in the
+  generated =.lisp= (not newlines/control chars); not currently exploitable
+  (tulisp strings allow embedded newlines) but sanitise for robustness.
 
 * Review backlog — 2026-06-06
 
