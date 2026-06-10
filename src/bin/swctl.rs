@@ -1200,6 +1200,23 @@ fn print_report(r: &serde_json::Value, json: bool) {
     let dchg = r["total_battery_discharged_wh"].as_f64().unwrap_or(0.0);
     let pv = r["total_pv_produced_wh"].as_f64().unwrap_or(0.0);
     println!("elapsed              {elapsed:.1} s");
+    let passed = r["checks_passed"].as_u64().unwrap_or(0);
+    let failed = r["checks_failed"].as_u64().unwrap_or(0);
+    if passed + failed > 0 {
+        println!("checks               {passed} passed, {failed} failed");
+        if let Some(arr) = r["checks"].as_array() {
+            for c in arr.iter().filter(|c| c["passed"] != true) {
+                let id = c["component_id"].as_u64().unwrap_or(0);
+                let metric = c["metric"].as_str().unwrap_or("?");
+                let expectation = c["expectation"].as_str().unwrap_or("?");
+                let actual = c["actual"]
+                    .as_f64()
+                    .map(|v| format!("{v}"))
+                    .unwrap_or_else(|| "unavailable".into());
+                println!("  FAIL  {id} {metric}: expected {expectation}, actual {actual}");
+            }
+        }
+    }
     println!("main meter peak      {}", kw(peak));
     println!("battery charged      {}", kwh(chg));
     println!("battery discharged   {}", kwh(dchg));
