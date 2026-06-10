@@ -216,6 +216,11 @@ Both default-off-able for configs that want the old ideal behaviour
 =Battery::tick=; the meter aggregation path is untouched (losses are
 internal to the battery, the inverter still reports commanded AC).
 
+Bounds caveat (from the 2026-06-04 review): the gateway's AC∩DC bounds
+intersection in =aggregate_child_bounds= is only numerically correct at
+η=1. Once efficiency lands it must account for the conversion, or the
+setpoint gate validates against mismatched AC-side and DC-side envelopes.
+
 *** TODO P2. Battery voltage-vs-SoC curve                          :fidelity:
 
 =dc_voltage_v= is a constant from config, so =dc_current_a=
@@ -455,15 +460,6 @@ the *bounds* still don't reflect irradiance, so a controller bidding max
 generation sees headroom that isn't there. Fold =min_avail_w= into the
 reported lower bound — but confirm against the real frequenz API (does it
 report irradiance-limited inclusion bounds for PV?).
-
-*** TODO [#B] No AC<->DC conversion loss (round-trip efficiency = 1.0) :fidelity:
-=BatteryInverter::tick= pushes the AC setpoint straight to the battery DC
-bus and integrates SoC at the full value, so efficiency is exactly 1.0.
-SoC / energy-balance prediction algorithms under test see a perfect
-integrator — the largest single model-vs-reality delta. Add a
-configurable charge/discharge efficiency; note the gateway's AC∩DC bounds
-intersection (=aggregate_child_bounds=) is only numerically correct at
-η=1 and must account for the conversion once efficiency lands.
 
 *** TODO [#B] kVA-circle not re-clamped when P drifts under a settled Q :reactive:
 =ReactivePath::step= (=src/sim/reactive.rs=) only re-clamps Q to
