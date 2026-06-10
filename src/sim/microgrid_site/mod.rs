@@ -29,7 +29,7 @@ use crate::sim::history::ComponentHistory;
 use crate::sim::runtime::{CommandMode, ComponentRuntime, Health, TelemetryMode};
 use crate::sim::scenario::ScenarioJournal;
 use crate::sim::scenario_csv::CsvSinks;
-use crate::sim::setpoints::{SetpointEvent, SetpointKind, SetpointLog, SetpointOutcome};
+use crate::sim::setpoints::{SetpointEvent, SetpointLog, SetpointOutcome};
 use crate::timeout_tracker::TimeoutTracker;
 
 mod history;
@@ -48,17 +48,6 @@ const HISTORY_CAPACITY: usize = 600;
 /// 10/sec on one component. 1000 entries ≈ 100 s of dense traffic
 /// or several minutes of typical use; older events evict.
 const SETPOINT_LOG_CAPACITY: usize = 1000;
-
-/// Stable lowercase tokens for the setpoint-event broadcast — same
-/// strings the JSON tag wire-format uses, so the UI doesn't need a
-/// translation table.
-fn setpoint_kind_label(k: SetpointKind) -> &'static str {
-    match k {
-        SetpointKind::ActivePower => "active_power",
-        SetpointKind::ReactivePower => "reactive_power",
-        SetpointKind::AugmentBounds => "augment_bounds",
-    }
-}
 
 /// External AC environment shared by all AC components. Mirrors
 /// microsim's `voltage-per-phase` / `ac-frequency` globals.
@@ -160,6 +149,14 @@ struct MicrogridSiteInner {
     /// `(scenario-stop-csv)` or implicitly by `scenario-stop`.
     /// Empty by default — recording is opt-in.
     scenario_csv: RwLock<CsvSinks>,
+    /// Received-setpoint CSV sinks — one per envelope-bearing
+    /// component, written event-driven from `log_setpoint`. Same
+    /// open/close lifecycle as `scenario_csv`.
+    scenario_setpoints_csv: RwLock<CsvSinks>,
+    /// Effective-active-bounds CSV sinks — one per envelope-bearing
+    /// component, sampled by `record_history_snapshot` at the same
+    /// 1 Hz pass as telemetry. Same lifecycle as `scenario_csv`.
+    scenario_bounds_csv: RwLock<CsvSinks>,
     /// Optional handle on the grid frequency state. Wired
     /// in by `Config::new` so every MicrogridSite in the registry
     /// reads the same OU-driven frequency value (one AC grid →
@@ -199,6 +196,8 @@ impl MicrogridSite {
                 scenario: RwLock::new(ScenarioJournal::default()),
                 main_meter_id: RwLock::new(None),
                 scenario_csv: RwLock::new(CsvSinks::new()),
+                scenario_setpoints_csv: RwLock::new(CsvSinks::new()),
+                scenario_bounds_csv: RwLock::new(CsvSinks::new()),
                 grid_frequency: RwLock::new(None),
                 stream_cancel_epoch: AtomicU64::new(0),
                 sample_lag_ms: AtomicU64::new(0),
@@ -550,6 +549,8 @@ impl MicrogridSite {
         *self.inner.main_meter_id.write() = None;
         // `clear()` drops every sink; each BufWriter flushes on drop.
         self.inner.scenario_csv.write().clear();
+        self.inner.scenario_setpoints_csv.write().clear();
+        self.inner.scenario_bounds_csv.write().clear();
         // Deliberately do NOT rewind `next_id`: the allocator is shared
         // across every site in an enterprise, so a per-site reset (a lone
         // `(reset-microgrid)`) must not rewind the global counter while
@@ -728,12 +729,21 @@ impl MicrogridSite {
     /// `SETPOINT_LOG_CAPACITY` entries (oldest evict).
     pub fn log_setpoint(&self, id: u64, event: SetpointEvent) {
         let ts_ms = event.ts.timestamp_millis();
-        let kind = setpoint_kind_label(event.kind);
+        let kind = event.kind.as_str();
         let value = event.value;
         let (accepted, reason) = match &event.outcome {
             SetpointOutcome::Accepted { .. } => (true, None),
             SetpointOutcome::Rejected { reason } => (false, Some(reason.clone())),
         };
+        // Scenario recording first (the ring push consumes the event).
+        // Event-driven rather than sampled: a control app can issue
+        // several requests between two 1 Hz passes and a replay wants
+        // every one of them.
+        if let Some(sink) = self.inner.scenario_setpoints_csv.write().get_mut(&id)
+            && let Err(e) = sink.write_setpoint_row(&event)
+        {
+            log::warn!("setpoints CSV write failed for {id}: {e}");
+        }
         self.inner
             .setpoint_logs
             .write()

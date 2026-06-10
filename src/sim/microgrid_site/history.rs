@@ -60,6 +60,7 @@ impl MicrogridSite {
         {
             let mut histories = self.inner.histories.write();
             let mut csv_sinks = self.inner.scenario_csv.write();
+            let mut bounds_sinks = self.inner.scenario_bounds_csv.write();
             for c in &components {
                 let snap = c.telemetry(self);
                 match c.category() {
@@ -79,6 +80,12 @@ impl MicrogridSite {
                     && let Err(e) = sink.write_row(now, &snap)
                 {
                     log::warn!("CSV write failed for {}: {e}", c.id());
+                }
+                if let Some(sink) = bounds_sinks.get_mut(&c.id())
+                    && let Some(bounds) = c.effective_active_bounds()
+                    && let Err(e) = sink.write_bounds_row(now, &bounds)
+                {
+                    log::warn!("bounds CSV write failed for {}: {e}", c.id());
                 }
                 let entry = histories
                     .entry(c.id())
