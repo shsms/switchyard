@@ -185,10 +185,12 @@ pub(super) fn register_lifecycle(ctx: &mut TulispContext, router: SharedSiteRout
 mod tests {
     use super::super::super::test_support::config_with;
 
-    /// `(scenario-record-csv DIR)` opens one CSV per registered
-    /// component; record_history_snapshot writes a row per pass;
-    /// `(scenario-stop-csv)` flushes and closes them. Test
-    /// asserts the file exists and contains a header + N rows.
+    /// `(scenario-record-csv DIR)` opens one telemetry CSV per
+    /// registered component — plus a setpoints + bounds CSV per
+    /// envelope-bearing component; record_history_snapshot writes a
+    /// telemetry row per pass; `(scenario-stop-csv)` flushes and
+    /// closes them. Test asserts the file exists and contains a
+    /// header + N rows.
     #[test]
     fn scenario_csv_records_per_component_files() {
         use chrono::Utc;
@@ -207,7 +209,11 @@ mod tests {
             .unwrap()
             .parse()
             .unwrap();
-        assert_eq!(opened, 2);
+        // Two telemetry files + the battery's setpoints + bounds
+        // files; the meter reports no envelope so it gets neither.
+        assert_eq!(opened, 4);
+        assert!(!csv_dir.join("1-setpoints.csv").exists());
+        assert!(!csv_dir.join("1-bounds.csv").exists());
         // Three snapshots → three rows + header.
         for _ in 0..3 {
             cfg.site().record_history_snapshot(Utc::now());
@@ -228,6 +234,91 @@ mod tests {
         assert!(
             first_data.starts_with("20") && first_data.contains(",,"),
             "expected empty active_power cell, got {first_data}"
+        );
+    }
+
+    /// The setpoints CSV gets one row per `log_setpoint` (event-
+    /// driven), the bounds CSV one row per snapshot pass (sampled) —
+    /// the inputs a bound-setting control app pushed plus the
+    /// envelope it produced, replayable without a log scrape.
+    #[test]
+    fn scenario_csv_records_setpoints_and_bounds() {
+        use crate::sim::setpoints::{SetpointEvent, SetpointKind, SetpointOutcome};
+        use chrono::Utc;
+        let (cfg, dir) = config_with(
+            "(set-microgrid-id 9)
+             (%make-battery :id 2
+                            :capacity 100000.0
+                            :rated-lower -10000.0
+                            :rated-upper 10000.0)",
+        );
+        let csv_dir = dir.join("csvs");
+        cfg.eval("(scenario-start \"io\")").unwrap();
+        cfg.eval(&format!(
+            "(scenario-record-csv {:?})",
+            csv_dir.to_str().unwrap()
+        ))
+        .unwrap();
+
+        let now = Utc::now();
+        cfg.site().log_setpoint(
+            2,
+            SetpointEvent {
+                ts: now,
+                kind: SetpointKind::ActivePower,
+                value: 1500.0,
+                ttl_s: Some(60),
+                outcome: SetpointOutcome::Accepted {
+                    effective_value: Some(1500.0),
+                },
+            },
+        );
+        cfg.site().log_setpoint(
+            2,
+            SetpointEvent {
+                ts: now,
+                kind: SetpointKind::AugmentBounds,
+                value: 0.0,
+                ttl_s: Some(30),
+                outcome: SetpointOutcome::Rejected {
+                    reason: "augmentation bound [a, b] is inverted".into(),
+                },
+            },
+        );
+        // Two sampling passes → two bounds rows.
+        cfg.site().record_history_snapshot(now);
+        cfg.site().record_history_snapshot(now);
+        cfg.eval("(scenario-stop-csv)").unwrap();
+
+        let setpoints = std::fs::read_to_string(csv_dir.join("2-setpoints.csv")).unwrap();
+        let mut lines = setpoints.lines();
+        assert_eq!(
+            lines.next().unwrap(),
+            "ts_iso,kind,value,ttl_s,accepted,effective_value,reason"
+        );
+        let accepted = lines.next().unwrap();
+        assert!(
+            accepted.contains(",active_power,1500,60,true,1500,"),
+            "accepted row: {accepted}"
+        );
+        let rejected = lines.next().unwrap();
+        // The reason holds a comma, so it must arrive CSV-quoted.
+        assert!(
+            rejected
+                .contains(",augment_bounds,0,30,false,,\"augmentation bound [a, b] is inverted\""),
+            "rejected row: {rejected}"
+        );
+        assert!(lines.next().is_none());
+
+        let bounds = std::fs::read_to_string(csv_dir.join("2-bounds.csv")).unwrap();
+        let rows: Vec<&str> = bounds.lines().collect();
+        assert_eq!(rows[0], "ts_iso,lower_w,upper_w,bands");
+        assert_eq!(rows.len(), 3, "bounds csv: {bounds}");
+        // Fresh battery at default SoC — effective == rated.
+        assert!(
+            rows[1].ends_with(",-10000,10000,-10000:10000"),
+            "bounds row: {}",
+            rows[1]
         );
     }
 

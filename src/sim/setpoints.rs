@@ -22,6 +22,18 @@ pub enum SetpointKind {
     AugmentBounds,
 }
 
+impl SetpointKind {
+    /// Stable snake_case label, matching the Serialize rename — used
+    /// by the event bus and the scenario setpoints CSV.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SetpointKind::ActivePower => "active_power",
+            SetpointKind::ReactivePower => "reactive_power",
+            SetpointKind::AugmentBounds => "augment_bounds",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SetpointOutcome {

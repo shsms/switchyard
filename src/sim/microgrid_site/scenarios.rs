@@ -127,29 +127,47 @@ fn compute_soc_stats(socs: &[f32]) -> Option<SocStats> {
 }
 
 impl MicrogridSite {
-    /// Open a fresh CSV sink per registered component under `dir`.
-    /// Returns the count opened. Existing sinks are dropped first
-    /// so a re-call replaces (rather than appends to) the prior
-    /// recording.
+    /// Open fresh CSV sinks per registered component under `dir`:
+    /// a telemetry file for every component, plus a received-setpoints
+    /// and an effective-bounds file for each component that reports an
+    /// active-power envelope (the ones a control app commands).
+    /// Returns the total file count opened. Existing sinks are
+    /// dropped first so a re-call replaces (rather than appends to)
+    /// the prior recording.
     pub(crate) fn scenario_open_csv(&self, dir: &Path) -> std::io::Result<usize> {
         std::fs::create_dir_all(dir)?;
         let components = self.inner.components.read().clone();
-        let mut sinks = CsvSinks::new();
+        let mut telemetry = CsvSinks::new();
+        let mut setpoints = CsvSinks::new();
+        let mut bounds = CsvSinks::new();
         for c in &components {
-            let sink = CsvSink::open(dir, c.id(), c.category())?;
-            sinks.insert(c.id(), sink);
+            telemetry.insert(c.id(), CsvSink::open(dir, c.id(), c.category())?);
+            if c.effective_active_bounds().is_some() {
+                setpoints.insert(c.id(), CsvSink::open_setpoints(dir, c.id())?);
+                bounds.insert(c.id(), CsvSink::open_bounds(dir, c.id())?);
+            }
         }
-        let count = sinks.len();
-        *self.inner.scenario_csv.write() = sinks;
+        let count = telemetry.len() + setpoints.len() + bounds.len();
+        *self.inner.scenario_csv.write() = telemetry;
+        *self.inner.scenario_setpoints_csv.write() = setpoints;
+        *self.inner.scenario_bounds_csv.write() = bounds;
         Ok(count)
     }
 
-    /// Drop every active CSV sink. Each underlying `BufWriter`
-    /// flushes on drop.
+    /// Drop every active CSV sink (telemetry, setpoints, bounds).
+    /// Each underlying `BufWriter` flushes on drop. Returns the
+    /// total file count closed.
     pub(crate) fn scenario_close_csv(&self) -> usize {
-        let mut g = self.inner.scenario_csv.write();
-        let count = g.len();
-        g.clear();
+        let mut count = 0;
+        for sinks in [
+            &self.inner.scenario_csv,
+            &self.inner.scenario_setpoints_csv,
+            &self.inner.scenario_bounds_csv,
+        ] {
+            let mut g = sinks.write();
+            count += g.len();
+            g.clear();
+        }
         count
     }
 
