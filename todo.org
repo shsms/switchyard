@@ -292,20 +292,6 @@ against the code.
 
 ** High
 
-*** TODO [#A] Shared id-allocator rewound by a single-site reset :concurrency:
-
-=MicrogridSite::reset()= (=src/sim/microgrid_site.rs=) stores
-=FIRST_AUTO_ID= into the *shared* enterprise =next_id= allocator. The
-=(reset-microgrid)= defun resets one site, so in a multi-microgrid
-enterprise it rewinds the global counter while other sites still hold
-live components at 1000+ — the next auto-allocated id then collides,
-breaking the global-uniqueness invariant the shared allocator exists for.
-
-Fix: drop the =next_id.store= from =reset()=; =Config::reload= already
-resets the allocator explicitly. Caveat: this changes id determinism for
-the single-mg =reset-state= flow (ids no longer restart at 1000 after a
-per-site reset) — confirm that's acceptable before applying.
-
 *** TODO [#A] Cross-microgrid eval corruption under concurrent per-mg eval :concurrency:
 
 =with_microgrid= (=src/sim/microgrids.rs=) sets the shared
@@ -1020,6 +1006,17 @@ Open decisions before speccing:
    the graph changed regardless of origin?
 
 * Archive
+
+** DONE Shared id-allocator rewound by a single-site reset       :concurrency:
+CLOSED: [2026-06-10 Mi]
+
+Fixed in =82cfdbd=: =MicrogridSite::reset()= no longer stores
+=FIRST_AUTO_ID= into the shared enterprise =next_id= allocator, so a lone
+=(reset-microgrid)= can't rewind the global counter under sibling sites'
+live ids. =Config::reload= still resets it explicitly, so ids restart at
+=FIRST_AUTO_ID= across full reloads. The determinism caveat (a bare
+per-site reset no longer restarts ids) was confirmed acceptable — no test
+relied on it.
 
 ** DONE validate_augmentation reads effective bounds without dropping expired :bounds:
 CLOSED: [2026-06-10 Mi]
