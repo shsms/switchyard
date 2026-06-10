@@ -1,5 +1,5 @@
 #+TITLE: Switchyard — roadmap and deferred work
-#+TODO: TODO IN-PROGRESS WAIT | DONE CANCELLED
+#+TODO: TODO INPROGRESS WAIT | DONE CANCELLED
 
 Forward-looking residue. The reactive-input + scenario framework
 + integration-test + CI tracks all landed; what's left is the
@@ -37,7 +37,7 @@ animations move power around at 200 ms. Tests need to either
 freeze the world at known points or assert on stable structure
 rather than pixel-exact screenshots.
 
-*** TODO B1. Playwright harness + first round of functional tests
+*** TODO B1. Playwright harness + first round of functional tests   :testing:
 
 Lay the foundation; cover surfaces that don't need pixel-perfect
 output to verify.
@@ -56,7 +56,7 @@ output to verify.
 Acceptance: =npm test= passes on a clean checkout in <30 s; one
 flake-free pass over 10 consecutive runs.
 
-*** TODO B2. Scenario flow + REPL interaction tests
+*** TODO B2. Scenario flow + REPL interaction tests                 :testing:
 
 Build on B1 to cover the more state-ful flows.
 
@@ -77,7 +77,7 @@ Build on B1 to cover the more state-ful flows.
 Acceptance: each flow runs deterministically when the server is
 fresh; tests don't share state between runs.
 
-*** TODO B3. Visual regression on a small set of stable views
+*** TODO B3. Visual regression on a small set of stable views       :testing:
 
 Pixel-exact snapshots only where the surface is reliably stable.
 Avoids the topology-layout flake.
@@ -101,7 +101,7 @@ fail every run.
 Acceptance: three snapshot tests, baselines checked in, second
 run on the same machine matches.
 
-*** TODO B4. CI integration for the browser tests
+*** TODO B4. CI integration for the browser tests                   :testing:
 
 Add a fourth job to =.github/workflows/ci.yml=:
 
@@ -121,7 +121,7 @@ broken assertion.
 
 ** S. Additional gRPC services
 
-*** TODO S1. Expose the reporting API                             :switchyard:rust:
+*** TODO S1. Expose the reporting API                              :rust:api:
 
 Mount the [[https://github.com/frequenz-floss/frequenz-api-reporting][frequenz-api-reporting]] gRPC service so downstream apps can hit a
 switchyard instance with the same reporting calls they'd use against
@@ -130,7 +130,7 @@ a real deployment.  Larger project than the assets API (see
 queries, time-range pagination, etc., which switchyard doesn't
 currently retain.
 
-*** TODO S2. ListMicrogrids discovery RPC
+*** TODO S2. ListMicrogrids discovery RPC                               :api:
 
 Follow-up from the assets API: there's no =ListMicrogrids= RPC in
 the upstream proto, so gRPC-only clients still need
@@ -146,7 +146,7 @@ vs function-call distinction in the overlay. What's left are
 correctness gaps where the simple "first symbol after =(= is a
 function head" model misclassifies things.
 
-*** TODO R1. =Enter=-on-empty-line outdent
+*** TODO R1. =Enter=-on-empty-line outdent                               :ui:
 
 =indentForNewline= always indents at the innermost open paren's
 column + 2. Hitting =Enter= twice in a row from a fresh blank
@@ -161,7 +161,7 @@ addition to =indentForNewline=, no server roundtrip.
 
 ** E. Smaller deferred items
 
-*** TODO E1. Compact: rewrite per-mg :topology body
+*** TODO E1. Compact: rewrite per-mg :topology body                 :ui:lisp:
 
 UI button → =POST /api/mg/<id>/compact=. Server walks the
 microgrid's =MicrogridSite=, emits a fresh =:topology= lambda body,
@@ -175,7 +175,7 @@ Why deferred: real value depends on having heavy override files to
 flatten; until users accumulate one, hard to validate the output
 shape.
 
-*** TODO E2. Form auto-generation from =AsPlist!=
+*** TODO E2. Form auto-generation from =AsPlist!=                        :ui:
 
 Right-pane edit form is currently hardcoded per category in JS.
 Long-term: a =/api/component-schema= endpoint returns each
@@ -196,7 +196,7 @@ accounting would actually notice; island-mode frequency coupling
 (swing equation) was considered and deferred — not needed while
 every scenario runs grid-tied.
 
-*** TODO P1. Battery round-trip efficiency + idle draw
+*** TODO P1. Battery round-trip efficiency + idle draw             :fidelity:
 
 Today charging and discharging both move SoC at 100 % efficiency and
 an idle battery holds SoC forever. A control app that schedules
@@ -216,7 +216,7 @@ Both default-off-able for configs that want the old ideal behaviour
 =Battery::tick=; the meter aggregation path is untouched (losses are
 internal to the battery, the inverter still reports commanded AC).
 
-*** TODO P2. Battery voltage-vs-SoC curve
+*** TODO P2. Battery voltage-vs-SoC curve                          :fidelity:
 
 =dc_voltage_v= is a constant from config, so =dc_current_a=
 (= apparent/V) never varies with state of charge — real packs sag
@@ -237,7 +237,7 @@ ran against a 2-PV microgrid (=protector-test.lisp=,
 =scenarios/protector-cases.lisp=); the gaps below are what made that
 harder than it should be.
 
-*** IN-PROGRESS I2. Scenario-level assertions (expect / assert)      :testing:
+*** INPROGRESS I2. Scenario-level assertions (expect / assert)      :testing:
 :LOGBOOK:
 - State "INPROGRESS" from "TODO"       [2026-06-09 Di 15:59]
 :END:
@@ -251,7 +251,7 @@ scenarios into self-checking integration tests. eg.
 =(scenario-expect :component 200 :metric active-power-bounds-lower
 :approx -15000.0 :tol 500.0)=.
 
-*** IN-PROGRESS I3. Disambiguate health vs availability vs output :telemetry:docs:
+*** INPROGRESS I3. Disambiguate health vs availability vs output :telemetry:docs:
 :LOGBOOK:
 - State "INPROGRESS" from "TODO"       [2026-06-09 Di 15:59]
 :END:
@@ -266,7 +266,7 @@ health" item). Decide whether health should drive an ERROR state
 snapshot or stay an orthogonal knob, and document the three axes (stream
 health, bounds-availability, physical output).
 
-*** IN-PROGRESS I4. Record a component's bounds + received setpoints over time :testing:
+*** INPROGRESS I4. Record a component's bounds + received setpoints over time :testing:
 :LOGBOOK:
 - State "INPROGRESS" from "TODO"       [2026-06-09 Di 15:59]
 :END:
@@ -287,7 +287,7 @@ against the code.
 
 ** High
 
-*** TODO Shared id-allocator rewound by a single-site reset
+*** TODO [#A] Shared id-allocator rewound by a single-site reset :concurrency:
 
 =MicrogridSite::reset()= (=src/sim/microgrid_site.rs=) stores
 =FIRST_AUTO_ID= into the *shared* enterprise =next_id= allocator. The
@@ -301,7 +301,7 @@ resets the allocator explicitly. Caveat: this changes id determinism for
 the single-mg =reset-state= flow (ids no longer restart at 1000 after a
 per-site reset) — confirm that's acceptable before applying.
 
-*** TODO Cross-microgrid eval corruption under concurrent per-mg eval
+*** TODO [#A] Cross-microgrid eval corruption under concurrent per-mg eval :concurrency:
 
 =with_microgrid= (=src/sim/microgrids.rs=) sets the shared
 =current_microgrid= pointer *before* =eval= takes the interpreter lock,
@@ -315,7 +315,7 @@ Fix: make scope-set + eval atomic under one lock, or thread an explicit
 ambient global scope; convert =with_microgrid= to an RAII guard so the
 pointer is restored on unwind.
 
-*** TODO Active and reactive setpoints share one timeout + reset
+*** TODO [#A] Active and reactive setpoints share one timeout + reset :bounds:
 
 =do_set_power= (=src/server.rs=) calls =add_timeout(id, …)= for both
 active and reactive setpoints, and =TimeoutTracker= is keyed by id only.
@@ -330,7 +330,7 @@ surface resets.
 
 ** Medium
 
-*** TODO Unbounded recursion on a topology cycle
+*** TODO [#B] Unbounded recursion on a topology cycle             :hardening:
 
 Power aggregation (=children_of= in =src/sim/microgrid_site.rs=, via
 =Meter::aggregate_active= and the inverters) has no visited-set or depth
@@ -342,7 +342,7 @@ site.
 Fix: thread a visited-set / depth limit through the aggregation walk, or
 reject cycle-creating edges in =connect=.
 
-*** TODO CommandDelay doesn't re-clamp an armed setpoint
+*** TODO [#B] CommandDelay doesn't re-clamp an armed setpoint        :bounds:
 
 =BatteryInverter::tick= (and =SolarInverter::tick=) clamp the pending
 target to the envelope only on the tick a command is freshly armed; a
@@ -354,7 +354,7 @@ Fix: in the =delay.poll == None= branch re-clamp =ramp.target()= to the
 current =effective()= envelope and =set_target= if it changed, mirroring
 =ev_charger=.
 
-*** TODO persisted_overrides does file I/O under the interpreter lock
+*** TODO [#B] persisted_overrides does file I/O under the interpreter lock :concurrency:lisp:
 
 =persisted_overrides= / =persisted_count= (=src/lisp/mod.rs=) hold the
 =ctx= write lock across =parse_file= (blocking I/O), reachable from sync
@@ -365,7 +365,7 @@ updates for every microgrid.
 Fix: parse the overrides file with a throwaway =TulispContext=, or read
 the bytes first and hold the lock only for the in-memory parse.
 
-*** TODO Lisp active-timers list grows unbounded across a long run
+*** TODO [#B] Lisp active-timers list grows unbounded across a long run :lisp:
 
 =random-outage= (=sim/scenarios.lisp=) conses a fresh one-shot timer
 handle onto =active-timers= each cycle and never prunes fired ones; only
@@ -376,7 +376,7 @@ edge-app incident.
 Fix: prune fired one-shots when re-scheduling (filter on live status), or
 reuse a single tracked handle slot per outage chain.
 
-*** TODO Snapshot save/load ignore the per-request microgrid scope
+*** TODO [#B] Snapshot save/load ignore the per-request microgrid scope :concurrency:
 
 =snapshots_save= / =snapshots_load= (=src/ui/handlers/snapshots.rs=)
 resolve the target via the ambient =current_microgrid= (set by the last
@@ -755,7 +755,7 @@ unescaped dashboard names, csv-lookup NaN guard, snapshot-load
 atomicity, dispatch phantom-update) were fixed in the same pass; the
 items below need more than a local change.
 
-** TODO swctl --json emits Rust Debug output for gRPC-backed commands
+** TODO [#C] swctl --json emits Rust Debug output for gRPC-backed commands :api:
 
 =--json= is documented as "emit JSON … where applicable", and the
 HTTP-routed verbs (=scenario=, =scenarios=, =snapshot=, =pool=) do
@@ -770,7 +770,7 @@ to crib from), a =prost-wkt= style reflection dependency, or
 documenting the limitation honestly in =--json='s help text. Either
 fix or rename until fixed.
 
-** TODO Dispatch update is a lock-free read-modify-write
+** TODO [#B] Dispatch update is a lock-free read-modify-write :dispatch:concurrency:
 
 =update_microgrid_dispatch= (=src/dispatch_server.rs=) does get →
 merge → replace without holding the store lock across the sequence,
@@ -781,7 +781,7 @@ shape: a =DispatchStore::update_with(microgrid_id, dispatch_id,
 FnOnce(&mut Dispatch))= that applies the merge under the inner write
 lock, used by both the gRPC update and =set_active=.
 
-** TODO index.html + style.css fail biome's recommended rules
+** TODO [#C] index.html + style.css fail biome's recommended rules       :ui:
 
 CI lints only the hand-written JS (all clean). Running biome over
 =ui-assets/= also flags 17 errors + ~29 warnings in =index.html= and
@@ -793,7 +793,7 @@ lines, and the specificity fixes need visual verification.
 
 * Open design questions
 
-** d1. Rethink ~file-exists-p~ resolving against the config's load dir
+** d1. Rethink ~file-exists-p~ resolving against the config's load dir :design:lisp:
 
 The current =defuns::fs::register= (=src/lisp/defuns/fs.rs=) resolves
 relative paths in =(file-exists-p PATH)= against the config file's
@@ -849,7 +849,7 @@ over =load_dir: PathBuf=, propagated from =Config::new= via
 local =load-overrides= defun and relies on this resolution to find
 the override file.
 
-** d2. Promote per-mg override file into the per-mg config file
+** d2. Promote per-mg override file into the per-mg config file :design:lisp:ui:
 
 Currently every successful eval lands in the per-microgrid override
 file (=microgrids/config.<id>.overrides.lisp=). The next step in
@@ -896,7 +896,7 @@ commit gate on top of that, but the design questions above need a
 real config sample to test against — easier to settle once a heavy
 microgrid config has accumulated some real overrides.
 
-** d3. Parallel-paths share semantic — does this match real installs?
+** d3. Parallel-paths share semantic — does this match real installs? :design:fidelity:
 
 We currently model "child shared by N parents" as "each parent sees
 1/N of the child's flow" (parallel-conductor semantic). It's
@@ -921,7 +921,7 @@ If user feedback pushes us either way, options are:
   =:parallel-with <id>=) so the connection graph itself encodes
   intent. Most expressive, most invasive.
 
-** d4. Per-phase reactive setpoints
+** d4. Per-phase reactive setpoints                         :design:reactive:
 
 The proto's =SetElectricalComponentPower= takes a single scalar
 =power= value, not per-phase. Real inverters can be commanded to
@@ -929,7 +929,7 @@ dispatch unbalanced reactive across phases for voltage support. Out
 of scope for v1; would need a proto extension or a side-channel
 defun. Tracked here so we don't forget the gap.
 
-** d5. Per-source attribution under MxN
+** d5. Per-source attribution under MxN                     :design:fidelity:
 
 Today an inverter publishes its *commanded* AC output as =measured=;
 the battery separately publishes the accepted (clamped) value. A
@@ -941,7 +941,7 @@ the clamp ratio across sources, and let each inverter read its own
 =accepted_from(self.id)= to compute fair-share measured. Minor
 trade-off in trait surface.
 
-** d6. Persist only graph-affecting evals to the overrides file
+** d6. Persist only graph-affecting evals to the overrides file :design:lisp:
 
 Today =Config::eval= (=src/lisp/mod.rs=) appends *every*
 successful eval, verbatim, to the per-mg overrides file
