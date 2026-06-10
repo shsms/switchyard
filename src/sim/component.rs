@@ -93,6 +93,38 @@ pub struct Telemetry {
     pub cable_state: Option<&'static str>,
 }
 
+impl Telemetry {
+    /// Read a single metric off this snapshot. `None` when the
+    /// component doesn't publish it. The active-bounds metrics
+    /// report the *envelope extremes* — first segment's lower, last
+    /// segment's upper — unlike the chart history, which collapses a
+    /// multi-segment `VecBounds` to its first segment: an assertion
+    /// against "the upper bound" means the outermost reachable
+    /// value, not the edge of an arbitrary inner segment.
+    pub fn metric_value(&self, metric: crate::sim::history::Metric) -> Option<f32> {
+        use crate::sim::history::Metric;
+        match metric {
+            Metric::ActivePowerW => self.active_power_w,
+            Metric::ReactivePowerVar => self.reactive_power_var,
+            Metric::FrequencyHz => self.frequency_hz,
+            Metric::SocPct => self.soc_pct,
+            Metric::DcPowerW => self.dc_power_w,
+            Metric::ActivePowerLowerBoundW => self
+                .active_power_bounds
+                .as_ref()
+                .and_then(|b| b.0.first())
+                .and_then(|b| b.lower),
+            Metric::ActivePowerUpperBoundW => self
+                .active_power_bounds
+                .as_ref()
+                .and_then(|b| b.0.last())
+                .and_then(|b| b.upper),
+            Metric::ReactivePowerLowerBoundVar => self.reactive_power_bounds.map(|(l, _)| l),
+            Metric::ReactivePowerUpperBoundVar => self.reactive_power_bounds.map(|(_, u)| u),
+        }
+    }
+}
+
 /// The single trait every simulated component implements.
 ///
 /// Reading order:
@@ -339,3 +371,44 @@ impl fmt::Display for ComponentHandle {
 /// IDs (1, 2, …) on roots/main-meters don't collide; switchyard
 /// matches the convention so test fixtures stay portable.
 pub const FIRST_AUTO_ID: u64 = 1000;
+
+#[cfg(test)]
+mod tests {
+    use super::Telemetry;
+    use crate::proto::common::metrics::Bounds;
+    use crate::sim::bounds::VecBounds;
+    use crate::sim::history::Metric;
+
+    /// Bounds metrics read the envelope extremes: a two-segment
+    /// VecBounds (disjoint augmentation) reports the first segment's
+    /// lower and the LAST segment's upper, not the first's.
+    #[test]
+    fn metric_value_bounds_use_envelope_extremes() {
+        let snap = Telemetry {
+            active_power_w: Some(2500.0),
+            active_power_bounds: Some(VecBounds(vec![
+                Bounds {
+                    lower: Some(-10000.0),
+                    upper: Some(-2000.0),
+                },
+                Bounds {
+                    lower: Some(2000.0),
+                    upper: Some(10000.0),
+                },
+            ])),
+            ..Default::default()
+        };
+        assert_eq!(snap.metric_value(Metric::ActivePowerW), Some(2500.0));
+        assert_eq!(
+            snap.metric_value(Metric::ActivePowerLowerBoundW),
+            Some(-10000.0)
+        );
+        assert_eq!(
+            snap.metric_value(Metric::ActivePowerUpperBoundW),
+            Some(10000.0)
+        );
+        // Unpublished metrics read None.
+        assert_eq!(snap.metric_value(Metric::SocPct), None);
+        assert_eq!(snap.metric_value(Metric::ReactivePowerLowerBoundVar), None);
+    }
+}
