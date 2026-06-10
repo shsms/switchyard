@@ -550,7 +550,12 @@ impl MicrogridSite {
         *self.inner.main_meter_id.write() = None;
         // `clear()` drops every sink; each BufWriter flushes on drop.
         self.inner.scenario_csv.write().clear();
-        self.inner.next_id.store(FIRST_AUTO_ID, Ordering::Relaxed);
+        // Deliberately do NOT rewind `next_id`: the allocator is shared
+        // across every site in an enterprise, so a per-site reset (a lone
+        // `(reset-microgrid)`) must not rewind the global counter while
+        // other sites still hold live components at higher ids — the next
+        // auto-allocation would then collide. A full `Config::reload`
+        // resets the allocator explicitly when every site is rebuilt.
     }
 
     /// Remove a component from the registry and drop every edge that
@@ -963,6 +968,26 @@ mod tests {
         );
         w.reset();
         assert!(w.inner.histories.read().is_empty());
+    }
+
+    /// A per-site `reset()` must not rewind the enterprise-wide id
+    /// allocator shared across sites — otherwise resetting one microgrid
+    /// hands out ids that collide with components still live on another.
+    #[test]
+    fn reset_does_not_rewind_a_shared_id_allocator() {
+        let alloc = Arc::new(AtomicU64::new(FIRST_AUTO_ID));
+        let site_a = MicrogridSite::with_id_allocator(alloc.clone());
+        let site_b = MicrogridSite::with_id_allocator(alloc.clone());
+        // Site A advances the shared counter.
+        assert_eq!(site_a.next_id(), FIRST_AUTO_ID);
+        assert_eq!(site_a.next_id(), FIRST_AUTO_ID + 1);
+        // Resetting B must leave the shared counter where A left it.
+        site_b.reset();
+        assert_eq!(
+            site_a.next_id(),
+            FIRST_AUTO_ID + 2,
+            "a per-site reset rewound the shared id allocator"
+        );
     }
 
     /// Beyond histories, `reset()` also flushes the scenario journal,
