@@ -1007,6 +1007,7 @@ mod tests {
                 ts: Utc::now(),
                 kind: SetpointKind::ActivePower,
                 value: 1234.0,
+                ttl_s: Some(60),
                 outcome: SetpointOutcome::Accepted {
                     effective_value: Some(1234.0),
                 },

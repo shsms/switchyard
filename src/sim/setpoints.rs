@@ -44,6 +44,13 @@ pub struct SetpointEvent {
     /// augment-bounds `value` is unused / 0; the bounds shape itself
     /// isn't logged at this granularity for v1.
     pub value: f32,
+    /// Resolved request lifetime in seconds — how long the setpoint /
+    /// augmentation holds before expiry resets it. The *resolved*
+    /// value (request's own lifetime, or the configured default when
+    /// absent), so a replay sees what actually took effect. `None`
+    /// when the request never reached lifetime resolution (e.g.
+    /// rejected for an out-of-range lifetime).
+    pub ttl_s: Option<u64>,
     pub outcome: SetpointOutcome,
 }
 
@@ -106,6 +113,7 @@ mod tests {
             ts: t(secs),
             kind,
             value,
+            ttl_s: Some(60),
             outcome: if accepted {
                 SetpointOutcome::Accepted {
                     effective_value: Some(value),
