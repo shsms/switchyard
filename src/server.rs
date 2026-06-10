@@ -402,6 +402,16 @@ impl microgrid_server::Microgrid for MicrogridServer {
             PowerType::Reactive => SetpointKind::ReactivePower,
             PowerType::Unspecified => unreachable!("rejected above"),
         };
+        // Re-resolve the lifetime for the log entry: `do_set_power`
+        // consumes `req`, and its own resolution is interleaved with
+        // actuation. `None` when the lifetime itself is out of range —
+        // the request is then rejected before any TTL takes effect.
+        let ttl_s = resolve_lifetime(
+            req.request_lifetime,
+            self.config.metadata().default_request_lifetime,
+        )
+        .ok()
+        .map(|d| d.as_secs());
         let site = self.site.clone();
         let response = self.do_set_power(req, power_type).await;
 
@@ -419,6 +429,7 @@ impl microgrid_server::Microgrid for MicrogridServer {
                 ts: chrono::Utc::now(),
                 kind,
                 value,
+                ttl_s,
                 outcome,
             },
         );
@@ -641,6 +652,7 @@ impl microgrid_server::Microgrid for MicrogridServer {
                 ts: now,
                 kind: SetpointKind::AugmentBounds,
                 value: 0.0,
+                ttl_s: Some(lifetime.as_secs()),
                 outcome,
             },
         );
