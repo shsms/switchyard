@@ -572,16 +572,6 @@ deferred; nothing fixed this pass.
 
 ** Adversarial follow-ups to this session's commits
 
-*** TODO [#A] validate_augmentation reads effective bounds without dropping expired :bounds:
-=validate_augmentation= (=src/server.rs=) calls =effective_active_bounds()=,
-and =ComponentBounds::effective()= (=src/sim/bounds.rs=) does NOT
-=drop_expired= first (that only runs in =tick=, every ~100 ms). So within
-one tick of an old augmentation's TTL expiry, a fresh valid augmentation
-that is disjoint from the *stale* (expiring) envelope is spuriously
-rejected =InvalidArgument=. A tight augment loop (the protector, I2) is
-the exact caller that can hit it. Fix: drop expired before validating
-(make =effective_active_bounds= self-expire, or thread =now= in).
-
 *** TODO [#C] Document that health and command modes aren't fully orthogonal :docs:
 =set_health(Ok)= (=src/sim/microgrid_site.rs:903=) forces
 =command = Normal=, which clobbers an independently-set =Timeout= /
@@ -1030,6 +1020,16 @@ Open decisions before speccing:
    the graph changed regardless of origin?
 
 * Archive
+
+** DONE validate_augmentation reads effective bounds without dropping expired :bounds:
+CLOSED: [2026-06-10 Mi]
+
+Fixed in =5ff199a=: =ComponentBounds::effective_at(now)= skips
+augmentations past their =valid_until= even before =drop_expired= reaps
+them on the next tick, and =effective()= delegates with =Utc::now()=. So
+the AugmentBounds gate (via =effective_active_bounds=) no longer rejects
+a fresh augmentation disjoint from a just-expired one — the sub-tick
+window a tight augment loop (the protector, I2) hits.
 
 ** DONE Expose the assets API                                     :switchyard:rust:
 CLOSED: [2026-05-16 Sa]
