@@ -31,6 +31,12 @@ const SCENARIO_EVENT_CAPACITY: usize = 4096;
 /// seconds, UTC-aligned).
 pub(crate) const WINDOW_AVG_LENGTH_S: i64 = 15 * 60;
 
+/// Cap on retained check results. The pass/fail *counters* keep
+/// counting past this; only the per-check detail ages out — so a
+/// scenario asserting in a tight `(every …)` loop still reports
+/// accurate totals while the report payload stays bounded.
+const SCENARIO_CHECK_CAPACITY: usize = 1024;
+
 /// Cap on retained 15-minute windows. 96 covers a full UTC day —
 /// most scenarios don't run that long, and the BTreeMap drops
 /// the oldest by key so a multi-day run keeps only the most
@@ -47,6 +53,24 @@ pub struct ScenarioEvent {
     pub ts: DateTime<Utc>,
     pub kind: String,
     pub payload: String,
+}
+
+/// One `(scenario-expect …)` result. Recorded when the assertion
+/// runs — checks are instantaneous reads of current state, not
+/// watched conditions.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ScenarioCheck {
+    pub ts: DateTime<Utc>,
+    pub component_id: u64,
+    /// Canonical metric name (`Metric::as_str`).
+    pub metric: String,
+    /// Human-readable expectation, e.g. `"approx -15000 (tol 500)"`
+    /// or `"in [20, 80]"`.
+    pub expectation: String,
+    /// Observed value. `None` when the component wasn't registered
+    /// or doesn't publish the metric — recorded as a failure.
+    pub actual: Option<f32>,
+    pub passed: bool,
 }
 
 /// Battery-side energy integrals accumulated since `scenario_start`.
@@ -101,6 +125,12 @@ pub struct ScenarioJournal {
     /// `start` runs; updated at the end of each
     /// `MicrogridSite::record_history_snapshot` pass.
     prev_sample_ts: Option<DateTime<Utc>>,
+    /// Recent `(scenario-expect …)` results, oldest evicted past
+    /// SCENARIO_CHECK_CAPACITY. The counters below cover the full
+    /// run regardless of eviction.
+    checks: VecDeque<ScenarioCheck>,
+    checks_passed: u64,
+    checks_failed: u64,
 }
 
 impl ScenarioJournal {
@@ -117,6 +147,9 @@ impl ScenarioJournal {
         self.per_battery.clear();
         self.per_pv.clear();
         self.window_avgs.clear();
+        self.checks.clear();
+        self.checks_passed = 0;
+        self.checks_failed = 0;
         // Seed the integration cursor at start so the first
         // snapshot's dt covers `now → snapshot_ts`.
         self.prev_sample_ts = Some(now);
@@ -230,6 +263,33 @@ impl ScenarioJournal {
     /// 15-minute window. The report layer divides on the way out.
     pub fn window_avgs(&self) -> &BTreeMap<i64, (f64, u64)> {
         &self.window_avgs
+    }
+
+    /// Record one assertion result. Mirrors `record` (events): no
+    /// running-window gate — a check fired after `stop` is a script
+    /// bug better surfaced in the report than silently dropped.
+    pub fn record_check(&mut self, check: ScenarioCheck) {
+        if check.passed {
+            self.checks_passed += 1;
+        } else {
+            self.checks_failed += 1;
+        }
+        if self.checks.len() >= SCENARIO_CHECK_CAPACITY {
+            self.checks.pop_front();
+        }
+        self.checks.push_back(check);
+    }
+
+    pub fn checks(&self) -> impl Iterator<Item = &ScenarioCheck> {
+        self.checks.iter()
+    }
+
+    pub fn checks_passed(&self) -> u64 {
+        self.checks_passed
+    }
+
+    pub fn checks_failed(&self) -> u64 {
+        self.checks_failed
     }
 
     /// Mark the scenario as ended. Idempotent; subsequent calls
@@ -469,6 +529,48 @@ mod tests {
         j.record_sample(7, Metric::ActivePowerW, 12345.0, None, ts(1700000100));
 
         assert!(j.window_avgs().is_empty());
+    }
+
+    fn check(passed: bool, at: DateTime<Utc>) -> ScenarioCheck {
+        ScenarioCheck {
+            ts: at,
+            component_id: 200,
+            metric: "active_power_w".into(),
+            expectation: "approx 5000 (tol 100)".into(),
+            actual: Some(if passed { 5000.0 } else { 9999.0 }),
+            passed,
+        }
+    }
+
+    /// Counters track every recorded check; the detail ring evicts
+    /// past capacity without disturbing them.
+    #[test]
+    fn check_counters_survive_ring_eviction() {
+        let mut j = ScenarioJournal::default();
+        j.start("checks".into(), ts(0));
+        for i in 0..(SCENARIO_CHECK_CAPACITY + 10) {
+            j.record_check(check(i % 2 == 0, ts(i as i64)));
+        }
+        assert_eq!(j.checks().count(), SCENARIO_CHECK_CAPACITY);
+        assert_eq!(
+            j.checks_passed() + j.checks_failed(),
+            (SCENARIO_CHECK_CAPACITY + 10) as u64,
+        );
+    }
+
+    /// `start` resets both the check ring and the counters.
+    #[test]
+    fn restart_clears_checks() {
+        let mut j = ScenarioJournal::default();
+        j.start("first".into(), ts(0));
+        j.record_check(check(true, ts(1)));
+        j.record_check(check(false, ts(2)));
+        assert_eq!(j.checks_failed(), 1);
+
+        j.start("second".into(), ts(100));
+        assert_eq!(j.checks().count(), 0);
+        assert_eq!(j.checks_passed(), 0);
+        assert_eq!(j.checks_failed(), 0);
     }
 
     #[test]

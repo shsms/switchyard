@@ -16,7 +16,7 @@ use std::path::Path;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
-use crate::sim::scenario::ScenarioEvent;
+use crate::sim::scenario::{ScenarioCheck, ScenarioEvent};
 use crate::sim::scenario_csv::{CsvSink, CsvSinks};
 
 use super::MicrogridSite;
@@ -60,6 +60,12 @@ pub(crate) struct ScenarioReport {
     /// Per-15-minute UTC-aligned window average of main-meter
     /// active power. Sorted oldest-first.
     pub main_meter_window_averages: Vec<WindowAverageEntry>,
+    /// Full-run `(scenario-expect …)` totals. Count every check
+    /// even after the detail ring below starts evicting.
+    pub checks_passed: u64,
+    pub checks_failed: u64,
+    /// Recent check results, oldest first (bounded ring).
+    pub checks: Vec<ScenarioCheck>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -191,6 +197,11 @@ impl MicrogridSite {
         self.inner.scenario.write().record(kind, payload, now)
     }
 
+    /// Record one `(scenario-expect …)` result.
+    pub(crate) fn scenario_record_check(&self, check: ScenarioCheck) {
+        self.inner.scenario.write().record_check(check);
+    }
+
     /// Wall-clock seconds since the scenario started. 0 if not
     /// running. Freezes once stopped.
     pub(crate) fn scenario_elapsed_s(&self, now: DateTime<Utc>) -> f64 {
@@ -262,6 +273,9 @@ impl MicrogridSite {
                 },
             })
             .collect();
+        let checks: Vec<ScenarioCheck> = g.checks().cloned().collect();
+        let checks_passed = g.checks_passed();
+        let checks_failed = g.checks_failed();
         drop(g);
 
         // SoC stats: walk every registered battery, read its
@@ -288,6 +302,9 @@ impl MicrogridSite {
             per_pv,
             soc_stats,
             main_meter_window_averages,
+            checks_passed,
+            checks_failed,
+            checks,
         }
     }
 }

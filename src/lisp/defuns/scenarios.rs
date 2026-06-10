@@ -1,6 +1,7 @@
 //! Scenarios: `(define-scenario …)` for the multi-stage registry +
 //! the per-microgrid lifecycle defuns (`scenario-start`,
-//! `-stop`, `-event`, `-record-csv`, `-stop-csv`, `-elapsed`).
+//! `-stop`, `-event`, `-expect`, `-record-csv`, `-stop-csv`,
+//! `-elapsed`).
 //!
 //! Both surfaces share data via `MicrogridSite`'s scenario journal;
 //! keeping them in one file makes the read-write story obvious.
@@ -8,7 +9,9 @@
 use chrono::Utc;
 use tulisp::{Error, TulispContext, TulispObject};
 
+use crate::sim::history::Metric;
 use crate::sim::microgrids::SharedSiteRouter;
+use crate::sim::scenario::ScenarioCheck;
 
 /// Newtype around `TulispObject` so `Vec<RawStage>` satisfies the
 /// AsPlist field bound (which needs `TryFrom<TulispObject, Error =
@@ -113,11 +116,83 @@ pub(in crate::lisp) fn register_registry(
     );
 }
 
+tulisp::AsPlist! {
+    pub struct ScenarioExpectArgs {
+        component: i64,
+        /// Metric to read — symbol or string. Dashes normalize to
+        /// underscores, so both the canonical `Metric::as_str` names
+        /// and lisp-style spellings work; see `parse_expect_metric`
+        /// for the shorthand aliases (`soc`, `active-power`,
+        /// `active-power-bounds-lower`, …).
+        metric: crate::lisp::value::LispValue,
+        approx: Option<f64> {= None},
+        tol: Option<f64> {= None},
+        min: Option<f64> {= None},
+        max: Option<f64> {= None},
+    }
+}
+
+/// What `(scenario-expect …)` compares the observed value against.
+enum Expectation {
+    Approx { center: f64, tol: f64 },
+    Range { min: Option<f64>, max: Option<f64> },
+}
+
+impl Expectation {
+    fn passes(&self, v: f64) -> bool {
+        match self {
+            Self::Approx { center, tol } => (v - center).abs() <= *tol,
+            Self::Range { min, max } => min.is_none_or(|m| v >= m) && max.is_none_or(|m| v <= m),
+        }
+    }
+
+    /// Human-readable form recorded on the check (and shown by
+    /// `swctl scenario report` on failure).
+    fn describe(&self) -> String {
+        match self {
+            Self::Approx { center, tol } => format!("approx {center} (tol {tol})"),
+            Self::Range {
+                min: Some(l),
+                max: Some(u),
+            } => format!("in [{l}, {u}]"),
+            Self::Range { min: Some(l), .. } => format!(">= {l}"),
+            Self::Range { max: Some(u), .. } => format!("<= {u}"),
+            Self::Range { .. } => unreachable!("validated at construction"),
+        }
+    }
+}
+
+/// Resolve a lisp-side metric name. Dashes normalize to underscores
+/// first, so the canonical names (`active_power_w`, …) and their
+/// lisp spellings both parse; on top of that a few shorthands map
+/// to the obvious metric — `soc`, `frequency`, `active-power`, and
+/// the `…-bounds-lower` / `…-bounds-upper` family from the todo's
+/// motivating example.
+fn parse_expect_metric(name: &str) -> Option<Metric> {
+    let n = name.replace('-', "_");
+    if let Ok(m) = n.parse::<Metric>() {
+        return Some(m);
+    }
+    Some(match n.as_str() {
+        "active_power" => Metric::ActivePowerW,
+        "reactive_power" => Metric::ReactivePowerVar,
+        "dc_power" => Metric::DcPowerW,
+        "soc" => Metric::SocPct,
+        "frequency" => Metric::FrequencyHz,
+        "active_power_bounds_lower" => Metric::ActivePowerLowerBoundW,
+        "active_power_bounds_upper" => Metric::ActivePowerUpperBoundW,
+        "reactive_power_bounds_lower" => Metric::ReactivePowerLowerBoundVar,
+        "reactive_power_bounds_upper" => Metric::ReactivePowerUpperBoundVar,
+        _ => return None,
+    })
+}
+
 /// Scenario lifecycle defuns. Scripts call `(scenario-start NAME)`
 /// to mark the beginning, drop `(scenario-event KIND PAYLOAD)` markers
-/// at interesting moments, and `(scenario-stop)` when finished. The
-/// underlying journal lives on `MicrogridSite` and is read by the
-/// `/api/scenario` and `/api/scenario/events` endpoints.
+/// at interesting moments, assert state via `(scenario-expect …)`,
+/// and `(scenario-stop)` when finished. The underlying journal lives
+/// on `MicrogridSite` and is read by the `/api/scenario` and
+/// `/api/scenario/events` endpoints.
 pub(super) fn register_lifecycle(ctx: &mut TulispContext, router: SharedSiteRouter) {
     let r = router.clone();
     ctx.defun(
@@ -153,6 +228,74 @@ pub(super) fn register_lifecycle(ctx: &mut TulispContext, router: SharedSiteRout
             let payload_str = payload.to_string();
             let id = w.scenario_record(kind_str, payload_str, Utc::now());
             Ok(id as i64)
+        },
+    );
+
+    // `(scenario-expect :component ID :metric M :approx V :tol T)` /
+    // `(… :min L :max U)` — read the component's current value of M,
+    // compare, and record a pass/fail check on the scenario report.
+    // Returns t/nil so scripts can branch. A missing component or
+    // unpublished metric records a *failure* (it's a runtime
+    // condition a test should catch); an unknown metric name or a
+    // malformed comparator is a script bug and errors instead.
+    let r = router.clone();
+    ctx.defun(
+        "scenario-expect",
+        move |_ctx: &mut TulispContext,
+              args: tulisp::Plist<ScenarioExpectArgs>|
+              -> Result<bool, Error> {
+            let a = args.into_inner();
+            let metric_obj = a.metric.into_inner();
+            let metric_name = if metric_obj.symbolp() {
+                metric_obj.to_string()
+            } else {
+                String::try_from(metric_obj)?
+            };
+            let metric = parse_expect_metric(&metric_name).ok_or_else(|| {
+                Error::os_error(format!("scenario-expect: unknown metric {metric_name:?}"))
+            })?;
+            let expectation = match (a.approx, a.min, a.max) {
+                (Some(center), None, None) => Expectation::Approx {
+                    center,
+                    // Exact float equality is almost never what a
+                    // scenario means; a small absolute default keeps
+                    // a tol-less :approx from being a footgun.
+                    tol: a.tol.unwrap_or(1e-3),
+                },
+                (None, min, max) if min.is_some() || max.is_some() => {
+                    if a.tol.is_some() {
+                        return Err(Error::os_error(
+                            "scenario-expect: :tol only applies to :approx".to_string(),
+                        ));
+                    }
+                    Expectation::Range { min, max }
+                }
+                _ => {
+                    return Err(Error::os_error(
+                        "scenario-expect: pass either :approx (with optional :tol) \
+                         or :min / :max"
+                            .to_string(),
+                    ));
+                }
+            };
+            let id = u64::try_from(a.component).map_err(|_| {
+                Error::os_error(format!(
+                    "scenario-expect: :component must be non-negative, got {}",
+                    a.component
+                ))
+            })?;
+            let w = r.site();
+            let actual = w.get(id).and_then(|c| c.telemetry(&w).metric_value(metric));
+            let passed = actual.is_some_and(|v| expectation.passes(v as f64));
+            w.scenario_record_check(ScenarioCheck {
+                ts: Utc::now(),
+                component_id: id,
+                metric: metric.as_str().into(),
+                expectation: expectation.describe(),
+                actual,
+                passed,
+            });
+            Ok(passed)
         },
     );
 
@@ -320,6 +463,93 @@ mod tests {
             "bounds row: {}",
             rows[1]
         );
+    }
+
+    /// `(scenario-expect …)` reads the component's current value,
+    /// returns t/nil, and records pass/fail (with the failure
+    /// detail) on the scenario report.
+    #[test]
+    fn scenario_expect_records_checks_in_report() {
+        let (cfg, _dir) = config_with(
+            "(set-microgrid-id 9)
+             (%make-battery :id 2
+                            :capacity 100000.0
+                            :rated-lower -10000.0
+                            :rated-upper 10000.0)",
+        );
+        cfg.eval("(scenario-start \"checks\")").unwrap();
+
+        // Bounds metric, lisp-style spelling from the todo example.
+        let v = cfg
+            .eval(
+                "(scenario-expect :component 2
+                                  :metric 'active-power-bounds-upper
+                                  :approx 10000.0 :tol 1.0)",
+            )
+            .unwrap();
+        assert_eq!(v, "t");
+        // Range form on a shorthand metric.
+        assert_eq!(
+            cfg.eval("(scenario-expect :component 2 :metric 'soc :min 0.0 :max 100.0)")
+                .unwrap(),
+            "t"
+        );
+        // A failing range: SoC can't be >= 200 %.
+        assert_eq!(
+            cfg.eval("(scenario-expect :component 2 :metric 'soc :min 200.0)")
+                .unwrap(),
+            "nil"
+        );
+        // Unknown component records a failure (actual unavailable),
+        // not an error — the asserted-on component vanishing IS the
+        // kind of regression a scenario test exists to catch.
+        assert_eq!(
+            cfg.eval("(scenario-expect :component 99 :metric 'soc :min 0.0)")
+                .unwrap(),
+            "nil"
+        );
+
+        let report = cfg.site().scenario_report(chrono::Utc::now());
+        assert_eq!(report.checks_passed, 2);
+        assert_eq!(report.checks_failed, 2);
+        assert_eq!(report.checks.len(), 4);
+        let soc_fail = &report.checks[2];
+        assert_eq!(soc_fail.component_id, 2);
+        assert_eq!(soc_fail.metric, "soc_pct");
+        assert_eq!(soc_fail.expectation, ">= 200");
+        assert!(soc_fail.actual.is_some());
+        assert!(!soc_fail.passed);
+        let missing = &report.checks[3];
+        assert_eq!(missing.actual, None);
+        assert!(!missing.passed);
+
+        // A scenario restart clears the slate.
+        cfg.eval("(scenario-start \"fresh\")").unwrap();
+        let report = cfg.site().scenario_report(chrono::Utc::now());
+        assert_eq!(report.checks_passed + report.checks_failed, 0);
+    }
+
+    /// Script bugs error instead of recording a check: unknown
+    /// metric names, a comparator-less call, mixing :approx with
+    /// :min/:max, and :tol without :approx.
+    #[test]
+    fn scenario_expect_rejects_malformed_calls() {
+        let (cfg, _dir) = config_with(
+            "(set-microgrid-id 9)
+             (%make-battery :id 2 :capacity 1000.0)",
+        );
+        for bad in [
+            "(scenario-expect :component 2 :metric 'warp-factor :min 1.0)",
+            "(scenario-expect :component 2 :metric 'soc)",
+            "(scenario-expect :component 2 :metric 'soc :approx 5.0 :min 1.0)",
+            "(scenario-expect :component 2 :metric 'soc :min 1.0 :tol 0.5)",
+            "(scenario-expect :component -2 :metric 'soc :min 1.0)",
+        ] {
+            assert!(cfg.eval(bad).is_err(), "expected an error from {bad}");
+        }
+        // Nothing recorded.
+        let report = cfg.site().scenario_report(chrono::Utc::now());
+        assert_eq!(report.checks_passed + report.checks_failed, 0);
     }
 
     /// sim/scenarios.lisp loads cleanly and the random-* helpers
