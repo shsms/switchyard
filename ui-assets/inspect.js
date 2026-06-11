@@ -205,9 +205,9 @@ function renderInspect(d, parentIds, childIds) {
     <h3>Runtime</h3>
     <dl>
       <dt>health</dt><dd>${selectField("health", d.health, ["ok", "error", "standby"])}</dd>
-      <dt>telemetry</dt><dd>${selectField("telemetry-mode", d.telemetry_mode, ["normal", "silent", "closed"])}</dd>
+      <dt>telemetry</dt><dd>${selectField("telemetry-mode", d.telemetry_mode, ["normal", "silent", "closed", "error-empty", "not-found"])}</dd>
       ${ACCEPTS_SETPOINTS.has(d.category)
-        ? `<dt>commands</dt><dd>${selectField("command-mode", d.command_mode, ["normal", "timeout", "error"])}</dd>`
+        ? `<dt>commands</dt><dd>${selectField("command-mode", d.command_mode, ["normal", "timeout", "error", "over-bound"])}</dd>`
         : ""}
     </dl>
     ${(() => {
