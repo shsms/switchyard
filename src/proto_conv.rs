@@ -62,9 +62,12 @@ pub fn make_component_proto(c: &dyn SimulatedComponent) -> ElectricalComponent {
             },
         })),
         ElectricalComponentCategory::Battery => Some(Kind::Battery(Battery {
+            // Alias set must stay in sync with graph_adapter's
+            // `lift_category`, or the same component classifies
+            // differently in gRPC listings vs. graph validation.
             r#type: match c.subtype() {
-                Some("li-ion") => BatteryType::LiIon as i32,
-                Some("naion") => BatteryType::NaIon as i32,
+                Some("li-ion") | Some("liion") => BatteryType::LiIon as i32,
+                Some("na-ion") | Some("naion") => BatteryType::NaIon as i32,
                 _ => BatteryType::Unspecified as i32,
             },
         })),
