@@ -631,16 +631,37 @@ fidelity gap.
 
 ** Structural / concurrency (new)
 
-*** TODO [#A] reload() may not re-spawn physics for rebuilt sites  [confirm first] :concurrency:lisp:
+*** TODO [#A] reload() orphans per-mg runtimes (physics, gRPC, loopback) — CONFIRMED :concurrency:lisp:
 =Config::reload= (=src/lisp/mod.rs:979=) clears the registry and rebuilds
 every site via =make-microgrid= (fresh =MicrogridSite=, =:1395=) but does
 not call =spawn_physics= / =spawn_history_sampler=. Boot spawns them by
 iterating the registry (=switchyard.rs:97-104=); the only other spawn path
 is the =/api/microgrids/create= closure. =watch()→reload()= hits neither,
 so reloaded microgrids appear to get no physics loop (the boot-spawned
-loops keep ticking now-orphaned old sites). HIGH if real — but hot-reload
-is heavily used, so confirm the intended lifecycle before acting (maybe
-the orphaned-old-site keeps serving and only the config edit is lost).
+loops keep ticking now-orphaned old sites).
+
+Confirmed on the 2026-06-11 review pass. =events_ws= only spawns event
+*forwarders* on the =microgrid_registered= channel, never runtimes. So
+after a hot reload: the new sites (the ones the registry, UI, lisp, and
+scenario layers act on) never tick — ramps and SoC freeze; the old sites
+keep ticking forever (=spawn_physics= has no exit path,
+=microgrid_site/mod.rs:695=) — one leaked physics + sampler task pair per
+microgrid per reload; and the per-port =MicrogridServer=s + loopback
+clients stay pinned to the orphaned pre-reload sites, so gRPC clients and
+the Dashboard tiles serve the *old* topology while =/api/topology= shows
+the new one. =AssetsServer= is immune — it resolves the site via the
+registry per request; that asymmetry with the pinned-site
+=MicrogridServer= is the heart of the bug. =tests/hot_reload.rs= passes
+because it only asserts via =/api/topology= (registry-resolved) and never
+checks post-reload physics or gRPC.
+
+Fix direction (smallest first): on =make-microgrid= for an id that
+already exists in the registry, reuse the existing entry's site
+(reset-in-place) instead of minting a fresh one — old runtimes, gRPC
+servers, and loopbacks then keep pointing at the live site and reload
+needs no new spawns. The alternative (generation/cancel tokens on sites
+plus a registry-listening spawner that owns all runtime lifecycles) is
+cleaner long-term but much larger.
 
 *** TODO [#B] dispatch_server update ignores a concurrent-delete race :dispatch:concurrency:
 =update_microgrid_dispatch= (=src/dispatch_server.rs=) is read-modify-write
@@ -880,6 +901,96 @@ can paint A's rows under B (last fetch wins); the row handlers then act on
 
 Fix: stamp each render with a generation / AbortController and drop a
 response whose mgId no longer matches.
+
+* Review backlog — 2026-06-11
+
+Single-pass exhaustive read: full line-by-line over =src/sim/=, the three
+gRPC servers, =proto_conv=, the lisp layer's load-bearing files, the
+switchyard binary, the UI server skeleton, and (this time) the complete
+=ui-assets/= ES-module set; spot-checks over the remaining handlers,
+swctl, and tests. Cross-checked against every prior backlog — most
+re-found issues were already filed; the reload =[#A]= above is now
+CONFIRMED with the full mechanism written into its entry. New items
+below. The three 2026-06-10 =[#A]= unimported-function UI bugs were
+re-verified as still present on this build.
+
+** Docs / behavior mismatches
+
+*** TODO [#B] CLAUDE.md + measured_w doc contradict the commanded-AC behavior :docs:
+Two docs state the inverter publishes what it *delivered*; the code
+publishes what it *commanded*. CLAUDE.md's architectural rule says "the
+inverter publishes the measured aggregate it actually delivered", and the
+=measured_w= field doc (=battery_inverter.rs:62-66=) says it "differs
+from =ramp.actual()= whenever a battery's BMS clipped the share we
+pushed" — but =tick()= sets =measured_w = commanded_p= with an inline
+comment justifying exactly that. The behavior itself is a known design
+point (d5); the docs are what's wrong. Anyone trusting CLAUDE.md
+mis-models the meter aggregation path.
+
+Fix: reword both docs to match the code and point at d5.
+
+*** TODO [#C] manual_override never auto-resumes, contradicting jump()'s doc :lisp:docs:
+=scenarios::jump= (=src/sim/scenarios.rs:258=) documents that auto-advance
+stays away "until the operator either restarts it or the wallclock
+catches up to that stage" — but =auto_advance_tick= skips any
+=manual_override= entry unconditionally and nothing clears the flag
+except =start=. Either implement the wallclock-catch-up resume (clear the
+flag when =wallclock_stage == current_stage=) or fix the comment.
+
+** Hardening / consistency
+
+*** TODO [#B] Duplicate component :id silently double-registers :lisp:hardening:
+=register_arc= (=microgrid_site/mod.rs:401=) pushes into the components
+vec and overwrites =by_id=; an explicit =:id= colliding with an existing
+component yields two ticking components of which only one is addressable
+(and one double-counted by parent meters). Nothing validates in
+=id_or_next= / =register=; the graph validator might flag it but is
+log-only. =connect()= similarly accepts edges to nonexistent ids and
+duplicate edges (a duplicate edge double-counts the child in meter
+aggregation). Distinct from the filed negative-=:id= cast item.
+
+Fix: make =register_arc= (or the =%make-*= path) reject an existing id
+with a lisp error; optionally have =connect= validate endpoints + dedupe.
+
+*** TODO [#C] scenarios::start/jump abort the per-mg fan-out on the first :on error :lisp:
+=start= and =jump= propagate a lambda error with =?= from inside the
+per-microgrid loop, so an =:on= failure on the first microgrid leaves
+later microgrids without the stage's effects while the runtime already
+says the scenario started/jumped. =auto_advance_tick= gets this right
+(logs per-mg and continues); mirror that.
+
+*** TODO [#C] proto_conv battery subtype aliases diverge from graph_adapter :telemetry:
+=make_component_proto= matches ="li-ion"= / ="naion"= while
+=graph_adapter::lift_category= matches ="li-ion"|"liion"= and
+="na-ion"|"naion"=. A ="liion"= or ="na-ion"= battery classifies
+differently in gRPC listings vs. graph validation. Moot today (Battery
+has no subtype plist arg) but a trap for whoever adds it — unify the
+alias sets in one helper.
+
+*** TODO [#C] Inspector telemetry-mode dropdown is missing two server modes :ui:
+=inspect.js= offers =normal / silent / closed= but the server also
+supports =error-empty= and =not-found= (both reachable via
+=(set-component-telemetry-mode)=). Add the two options so the fault modes
+are drivable from the inspector like the others.
+
+** Low / minor (new)
+
+*** TODO [#C] spawn_physics swaps intervals on cadence change, firing one immediate tick :sim:
+=microgrid_site/mod.rs:711= replaces the =tokio::interval= when
+=physics_tick= changes; a fresh interval's first tick fires immediately,
+so a cadence change produces one extra tick (dt stays correct, so this is
+cosmetic). =interval_at(now + target, target)= avoids it.
+
+*** TODO [#C] sort_dispatches sorts then reverses — unstable tie order :dispatch:
+=dispatch_server.rs:457= uses a stable sort then =reverse()= for the
+default descending order, which inverts tie order for equal timestamps.
+Sort by =Reverse(key)= (or compare descending) instead.
+
+*** TODO [#C] dashboard battery/PV rows rebuild the whole grid per WS sample :ui:perf:
+=dashboard.js= =applySample= calls =render()= (full innerHTML rebuild of
+the section) on every matching 1 Hz sample — several rebuilds/sec/section
+on a busy microgrid. Fine at demo scale; batch per animation frame if row
+counts grow.
 
 * Open design questions
 
