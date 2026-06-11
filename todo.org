@@ -696,11 +696,13 @@ operate on =router.site()= (the current-microgrid pointer) while the HTTP
 journals only the current mg and leaves others' journals open; per-mg
 reports diverge.
 
-*** TODO [#B] id_or_next casts a negative :id to a giant u64           :lisp:
+*** DONE id_or_next casts a negative :id to a giant u64           :lisp:
 =id_or_next= (=src/lisp/make.rs:560=) does =explicit.map(|x| x as u64)=
 with no range check, so =:id -1= becomes =u64::MAX= — registers, never
 matches, leaks the map slot. =make-microgrid= guards =v > 0=; the
 per-component path doesn't. Reject =x <= 0=.
+
+Fixed 2026-06-11 alongside the duplicate-:id rejection (same function).
 
 *** TODO [#B] switchyard main: fire-and-forget UI/refresh, sequential join :hardening:
 =src/bin/switchyard.rs= awaits the gRPC server tasks sequentially and
@@ -946,7 +948,12 @@ flag when =wallclock_stage == current_stage=) or fix the comment.
 
 ** Hardening / consistency
 
-*** TODO [#B] Duplicate component :id silently double-registers :lisp:hardening:
+*** DONE Duplicate component :id silently double-registers :lisp:hardening:
+Fixed 2026-06-11: =id_or_next= now rejects a colliding (or non-positive)
+explicit =:id= with a lisp error before any registration, and the auto
+path skips allocator values a pinned =:id= already claimed. =connect=
+endpoint validation + edge dedupe remain open — tracked by the
+connect sentence below if it starts to matter.
 =register_arc= (=microgrid_site/mod.rs:401=) pushes into the components
 vec and overwrites =by_id=; an explicit =:id= colliding with an existing
 component yields two ticking components of which only one is addressable
