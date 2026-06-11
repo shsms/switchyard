@@ -794,7 +794,8 @@ confirmed new (below). First full pass over the post-refactor
 split is where the three High items come from: it dropped imports, so
 several UI flows are dead on the current build.
 
-** TODO [#A] editor.js calls readSelectedMg without importing it — canvas editing is dead :ui:
+** DONE editor.js calls readSelectedMg without importing it — canvas editing is dead :ui:
+Fixed 2026-06-11: =import { readSelectedMg }= added to editor.js's routing.js import.
 =editor.js= uses =readSelectedMg()= in =undoMgr.record/undo/redo= (lines
 80/94/118) but imports only =notify=, =showComponent=, =mgPath=,
 =topology=; =readSelectedMg= is exported from =routing.js=. =record()= is
@@ -807,7 +808,8 @@ console; Ctrl-Z/Y throw too.
 
 Fix: =import { readSelectedMg } from "./routing.js"=.
 
-** TODO [#A] dialogs.js Save calls evalQuoted without importing it — Defaults editor is dead :ui:
+** DONE dialogs.js Save calls evalQuoted without importing it — Defaults editor is dead :ui:
+Fixed 2026-06-11: =evalQuoted= added to dialogs.js's inspect.js import.
 =renderDefaults='s Save handler calls =await evalQuoted(expr)=
 (=dialogs.js:382=), but =dialogs.js= imports only =clearSide= /
 =startScenarioReportLoop= from =inspect.js=, not =evalQuoted= (also
@@ -817,7 +819,8 @@ console rejection.
 
 Fix: add =evalQuoted= to the =inspect.js= import.
 
-** TODO [#A] panels.js microgrids panel uses readSelectedMg / renderReplMgChip unimported — breaks on load :ui:
+** DONE panels.js microgrids panel uses readSelectedMg / renderReplMgChip unimported — breaks on load :ui:
+Fixed 2026-06-11: both imported from routing.js; =renderReplMgChip= is now exported there.
 =microgridsPanel.renderBreadcrumb()= calls =readSelectedMg()=
 (=panels.js:61=) and =refresh()= calls =renderReplMgChip()= (=:84=), but
 =panels.js= imports neither. =readSelectedMg= is exported from
