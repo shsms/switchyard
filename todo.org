@@ -959,7 +959,10 @@ aggregation). Distinct from the filed negative-=:id= cast item.
 Fix: make =register_arc= (or the =%make-*= path) reject an existing id
 with a lisp error; optionally have =connect= validate endpoints + dedupe.
 
-*** TODO [#C] scenarios::start/jump abort the per-mg fan-out on the first :on error :lisp:
+*** DONE scenarios::start/jump abort the per-mg fan-out on the first :on error :lisp:
+Fixed 2026-06-11: both now fan out to every microgrid and return the
+collected per-mg errors; covered by
+=start_fans_out_past_an_erroring_on_lambda=.
 =start= and =jump= propagate a lambda error with =?= from inside the
 per-microgrid loop, so an =:on= failure on the first microgrid leaves
 later microgrids without the stage's effects while the runtime already
