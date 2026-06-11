@@ -53,13 +53,26 @@ scenario (or until the timer is cancelled by `reset-state`)."
   (setq random-outage--kind         (or (plist-get opts :kind)         'error))
   (random-outage--schedule))
 
+(defun random-outage--track (timer)
+  "Track TIMER on `active-timers', dropping this chain's previous
+(already-fired) handle first — without the prune a multi-day run
+accumulates thousands of dead one-shot handles that only
+`reset-state' ever cleared. Only one outage chain runs per process
+(see above), so a single replacement slot suffices."
+  (when (and (boundp 'random-outage--timer) random-outage--timer)
+    (let (kept)
+      (dolist (tm active-timers)
+        (unless (eq tm random-outage--timer)
+          (setq kept (cons tm kept))))
+      (setq active-timers kept)))
+  (setq random-outage--timer timer)
+  (setq active-timers (cons timer active-timers)))
+
 (defun random-outage--schedule ()
   "Schedule the next outage after a uniform-random gap."
   (let ((gap (random-uniform random-outage--min-every
                              random-outage--max-every)))
-    (setq active-timers
-          (cons (run-with-timer gap nil 'random-outage--fire)
-                active-timers))))
+    (random-outage--track (run-with-timer gap nil 'random-outage--fire))))
 
 (defun random-outage--fire ()
   "Pick a victim, knock out for a uniform-random duration, then
@@ -72,9 +85,7 @@ schedule the restore callback."
       (set-component-health victim random-outage--kind)
       (scenario-event 'outage
                       (format "%d down for %.0f s" victim dur))
-      (setq active-timers
-            (cons (run-with-timer dur nil 'random-outage--restore)
-                  active-timers)))))
+      (random-outage--track (run-with-timer dur nil 'random-outage--restore)))))
 
 (defun random-outage--restore ()
   "Revert the victim's health and reschedule the next outage."

@@ -583,6 +583,33 @@ mod tests {
         assert_eq!(cfg.eval("(random-pick '())").unwrap(), "nil");
     }
 
+    /// The outage chain keeps exactly one live handle on
+    /// `active-timers` — each re-schedule drops the chain's previous
+    /// (fired) handle instead of consing forever.
+    #[test]
+    fn random_outage_track_keeps_one_handle_per_chain() {
+        let (cfg, dir) = config_with("(set-microgrid-id 9)");
+        let src = std::path::Path::new("sim/scenarios.lisp");
+        let dst_dir = dir.join("sim");
+        std::fs::create_dir_all(&dst_dir).unwrap();
+        std::fs::copy(src, dst_dir.join("scenarios.lisp")).unwrap();
+        cfg.eval("(load \"sim/scenarios.lisp\")").unwrap();
+        // common.lisp normally seeds this; the fixture skips it.
+        cfg.eval("(setq active-timers nil)").unwrap();
+        // Simulate three re-schedules; each replaces the prior slot.
+        for _ in 0..3 {
+            cfg.eval("(random-outage--track (run-with-timer 9999 nil (lambda () nil)))")
+                .unwrap();
+        }
+        assert_eq!(cfg.eval("(length active-timers)").unwrap(), "1");
+        // An unrelated tracked timer survives the chain's pruning.
+        cfg.eval("(setq active-timers (cons (run-with-timer 9999 nil (lambda () nil)) active-timers))")
+            .unwrap();
+        cfg.eval("(random-outage--track (run-with-timer 9999 nil (lambda () nil)))")
+            .unwrap();
+        assert_eq!(cfg.eval("(length active-timers)").unwrap(), "2");
+    }
+
     /// `(scenario-start)` opens a scenario, `(scenario-event)`
     /// appends to the journal, `(scenario-elapsed)` returns wall-
     /// clock seconds since start, `(scenario-stop)` freezes it.
