@@ -127,22 +127,12 @@ pub fn new_microgrid_loopbacks() -> MicrogridLoopbacks {
     Arc::new(RwLock::new(std::collections::BTreeMap::new()))
 }
 
-/// Callback the create-microgrid HTTP endpoint invokes once the
-/// registry insertion is complete: spawn the physics tick +
-/// history sampler + Microgrid gRPC server + loopback client for
-/// the freshly-added microgrid. Concrete implementations live in
-/// `src/bin/switchyard.rs` (production boot) and the integration
-/// tests (a no-op closure when the test fixture doesn't drive
-/// runtime microgrid creation).
+/// Callback the binary's registered-microgrid listener invokes for
+/// each microgrid that lands in the registry after boot: spawn the
+/// physics tick + history sampler + Microgrid gRPC server + loopback
+/// client. The concrete implementation lives in
+/// `src/bin/switchyard.rs`; test fixtures run no listener, so
+/// runtime-created entries simply get no runtime there.
 ///
-/// Args: `(id, name, grpc_port, site)`. Implementations decide
-/// how to react — e.g. test fixtures may want to skip the gRPC
-/// listener spawn.
+/// Args: `(id, name, grpc_port, site)`.
 pub type MicrogridSpawner = Arc<dyn Fn(u64, &str, u16, crate::sim::MicrogridSite) + Send + Sync>;
-
-/// No-op spawner. Used in integration-test fixtures + the
-/// snapshot-only tests that don't exercise the runtime create
-/// path.
-pub fn noop_microgrid_spawner() -> MicrogridSpawner {
-    Arc::new(|_id, _name, _port, _site| {})
-}

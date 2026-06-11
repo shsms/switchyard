@@ -100,14 +100,7 @@ impl TestServer {
         let loopbacks = ui::new_microgrid_loopbacks();
         loopbacks.write().insert(0, microgrid.clone());
         handles.push(tokio::spawn(async move {
-            let _ = ui::serve_with_listener(
-                ui_listener,
-                ui_config,
-                microgrid,
-                loopbacks,
-                ui::noop_microgrid_spawner(),
-            )
-            .await;
+            let _ = ui::serve_with_listener(ui_listener, ui_config, microgrid, loopbacks).await;
         }));
 
         // Single-microgrid integration test: pin the gRPC frontend

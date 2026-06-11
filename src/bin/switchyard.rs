@@ -217,7 +217,7 @@ async fn main() {
     }
 
     tokio::spawn(async move {
-        if let Err(e) = ui::serve(ui_addr, ui_config, microgrid, loopbacks, spawner).await {
+        if let Err(e) = ui::serve(ui_addr, ui_config, microgrid, loopbacks).await {
             log::error!("UI server exited: {e}");
         }
     });
