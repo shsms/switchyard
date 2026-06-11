@@ -127,24 +127,20 @@ pub(in crate::ui) async fn overrides_text_for_mg(
             format!("microgrid {mg_id} not registered"),
         ));
     }
-    tokio::task::spawn_blocking(move || {
-        crate::sim::microgrids::with_microgrid(&config.current_microgrid_handle(), mg_id, || {
-            config.overrides_text()
+    tokio::task::spawn_blocking(move || config.scoped(mg_id, |cfg, _ctx| cfg.overrides_text()))
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("task panicked: {e}"),
+            )
+        })?
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("read failed: {e}"),
+            )
         })
-    })
-    .await
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("task panicked: {e}"),
-        )
-    })?
-    .map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("read failed: {e}"),
-        )
-    })
 }
 
 /// Overwrite a microgrid's overrides file with the body and reload.
@@ -162,8 +158,8 @@ pub(in crate::ui) async fn overrides_text_replace_for_mg(
         ));
     }
     tokio::task::spawn_blocking(move || {
-        crate::sim::microgrids::with_microgrid(&config.current_microgrid_handle(), mg_id, || {
-            config.replace_overrides_text(&body)
+        config.scoped(mg_id, |cfg, ctx| {
+            cfg.replace_overrides_text_locked(ctx, &body)
         })
     })
     .await

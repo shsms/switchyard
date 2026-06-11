@@ -184,14 +184,31 @@ pub fn new_current_microgrid() -> CurrentMicrogrid {
 }
 
 /// Run `f` with `current_microgrid` temporarily set to `id`, then
-/// restore the prior value. Single-threaded usage is assumed (the
-/// interpreter ctx serialises eval anyway); `RwLock` is the
-/// cheapest read-mostly primitive that fits.
+/// restore the prior value — even when `f` panics (a Drop guard does
+/// the restore, so an unwinding eval can't leave the pointer stuck
+/// on a temporary scope).
+///
+/// The pointer is ambient global state that every scoped defun (and
+/// `Config::overrides_path`) reads at invocation time, so the flip
+/// is only race-free while no other interpreter work can run:
+/// callers MUST hold the interpreter lock across this call. The
+/// sanctioned entry points — `Config::scoped` / `eval_in_mg` and the
+/// scenario layer's `funcall_in_mg` — all lock first; `:topology`
+/// funcalls inside `make-microgrid` run under the lock the
+/// surrounding eval already holds.
 pub fn with_microgrid<R>(current: &CurrentMicrogrid, id: u64, f: impl FnOnce() -> R) -> R {
+    struct Restore<'a> {
+        current: &'a CurrentMicrogrid,
+        prior: Option<u64>,
+    }
+    impl Drop for Restore<'_> {
+        fn drop(&mut self) {
+            *self.current.write() = self.prior;
+        }
+    }
     let prior = current.write().replace(id);
-    let out = f();
-    *current.write() = prior;
-    out
+    let _restore = Restore { current, prior };
+    f()
 }
 
 /// Smallest microgrid id not currently registered, starting at

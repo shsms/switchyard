@@ -47,12 +47,10 @@ pub(in crate::ui) async fn eval_for_mg(
             }),
         );
     }
-    let result = tokio::task::spawn_blocking(move || {
-        crate::sim::microgrids::with_microgrid(&config.current_microgrid_handle(), mg_id, || {
-            config.eval(&body)
-        })
-    })
-    .await;
+    // eval_in_mg holds the interpreter lock across scope-set + eval +
+    // overrides append + version bump, so two concurrent per-mg evals
+    // can't cross microgrids.
+    let result = tokio::task::spawn_blocking(move || config.eval_in_mg(mg_id, &body)).await;
     eval_response(result)
 }
 

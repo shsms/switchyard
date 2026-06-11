@@ -342,6 +342,15 @@ impl Config {
     /// left in its post-reset (empty) state in that case so the
     /// next reload starts from a known baseline.
     pub fn reload(&self) -> Result<(), String> {
+        let mut ctx = self.ctx.borrow_mut();
+        self.reload_locked(&mut ctx)
+    }
+
+    /// `reload` body against an already-held interpreter guard — for
+    /// callers (e.g. a scoped overrides-file replace) that must hold
+    /// the lock across surrounding work; re-borrowing inside would
+    /// deadlock.
+    pub(super) fn reload_locked(&self, ctx: &mut TulispContext) -> Result<(), String> {
         use std::sync::atomic::Ordering;
         let start = std::time::Instant::now();
         self.site.reset();
@@ -364,13 +373,10 @@ impl Config {
         for entry in self.microgrids.lock().values() {
             entry.site.reset();
         }
-        {
-            let mut ctx = self.ctx.borrow_mut();
-            if let Err(e) = ctx.eval_file(&self.filename) {
-                let formatted = e.format(&ctx);
-                log::error!("Tulisp error:\n{formatted}");
-                return Err(formatted);
-            }
+        if let Err(e) = ctx.eval_file(&self.filename) {
+            let formatted = e.format(ctx);
+            log::error!("Tulisp error:\n{formatted}");
+            return Err(formatted);
         }
         // Belt-and-suspenders: with the keep-registry semantics above
         // this can only fire if the registry was empty before the
