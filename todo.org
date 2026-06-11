@@ -919,7 +919,9 @@ re-verified as still present on this build.
 
 ** Docs / behavior mismatches
 
-*** TODO [#B] CLAUDE.md + measured_w doc contradict the commanded-AC behavior :docs:
+*** DONE CLAUDE.md + measured_w doc contradict the commanded-AC behavior :docs:
+Fixed 2026-06-11: both docs now state the commanded-AC publishing rule
+and point at d5.
 Two docs state the inverter publishes what it *delivered*; the code
 publishes what it *commanded*. CLAUDE.md's architectural rule says "the
 inverter publishes the measured aggregate it actually delivered", and the

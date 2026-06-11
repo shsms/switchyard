@@ -59,10 +59,13 @@ pub struct BatteryInverter {
     /// All reactive-side state — capability envelope, command-delay,
     /// slew-rate ramp, last published Q. See [`ReactivePath`].
     reactive: ReactivePath,
-    /// What the children actually accepted last tick — the AC-side
-    /// quantity a real inverter would publish on its telemetry bus.
-    /// Differs from `ramp.actual()` whenever a battery's BMS clipped
-    /// the share we pushed.
+    /// The AC-side value telemetry publishes. Set each tick to the
+    /// power we *commanded* the healthy children to take — zeroed when
+    /// the inverter is tripped or no healthy child accepted the push —
+    /// NOT the sum the batteries actually accepted: a clipped battery's
+    /// own telemetry exposes the accepted value, so a client wanting to
+    /// see saturation reads both streams (todo.org d5 tracks per-source
+    /// attribution).
     measured_w: Mutex<f32>,
 }
 
