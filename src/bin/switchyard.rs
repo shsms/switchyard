@@ -274,9 +274,13 @@ async fn main() {
         .unwrap_or_else(|e| panic!("invalid dispatch socket addr {dispatch_addr_str:?}: {e}"));
     log::info!("MicrogridDispatch gRPC listening on {dispatch_addr}");
     let dispatch_store = config.dispatches();
+    let dispatch_registry = config.microgrids();
     tasks.push(tokio::spawn(async move {
         if let Err(e) = Server::builder()
-            .add_service(DispatchGrpcServer::new(DispatchServer::new(dispatch_store)))
+            .add_service(DispatchGrpcServer::new(DispatchServer::new(
+                dispatch_store,
+                dispatch_registry,
+            )))
             .serve(dispatch_addr)
             .await
         {
