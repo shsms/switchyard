@@ -123,7 +123,12 @@ impl SimulatedComponent for BatteryInverter {
         // sink, which holds its setpoint and resumes the instant a child
         // returns): a tripped inverter clears its setpoint and stays at
         // zero until it both recovers and is re-dispatched, because a real
-        // inverter stays off until it is reset.
+        // inverter stays off until it is reset. Standby deliberately gets
+        // the SAME treatment — a Standby→Ok transition does NOT resume
+        // the prior setpoint; the controller re-dispatches, exactly like
+        // an Error recovery. If a "hot standby" that resumes on wake ever
+        // matters, it needs its own mode rather than a Standby special
+        // case here.
         if site.runtime_of(self.id).health != Health::Ok {
             self.delay.reset();
             self.ramp.snap_to(0.0);

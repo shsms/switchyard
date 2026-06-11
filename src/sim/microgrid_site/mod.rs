@@ -665,13 +665,22 @@ impl MicrogridSite {
             .unwrap_or_default()
     }
 
+    /// Set a component's health, coupling its command mode along: an
+    /// errored device is also unreachable for commands, and clearing
+    /// the error restores normal handling.
+    ///
+    /// NOTE the two axes are deliberately NOT orthogonal across an
+    /// Error→Ok cycle: `set_health(Ok)` forces `command = Normal`,
+    /// clobbering an independently-set `Timeout` / `OverBound`. That
+    /// clobber is required for recovery — without it the Error
+    /// coupling sticks and the device stays uncommandable — so a
+    /// script that wants a command fault to survive a health cycle
+    /// must re-apply it after the recovery. (`Standby` leaves the
+    /// command mode alone in both directions.)
     pub fn set_health(&self, id: u64, health: Health) {
         let mut runtime = self.inner.runtime.write();
         let entry = runtime.entry(id).or_default();
         entry.health = health;
-        // Couple command handling to health: an errored device is also
-        // unreachable for commands (both setpoints and bounds are
-        // rejected); clearing the error restores normal command handling.
         match health {
             Health::Error => entry.command = CommandMode::Error,
             Health::Ok => entry.command = CommandMode::Normal,
