@@ -292,7 +292,17 @@ against the code.
 
 ** High
 
-*** TODO [#A] Cross-microgrid eval corruption under concurrent per-mg eval :concurrency:
+*** DONE Cross-microgrid eval corruption under concurrent per-mg eval :concurrency:
+Fixed 2026-06-11 with one invariant: the scope pointer only flips while
+the interpreter lock is held. =with_microgrid= is now panic-safe (Drop
+guard) and documents the lock requirement; =Config::scoped= /
+=eval_in_mg= are the sanctioned Rust entry points (lock → flip → eval +
+overrides append + version bump → restore, all in one critical
+section); the scenario layer's =funcall_in_mg= applies the same
+lock-then-flip; the per-mg eval + overrides-text handlers go through
+them (=reload= / =replace_overrides_text= grew =_locked= variants so
+the scoped paths don't re-borrow). Regression test:
+=concurrent_scoped_evals_do_not_cross_microgrids=.
 
 =with_microgrid= (=src/sim/microgrids.rs=) sets the shared
 =current_microgrid= pointer *before* =eval= takes the interpreter lock,

@@ -55,12 +55,42 @@ impl Config {
     /// when it rewrites, so the file gets re-tidied whenever the
     /// user prunes the list from the UI.
     pub fn eval(&self, src: &str) -> Result<String, String> {
-        let result = {
-            let mut ctx = self.ctx.borrow_mut();
-            match ctx.eval_string(src) {
-                Ok(v) => Ok(v.to_string()),
-                Err(e) => Err(e.format(&ctx)),
-            }
+        let mut ctx = self.ctx.borrow_mut();
+        self.eval_locked(&mut ctx, src)
+    }
+
+    /// Per-microgrid scoped eval — `/api/mg/{id}/eval`'s backend.
+    /// Scope-set, eval, overrides append, and the version bump all
+    /// happen under one interpreter-lock acquisition, so two
+    /// concurrent scoped evals can't cross microgrids (the scope
+    /// pointer is ambient global state every scoped defun and
+    /// `overrides_path` read).
+    pub fn eval_in_mg(&self, mg_id: u64, src: &str) -> Result<String, String> {
+        self.scoped(mg_id, |cfg, ctx| cfg.eval_locked(ctx, src))
+    }
+
+    /// Run `f` with the interpreter locked and `current_microgrid`
+    /// flipped to `mg_id` (restored on exit, panic included). The
+    /// one sanctioned way to do a scoped operation from Rust: the
+    /// pointer only ever flips while the interpreter lock is held,
+    /// so no in-flight eval can observe a foreign scope.
+    pub fn scoped<R>(
+        &self,
+        mg_id: u64,
+        f: impl FnOnce(&Self, &mut tulisp::TulispContext) -> R,
+    ) -> R {
+        let mut ctx = self.ctx.borrow_mut();
+        crate::sim::microgrids::with_microgrid(&self.current_microgrid, mg_id, || f(self, &mut ctx))
+    }
+
+    /// `eval` body against an already-held interpreter guard. The
+    /// overrides append and the version bump stay inside the locked
+    /// section because both resolve the ambient scope pointer — after
+    /// the lock is released a concurrent scoped call may flip it.
+    fn eval_locked(&self, ctx: &mut tulisp::TulispContext, src: &str) -> Result<String, String> {
+        let result = match ctx.eval_string(src) {
+            Ok(v) => Ok(v.to_string()),
+            Err(e) => Err(e.format(ctx)),
         };
         if result.is_ok()
             && let Err(e) = self.append_to_overrides_file(src)
@@ -251,6 +281,19 @@ impl Config {
     /// Atomic rewrite (temp + rename) so an interruption mid-write
     /// can't corrupt the file.
     pub fn replace_overrides_text(&self, content: &str) -> std::io::Result<()> {
+        let mut ctx = self.ctx.borrow_mut();
+        self.replace_overrides_text_locked(&mut ctx, content)
+    }
+
+    /// `replace_overrides_text` body against an already-held
+    /// interpreter guard — the scoped per-mg HTTP handler holds the
+    /// lock across the scope flip, and the reload at the tail must
+    /// reuse it rather than re-borrow.
+    pub(crate) fn replace_overrides_text_locked(
+        &self,
+        ctx: &mut tulisp::TulispContext,
+        content: &str,
+    ) -> std::io::Result<()> {
         let Some(path) = self.overrides_path() else {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
@@ -271,7 +314,7 @@ impl Config {
             file.flush()?;
         }
         fs::rename(&tmp, &path)?;
-        if let Err(msg) = self.reload() {
+        if let Err(msg) = self.reload_locked(ctx) {
             return Err(std::io::Error::other(format!(
                 "reload after override-text replace failed: {msg}"
             )));
@@ -328,5 +371,57 @@ mod tests {
         assert!(cfg.eval("(undefined-fn 1)").is_err());
         let body = std::fs::read_to_string(&path).unwrap();
         assert!(!body.contains("undefined-fn"));
+    }
+
+    /// Concurrent per-mg evals must not cross microgrids: the scope
+    /// pointer only flips under the interpreter lock, so each eval's
+    /// mutations AND its overrides append land on its own microgrid.
+    /// Pre-fix, scope-set happened before the lock and the append
+    /// after release — two racing `/api/mg/{id}/eval` calls could
+    /// write into each other's override files.
+    #[test]
+    fn concurrent_scoped_evals_do_not_cross_microgrids() {
+        let (cfg, dir) = config_with(
+            "(set-microgrid-id 9)
+             (%make-grid-connection-point :id 1)",
+        );
+        cfg.eval(
+            r#"(make-microgrid :id 10 :grpc-port 8899
+                 :topology (lambda () (%make-grid-connection-point :id 2)))"#,
+        )
+        .unwrap();
+
+        std::thread::scope(|s| {
+            let a = cfg.clone();
+            let b = cfg.clone();
+            s.spawn(move || {
+                for i in 0..40 {
+                    a.eval_in_mg(9, &format!("(rename-component 1 \"a{i}\")"))
+                        .unwrap();
+                }
+            });
+            s.spawn(move || {
+                for i in 0..40 {
+                    b.eval_in_mg(10, &format!("(rename-component 2 \"b{i}\")"))
+                        .unwrap();
+                }
+            });
+        });
+
+        let nine = std::fs::read_to_string(dir.join("microgrids/config.9.overrides.lisp")).unwrap();
+        let ten = std::fs::read_to_string(dir.join("microgrids/config.10.overrides.lisp")).unwrap();
+        assert!(
+            !nine.contains("rename-component 2") && nine.contains("rename-component 1"),
+            "mg 9's file must hold only mg 9's forms:\n{nine}"
+        );
+        assert!(
+            !ten.contains("rename-component 1") && ten.contains("rename-component 2"),
+            "mg 10's file must hold only mg 10's forms:\n{ten}"
+        );
+        // The mutations landed on the right sites too.
+        let reg = cfg.microgrids();
+        let r = reg.lock();
+        assert_eq!(r[&9].site.display_name(1).as_deref(), Some("a39"));
+        assert_eq!(r[&10].site.display_name(2).as_deref(), Some("b39"));
     }
 }

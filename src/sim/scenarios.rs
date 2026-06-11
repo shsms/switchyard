@@ -160,15 +160,24 @@ pub fn local_hour(clock: &Clock, now: DateTime<Utc>) -> f64 {
     clock.local_hour(now)
 }
 
-/// Funcall a tulisp lambda with no arguments. Holds the interpreter
-/// write lock for the duration of the call so the pre-tick hook
-/// blocks until the lambda completes — mirrors `Config::eval`'s
-/// lock discipline.
-fn funcall_lambda(ctx: &SharedMut<TulispContext>, lam: &TulispObject) -> Result<(), String> {
+/// Funcall a tulisp lambda with no arguments, scoped to `mg_id`.
+/// Locks the interpreter FIRST and flips the scope pointer inside
+/// the lock — the pointer is ambient global state every scoped
+/// defun reads, so the flip is only race-free while no other
+/// interpreter work can run (the same discipline as
+/// `Config::scoped` / `eval_in_mg`).
+fn funcall_in_mg(
+    ctx: &SharedMut<TulispContext>,
+    current: &CurrentMicrogrid,
+    mg_id: u64,
+    lam: &TulispObject,
+) -> Result<(), String> {
     let mut c = ctx.borrow_mut();
-    c.funcall(lam, &TulispObject::nil())
-        .map(|_| ())
-        .map_err(|e| e.format(&c))
+    with_microgrid(current, mg_id, || {
+        c.funcall(lam, &TulispObject::nil())
+            .map(|_| ())
+            .map_err(|e| e.format(&c))
+    })
 }
 
 /// Snapshot every (id, site) pair in the registry. Used by the
@@ -225,7 +234,7 @@ pub fn start(
     for (mg_id, site) in registered_sites(microgrids) {
         site.scenario_start(name.to_owned(), now);
         if let Some(ref lam) = on
-            && let Err(e) = with_microgrid(current, mg_id, || funcall_lambda(ctx, lam))
+            && let Err(e) = funcall_in_mg(ctx, current, mg_id, lam)
         {
             errors.push(format!("mg #{mg_id}: {e}"));
         }
@@ -300,7 +309,7 @@ pub fn jump(
     for (mg_id, site) in registered_sites(microgrids) {
         site.scenario_record("stage-jump".to_owned(), payload.clone(), now);
         if let Some(ref lam) = on
-            && let Err(e) = with_microgrid(current, mg_id, || funcall_lambda(ctx, lam))
+            && let Err(e) = funcall_in_mg(ctx, current, mg_id, lam)
         {
             errors.push(format!("mg #{mg_id}: {e}"));
         }
@@ -389,7 +398,7 @@ pub fn auto_advance_tick(
         for (mg_id, site) in &sites {
             site.scenario_record("stage-advance".to_owned(), payload.clone(), now);
             if let Some(ref l) = lam
-                && let Err(e) = with_microgrid(current, *mg_id, || funcall_lambda(ctx, l))
+                && let Err(e) = funcall_in_mg(ctx, current, *mg_id, l)
             {
                 log::warn!("scenario {name} stage {idx} mg #{mg_id} :on errored: {e}");
             }
