@@ -2,3 +2,6 @@
 config.*.overrides.lisp
 /.claude/
 /TAGS
+
+# NFS silly-rename strays (an editor holding an fd to a replaced file)
+.nfs*
