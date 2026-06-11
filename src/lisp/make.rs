@@ -211,7 +211,7 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
         move |_ctx: &mut TulispContext, args: Plist<GridArgs>| {
             let w = r.site();
             let a = args.into_inner();
-            let id = id_or_next(&w, a.id);
+            let id = id_or_next(&w, a.id)?;
             let rated_active_bounds = match (a.rated_lower, a.rated_upper) {
                 (Some(l), Some(u)) => Some((l as f32, u as f32)),
                 _ => None,
@@ -235,7 +235,7 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
         move |_ctx: &mut TulispContext, args: Plist<MeterArgs>| {
             let w = r.site();
             let a = args.into_inner();
-            let id = id_or_next(&w, a.id);
+            let id = id_or_next(&w, a.id)?;
             let interval = ms_to_duration(a.interval, 1000);
             let hidden = a.hidden.unwrap_or(false);
             // :power may be a number, a lambda, or a symbol. The
@@ -288,7 +288,7 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
         move |_ctx: &mut TulispContext, args: Plist<BatteryArgs>| {
             let w = r.site();
             let a = args.into_inner();
-            let id = id_or_next(&w, a.id);
+            let id = id_or_next(&w, a.id)?;
             let interval = ms_to_duration(a.interval, 1000);
             let mut cfg = BatteryConfig::default();
             if let Some(v) = a.capacity_wh {
@@ -336,7 +336,7 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
         move |_ctx: &mut TulispContext, args: Plist<BatteryInverterArgs>| {
             let w = r.site();
             let a = args.into_inner();
-            let id = id_or_next(&w, a.id);
+            let id = id_or_next(&w, a.id)?;
             let interval = ms_to_duration(a.interval, 1000);
             let mut cfg = BatteryInverterConfig::default();
             if let Some(v) = a.rated_lower {
@@ -399,7 +399,7 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
         move |_ctx: &mut TulispContext, args: Plist<SolarInverterArgs>| {
             let w = r.site();
             let a = args.into_inner();
-            let id = id_or_next(&w, a.id);
+            let id = id_or_next(&w, a.id)?;
             let interval = ms_to_duration(a.interval, 1000);
             let mut cfg = SolarInverterConfig::default();
             // :sunlight% accepts a number, lambda, or symbol. Number
@@ -467,7 +467,7 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
         move |_ctx: &mut TulispContext, args: Plist<EvChargerArgs>| {
             let w = r.site();
             let a = args.into_inner();
-            let id = id_or_next(&w, a.id);
+            let id = id_or_next(&w, a.id)?;
             let interval = ms_to_duration(a.interval, 1000);
             let mut cfg = EvChargerConfig::default();
             if let Some(v) = a.rated_lower {
@@ -518,7 +518,7 @@ pub fn register(ctx: &mut TulispContext, router: crate::sim::microgrids::SharedS
         move |_ctx: &mut TulispContext, args: Plist<ChpArgs>| {
             let w = r.site();
             let a = args.into_inner();
-            let id = id_or_next(&w, a.id);
+            let id = id_or_next(&w, a.id)?;
             let jitter = a.stream_jitter_pct.unwrap_or(0.0) as f32;
             let h = register_with_modes(
                 &w,
@@ -554,11 +554,38 @@ fn ms_to_duration(ms: Option<i64>, default_ms: u64) -> Duration {
 }
 
 /// Resolve the component id from an `:id` plist value, falling back to
-/// `MicrogridSite::next_id()` when omitted. Centralized so casts stay one
-/// place — each make-* used to inline the same `as u64 / next_id()`
-/// pattern.
-fn id_or_next(site: &MicrogridSite, explicit: Option<i64>) -> u64 {
-    explicit.map(|x| x as u64).unwrap_or_else(|| site.next_id())
+/// `MicrogridSite::next_id()` when omitted. Centralized so the
+/// validation stays in one place — every make-* funnels through here.
+///
+/// An explicit `:id` must be positive (a negative would cast to a
+/// giant u64 that registers but never matches) and must not collide
+/// with a component already on this site (a collision would push a
+/// second ticking component while only one stays addressable, and
+/// parent meters would double-count). The auto path skips allocator
+/// values an explicit `:id` already pinned for the same reason.
+fn id_or_next(site: &MicrogridSite, explicit: Option<i64>) -> Result<u64, Error> {
+    match explicit {
+        Some(x) => {
+            if x <= 0 {
+                return Err(Error::invalid_argument(format!(
+                    ":id must be positive, got {x}"
+                )));
+            }
+            let id = x as u64;
+            if site.get(id).is_some() {
+                return Err(Error::invalid_argument(format!(
+                    "component id {id} is already registered"
+                )));
+            }
+            Ok(id)
+        }
+        None => loop {
+            let id = site.next_id();
+            if site.get(id).is_none() {
+                return Ok(id);
+            }
+        },
+    }
 }
 
 /// Register a freshly-built component, then apply any initial runtime
@@ -824,6 +851,49 @@ mod tests {
         m.set_active_power_override(7777.0);
         m.refresh_inputs(&mut ctx);
         assert!((m.aggregate_power_w(&site) - 7777.0).abs() < 1e-3);
+    }
+
+    /// An explicit `:id` colliding with a registered component is a
+    /// config error — pre-validation it double-registered: two ticking
+    /// components, one addressable, double-counted by parent meters.
+    #[test]
+    fn duplicate_explicit_id_rejects() {
+        let (site, mut ctx) = run_with_ctx("(%make-battery :id 100)");
+        let res = ctx.eval_string("(%make-meter :id 100)");
+        assert!(res.is_err(), "expected duplicate-id error, got {res:?}");
+        assert_eq!(site.components().len(), 1, "no half-registration");
+    }
+
+    /// `:id 0` / negative ids are rejected — a negative cast to u64
+    /// would register under a giant id that nothing ever matches.
+    #[test]
+    fn non_positive_explicit_id_rejects() {
+        let (site, mut ctx) = run_with_ctx("(%make-battery :id 7)");
+        for bad in ["(%make-meter :id 0)", "(%make-meter :id -1)"] {
+            let res = ctx.eval_string(bad);
+            assert!(res.is_err(), "expected error from {bad}, got {res:?}");
+        }
+        assert_eq!(site.components().len(), 1);
+    }
+
+    /// Auto-allocation skips over a value an explicit `:id` pinned
+    /// before the allocator reached it.
+    #[test]
+    fn auto_id_skips_a_pinned_value() {
+        let first = crate::sim::component::FIRST_AUTO_ID;
+        let (site, mut ctx) = run_with_ctx(&format!("(%make-battery :id {first})"));
+        ctx.eval_string("(%make-meter)").unwrap();
+        assert_eq!(site.components().len(), 2);
+        let auto_id = site
+            .components()
+            .iter()
+            .map(|c| c.id())
+            .find(|id| *id != first)
+            .expect("the meter got its own id");
+        assert!(
+            auto_id > first,
+            "skipped past the pinned {first}, got {auto_id}"
+        );
     }
 }
 
