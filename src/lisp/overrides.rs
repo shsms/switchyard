@@ -153,29 +153,38 @@ impl Config {
     }
 
     /// One entry per top-level form in the per-microgrid override
-    /// file (`config.<microgrid-id>.overrides.lisp`), parsed
-    /// via `TulispContext::parse_file`. Returns an empty vec if
-    /// the file is missing or malformed — load-overrides will
-    /// surface a parse error on the next reload, so we don't bother
-    /// propagating it here.
+    /// file (`config.<microgrid-id>.overrides.lisp`). Returns an
+    /// empty vec if the file is missing or malformed — load-overrides
+    /// will surface a parse error on the next reload, so we don't
+    /// bother propagating it here.
+    ///
+    /// Parsed with tulisp-fmt's Cst parser rather than the
+    /// interpreter: this runs on every overrides-pill refresh, and
+    /// doing the file read + parse under the interpreter lock stalled
+    /// concurrent evals (and the lisp refresh loop) on disk I/O. As a
+    /// bonus the Cst keeps the user's original spelling, so the
+    /// dialog shows the form as written instead of Display-normalized.
     pub fn persisted_overrides(&self) -> Vec<PersistedOverride> {
+        use tulisp_fmt::cst::CstNode;
         let Some(path) = self.overrides_path() else {
             return Vec::new();
         };
-        if !path.exists() {
-            return Vec::new();
-        }
-        let path_str = path.to_string_lossy();
-        let mut ctx = self.ctx.borrow_mut();
-        let Ok(forms) = ctx.parse_file(&path_str) else {
+        let Ok(text) = fs::read_to_string(&path) else {
             return Vec::new();
         };
-        forms
-            .base_iter()
+        let Ok(cst) = tulisp_fmt::parse(&text) else {
+            return Vec::new();
+        };
+        cst.nodes
+            .iter()
+            // Top-level expression forms only — trivia (comments,
+            // blank lines) doesn't count toward the idx the delete
+            // endpoints address forms by.
+            .filter(|n| !matches!(n, CstNode::Comment { .. } | CstNode::LineBreak { .. }))
             .enumerate()
-            .map(|(idx, form)| PersistedOverride {
+            .map(|(idx, n)| PersistedOverride {
                 idx,
-                source: form.to_string(),
+                source: text[n.span()].trim().to_string(),
             })
             .collect()
     }
