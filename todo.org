@@ -986,7 +986,9 @@ differently in gRPC listings vs. graph validation. Moot today (Battery
 has no subtype plist arg) but a trap for whoever adds it — unify the
 alias sets in one helper.
 
-*** TODO [#C] Inspector telemetry-mode dropdown is missing two server modes :ui:
+*** DONE Inspector telemetry-mode dropdown is missing two server modes :ui:
+Fixed 2026-06-11: added =error-empty= / =not-found= to the telemetry
+dropdown and =over-bound= (same gap) to the command-mode one.
 =inspect.js= offers =normal / silent / closed= but the server also
 supports =error-empty= and =not-found= (both reachable via
 =(set-component-telemetry-mode)=). Add the two options so the fault modes
