@@ -799,6 +799,29 @@ impl Default for MicrogridSite {
     }
 }
 
+/// Is `to` reachable from `from` over the directed `(parent, child)`
+/// edge list? Iterative DFS with a visited set — used by `connect` to
+/// reject cycle-creating edges before they can blow the aggregation
+/// walk's stack.
+fn reachable(edges: &[(u64, u64)], from: u64, to: u64) -> bool {
+    let mut stack = vec![from];
+    let mut visited = std::collections::HashSet::new();
+    while let Some(node) = stack.pop() {
+        if node == to {
+            return true;
+        }
+        if !visited.insert(node) {
+            continue;
+        }
+        for (p, c) in edges {
+            if *p == node {
+                stack.push(*c);
+            }
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1081,27 +1104,4 @@ mod tests {
             "main_meter_id must clear so reload can pick a different meter",
         );
     }
-}
-
-/// Is `to` reachable from `from` over the directed `(parent, child)`
-/// edge list? Iterative DFS with a visited set — used by `connect` to
-/// reject cycle-creating edges before they can blow the aggregation
-/// walk's stack.
-fn reachable(edges: &[(u64, u64)], from: u64, to: u64) -> bool {
-    let mut stack = vec![from];
-    let mut visited = std::collections::HashSet::new();
-    while let Some(node) = stack.pop() {
-        if node == to {
-            return true;
-        }
-        if !visited.insert(node) {
-            continue;
-        }
-        for (p, c) in edges {
-            if *p == node {
-                stack.push(*c);
-            }
-        }
-    }
-    false
 }
