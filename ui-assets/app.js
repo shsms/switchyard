@@ -265,8 +265,16 @@ export const dispatchesPanel = (() => {
     }
   }
 
+  // Bumped on every render() call. A fetch that resolves after the
+  // user navigated to a different microgrid (or a newer WS-driven
+  // refresh started) carries a stale generation and is dropped —
+  // last-STARTED wins instead of last-RESOLVED, so mg A's rows can't
+  // paint under mg B's header.
+  let renderGen = 0;
+
   async function render(mgId) {
     currentMg = mgId;
+    const gen = ++renderGen;
     const el = host();
     if (!el) return;
     let list;
@@ -275,11 +283,13 @@ export const dispatchesPanel = (() => {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       list = await res.json();
     } catch (err) {
+      if (gen !== renderGen) return;
       el.innerHTML = `<p class="hint">dispatches unavailable: ${escapeHtml(
         err.message,
       )}</p>`;
       return;
     }
+    if (gen !== renderGen) return;
     if (!Array.isArray(list) || list.length === 0) {
       el.innerHTML = emptyHtml();
       return;

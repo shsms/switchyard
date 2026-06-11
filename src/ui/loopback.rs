@@ -113,6 +113,10 @@ async fn build_microgrid(grpc_url: &str, slot: &SharedMicrogrid, site: &Microgri
         h.abort();
     }
     slot.latest.write().clear();
+    // The sparkline rings too — a rebuild that drops a stream
+    // category (no more PV, say) must not keep serving the stale
+    // series via /api/mg/{id}/microgrid/history forever.
+    slot.history.write().clear();
     *slot.forwarders.lock() = handles;
     *slot.microgrid.write() = Some(mg);
     true
