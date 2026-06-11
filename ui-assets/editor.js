@@ -5,7 +5,7 @@
 
 import { notify } from "./app.js";
 import { showComponent } from "./inspect.js";
-import { mgPath } from "./routing.js";
+import { mgPath, readSelectedMg } from "./routing.js";
 import { topology } from "./topology.js";
 
 function makeFnFor(c) {
