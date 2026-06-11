@@ -225,7 +225,7 @@ export function selectMicrogrid(id) {
 // microgrid is selected, "→ enterprise" otherwise. Clicking
 // jumps to the Microgrids list so the operator can pick a
 // different one.
-function renderReplMgChip() {
+export function renderReplMgChip() {
   const chip = document.getElementById("repl-mg-chip");
   if (!chip) return;
   const id = readSelectedMg();

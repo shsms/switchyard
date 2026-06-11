@@ -4,6 +4,7 @@
 
 import { escapeHtml, notify, selectMicrogrid } from "./app.js";
 import { clockState } from "./chrome.js";
+import { readSelectedMg, renderReplMgChip } from "./routing.js";
 
 export const microgridsPanel = (() => {
   let cached = []; // last /api/microgrids snapshot

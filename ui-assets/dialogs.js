@@ -11,7 +11,7 @@ import {
   notify,
   openInspector,
 } from "./app.js";
-import { clearSide, startScenarioReportLoop } from "./inspect.js";
+import { clearSide, evalQuoted, startScenarioReportLoop } from "./inspect.js";
 
 // Single-source-of-truth for /api/overrides. Two consumers want
 // this data (the chrome's count pill and the overrides dialog),
