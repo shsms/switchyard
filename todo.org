@@ -631,7 +631,24 @@ fidelity gap.
 
 ** Structural / concurrency (new)
 
-*** TODO [#A] reload() orphans per-mg runtimes (physics, gRPC, loopback) — CONFIRMED :concurrency:lisp:
+*** DONE reload() orphans per-mg runtimes (physics, gRPC, loopback) — CONFIRMED :concurrency:lisp:
+Fixed 2026-06-11 in three commits: (1) =make-microgrid= reuses an
+existing entry's site (reset in place; name/tso update live, a changed
+:grpc-port warns and keeps the bound port), (2) =reload()= keeps the
+registry and resets every site instead of clearing, so the re-eval'd
+forms land on the sites the runtimes hold, (3) the binary listens on
+the registered channel and boots runtimes for microgrids that appear
+after boot (runtime =(make-microgrid …)= evals, reload-added entries,
+and the create endpoint — which now only notifies, giving one spawn
+path that can't double-boot). Covered by
+=make_microgrid_reuses_the_existing_site_on_reregistration=,
+=reload_rebuilds_topology_on_the_same_site=, and the extended
+=tests/hot_reload.rs= continuity assertion.
+
+Remaining limitation (inherent until sites get a cancel token): a
+microgrid the new config *removes* keeps its runtimes ticking an empty
+reset site and its port bound until a process restart; ports can't be
+moved by reload either.
 =Config::reload= (=src/lisp/mod.rs:979=) clears the registry and rebuilds
 every site via =make-microgrid= (fresh =MicrogridSite=, =:1395=) but does
 not call =spawn_physics= / =spawn_history_sampler=. Boot spawns them by
