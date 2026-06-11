@@ -459,16 +459,19 @@ fn sort_dispatches(items: &mut [pb::Dispatch], opts: Option<&pb::SortOptions>) {
         .map(|o| o.sort_field)
         .and_then(|f| pb::SortField::try_from(f).ok())
         .unwrap_or(pb::SortField::Unspecified);
-    items.sort_by_key(|d| sort_key(d, field));
     // Default order is DESCENDING — the proto says an unspecified sort
-    // returns newest-created first.
+    // returns newest-created first. Sorting by Reverse(key) (rather
+    // than sort-then-reverse) keeps the stable sort's tie order for
+    // equal timestamps.
     let descending = !matches!(
         opts.map(|o| o.sort_order)
             .and_then(|o| pb::SortOrder::try_from(o).ok()),
         Some(pb::SortOrder::Ascending)
     );
     if descending {
-        items.reverse();
+        items.sort_by_key(|d| std::cmp::Reverse(sort_key(d, field)));
+    } else {
+        items.sort_by_key(|d| sort_key(d, field));
     }
 }
 
