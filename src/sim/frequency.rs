@@ -94,6 +94,13 @@ impl FrequencyState {
     /// the driver keeps integrating either way.
     pub fn step(&mut self, dt: f32, rng: &mut SmallRng) {
         let m = self.active_model();
+        // Self-heal a non-finite state: `+=` would keep it NaN/Inf
+        // forever, and the slot is shared by every microgrid. The
+        // lisp setter rejects non-finite inputs, so this is a
+        // second line of defense against any other corruption.
+        if !self.current_hz.is_finite() {
+            self.current_hz = m.nominal_hz;
+        }
         let drift = -m.mean_rev_rate * (self.current_hz - m.nominal_hz) * dt;
         let noise = m.sigma * dt.sqrt() * normal_sample(rng);
         self.current_hz += drift + noise;

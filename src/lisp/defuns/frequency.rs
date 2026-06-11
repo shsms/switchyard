@@ -62,6 +62,14 @@ pub(in crate::lisp) fn register(
 
     let s = state.clone();
     ctx.defun("set-frequency", move |hz: f64| -> Result<bool, Error> {
+        // A NaN/Inf here would poison the shared OU state permanently
+        // (`step()` integrates `current_hz += …`, so non-finite never
+        // recovers) — and the state is shared by EVERY microgrid.
+        if !hz.is_finite() {
+            return Err(Error::invalid_argument(format!(
+                "set-frequency: hz must be finite, got {hz}"
+            )));
+        }
         s.write().current_hz = hz as f32;
         Ok(true)
     });

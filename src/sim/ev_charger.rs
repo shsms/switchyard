@@ -70,6 +70,17 @@ struct EvState {
 
 impl EvCharger {
     pub fn new(id: u64, interval: Duration, cfg: EvChargerConfig) -> Self {
+        // Same over-wide-margin warning as Battery::new — both taper
+        // bands active at every SoC silently derates both directions.
+        if cfg.soc_protect_margin_pct * 2.0 > cfg.soc_upper_pct - cfg.soc_lower_pct {
+            log::warn!(
+                "ev-charger {id}: soc-protect-margin {} covers more than half the \
+                 [{}, {}] SoC band; both tapers are active at every SoC",
+                cfg.soc_protect_margin_pct,
+                cfg.soc_lower_pct,
+                cfg.soc_upper_pct,
+            );
+        }
         let init_soc = cfg.initial_soc_pct;
         let (l, u) = soc_protected_bounds(
             cfg.rated_lower_w,

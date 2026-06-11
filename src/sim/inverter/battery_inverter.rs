@@ -386,6 +386,44 @@ mod tests {
         }
     }
 
+    /// An augmentation arriving AFTER a setpoint armed must pull the
+    /// running output back inside the narrowed envelope — and the
+    /// original commanded value resumes when it lapses. The delay
+    /// queue returns the armed value on every poll, so each tick
+    /// re-clamps it against the live envelope.
+    #[test]
+    fn late_augmentation_re_clamps_an_armed_setpoint() {
+        let (w, _bat_id, inv_id) = setup_inverter_with_battery();
+        let inv = w.get(inv_id).unwrap();
+        let dt = Duration::from_millis(100);
+        let t0 = Utc::now();
+
+        inv.set_active_setpoint(8_000.0).unwrap();
+        inv.tick(&w, t0, dt);
+        assert!((inv.aggregate_power_w(&w) - 8_000.0).abs() < 1.0);
+
+        // Narrow to ±5 kW for 50 ms — the next tick pulls the output in.
+        inv.augment_active_bounds(
+            t0,
+            VecBounds(vec![Bounds {
+                lower: Some(-5_000.0),
+                upper: Some(5_000.0),
+            }]),
+            Duration::from_millis(50),
+        );
+        inv.tick(&w, t0 + chrono::Duration::milliseconds(10), dt);
+        assert!(
+            (inv.aggregate_power_w(&w) - 5_000.0).abs() < 1.0,
+            "expected the armed 8 kW clamped to 5 kW, got {}",
+            inv.aggregate_power_w(&w),
+        );
+
+        // Past the lifetime the rated envelope returns and the armed
+        // command resumes in full.
+        inv.tick(&w, t0 + chrono::Duration::milliseconds(100), dt);
+        assert!((inv.aggregate_power_w(&w) - 8_000.0).abs() < 1.0);
+    }
+
     /// When every downstream battery is unhealthy the inverter delivers
     /// nothing — telemetry has to mirror that, not the ramp's
     /// in-flight commanded value. Pre-fix the inverter published the
