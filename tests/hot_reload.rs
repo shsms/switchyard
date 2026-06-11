@@ -24,6 +24,18 @@ async fn editing_config_lisp_rebuilds_the_world() {
 
     let v0 = s.config.site().version();
     let path = s.config_path();
+    // The handle the boot-spawned physics task / per-port gRPC server
+    // holds. Reload must rebuild the topology on THIS site, not a
+    // fresh one — otherwise every runtime is orphaned.
+    let live_site = s
+        .config
+        .microgrids()
+        .lock()
+        .get(&9)
+        .expect("microgrid 9 registered at boot")
+        .site
+        .clone();
+    assert!(live_site.get(1).is_some());
 
     // Append a meter under the grid by replacing the file. The
     // notify watcher fires on close-after-write (inotify) and the
@@ -60,4 +72,12 @@ async fn editing_config_lisp_rebuilds_the_world() {
         .map(|c| c["id"].as_i64().unwrap())
         .collect();
     assert!(ids.contains(&2), "expected id 2 after reload, got {ids:?}");
+
+    // Runtime continuity: the pre-reload site handle sees the new
+    // meter too — the rebuilt topology landed on the same site the
+    // running physics loop and gRPC server are pinned to.
+    assert!(
+        live_site.get(2).is_some(),
+        "pre-reload site handle must see the rebuilt topology",
+    );
 }

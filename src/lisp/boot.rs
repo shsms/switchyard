@@ -352,9 +352,18 @@ impl Config {
         // MicrogridSite.next_id justifies why).
         self.enterprise_id_allocator
             .store(crate::sim::component::FIRST_AUTO_ID, Ordering::Relaxed);
-        // Drop the registry so make-microgrid forms re-evaluating
-        // during the reload start from a clean slate.
-        self.microgrids.lock().clear();
+        // Keep the registry: the per-mg runtimes (physics tick, history
+        // sampler, gRPC server, loopback client) each hold their entry's
+        // site handle, and the re-eval'd (make-microgrid …) forms reuse
+        // those sites in place — dropping the entries would orphan every
+        // runtime on a site the registry no longer hands out. Reset each
+        // site up front so a microgrid the new config no longer declares
+        // ends up empty (its runtimes keep running against the empty
+        // site — they can't be torn down without a restart — but it
+        // stops ticking stale components).
+        for entry in self.microgrids.lock().values() {
+            entry.site.reset();
+        }
         {
             let mut ctx = self.ctx.borrow_mut();
             if let Err(e) = ctx.eval_file(&self.filename) {
@@ -363,6 +372,9 @@ impl Config {
                 return Err(formatted);
             }
         }
+        // Belt-and-suspenders: with the keep-registry semantics above
+        // this can only fire if the registry was empty before the
+        // reload, which Config::new's own check rules out.
         if self.microgrids.lock().is_empty() {
             return Err("reloaded config registered no microgrids — \
                  every config must call (make-microgrid …) at least once"
@@ -568,5 +580,34 @@ mod tests {
         );
         cfg.refresh_once();
         assert_eq!(cfg.eval_silent("fired").unwrap(), "1");
+    }
+
+    /// `reload()` must rebuild each microgrid's topology on the SAME
+    /// site the boot-time runtimes hold — minting fresh sites would
+    /// leave physics ticking (and gRPC serving) orphaned pre-reload
+    /// state while the registry's new sites never tick.
+    #[test]
+    fn reload_rebuilds_topology_on_the_same_site() {
+        let (cfg, _dir) = config_with(
+            "(set-microgrid-id 9)
+             (%make-grid-connection-point :id 1)",
+        );
+        // The handle a boot-spawned physics task / gRPC server holds.
+        let live_site = cfg.microgrids().lock().get(&9).unwrap().site.clone();
+        assert!(live_site.get(1).is_some());
+
+        cfg.reload().expect("reload succeeds");
+
+        // The re-eval'd topology landed on the SAME site: the
+        // pre-reload handle sees the rebuilt component, and the
+        // registry still carries exactly one entry for id 9.
+        assert!(
+            live_site.get(1).is_some(),
+            "pre-reload site handle must see the rebuilt topology",
+        );
+        let reg = cfg.microgrids();
+        let r = reg.lock();
+        assert_eq!(r.len(), 1);
+        assert!(r.get(&9).unwrap().site.get(1).is_some());
     }
 }
