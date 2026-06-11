@@ -21,7 +21,7 @@ mod state;
 pub use loopback::spawn_microgrid_loopback;
 pub use state::{
     HistorySample, MicrogridLoopbacks, MicrogridSampleSnapshot, MicrogridSpawner, MicrogridState,
-    SharedMicrogrid, new_microgrid_loopbacks, new_microgrid_slot, noop_microgrid_spawner,
+    SharedMicrogrid, new_microgrid_loopbacks, new_microgrid_slot,
 };
 
 use std::net::SocketAddr;
@@ -47,11 +47,10 @@ pub async fn serve(
     config: Config,
     microgrid: SharedMicrogrid,
     loopbacks: MicrogridLoopbacks,
-    spawner: MicrogridSpawner,
 ) -> std::io::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     log::info!("Switchyard UI listening on http://{}", addr);
-    serve_with_listener(listener, config, microgrid, loopbacks, spawner).await
+    serve_with_listener(listener, config, microgrid, loopbacks).await
 }
 
 pub async fn serve_with_listener(
@@ -59,19 +58,13 @@ pub async fn serve_with_listener(
     config: Config,
     microgrid: SharedMicrogrid,
     loopbacks: MicrogridLoopbacks,
-    spawner: MicrogridSpawner,
 ) -> std::io::Result<()> {
-    axum::serve(listener, router(config, microgrid, loopbacks, spawner))
+    axum::serve(listener, router(config, microgrid, loopbacks))
         .await
         .map_err(std::io::Error::other)
 }
 
-fn router(
-    config: Config,
-    microgrid: SharedMicrogrid,
-    loopbacks: MicrogridLoopbacks,
-    spawner: MicrogridSpawner,
-) -> Router {
+fn router(config: Config, microgrid: SharedMicrogrid, loopbacks: MicrogridLoopbacks) -> Router {
     use handlers::{
         assets::{asset, index, logs_backfill},
         defaults::defaults,
@@ -171,7 +164,6 @@ fn router(
         .route("/ws/events", get(events_ws))
         .layer(Extension(microgrid))
         .layer(Extension(loopbacks))
-        .layer(Extension(spawner))
         .with_state(config)
 }
 

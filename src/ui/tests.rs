@@ -81,15 +81,10 @@ static UNIQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0)
 /// behaviour. Tests that want a populated handle would have to
 /// spin up the gRPC server too.
 async fn call(config: Config, req: Request<Body>) -> (StatusCode, Vec<u8>) {
-    let resp = router(
-        config,
-        new_microgrid_slot(),
-        new_microgrid_loopbacks(),
-        noop_microgrid_spawner(),
-    )
-    .oneshot(req)
-    .await
-    .unwrap();
+    let resp = router(config, new_microgrid_slot(), new_microgrid_loopbacks())
+        .oneshot(req)
+        .await
+        .unwrap();
     let status = resp.status();
     let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
     (status, bytes.to_vec())
