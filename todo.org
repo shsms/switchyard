@@ -292,30 +292,6 @@ against the code.
 
 ** High
 
-*** DONE Cross-microgrid eval corruption under concurrent per-mg eval :concurrency:
-Fixed 2026-06-11 with one invariant: the scope pointer only flips while
-the interpreter lock is held. =with_microgrid= is now panic-safe (Drop
-guard) and documents the lock requirement; =Config::scoped= /
-=eval_in_mg= are the sanctioned Rust entry points (lock → flip → eval +
-overrides append + version bump → restore, all in one critical
-section); the scenario layer's =funcall_in_mg= applies the same
-lock-then-flip; the per-mg eval + overrides-text handlers go through
-them (=reload= / =replace_overrides_text= grew =_locked= variants so
-the scoped paths don't re-borrow). Regression test:
-=concurrent_scoped_evals_do_not_cross_microgrids=.
-
-=with_microgrid= (=src/sim/microgrids.rs=) sets the shared
-=current_microgrid= pointer *before* =eval= takes the interpreter lock,
-and =eval= re-reads =current= for both =overrides_path()= and
-=router.site()=. Two concurrent =/api/mg/{A}/eval= + =/api/mg/{B}/eval=
-(e.g. two browser tabs) cross: A's mutations and appended overrides land
-on B. =with_microgrid= also fails to restore the pointer if =f()= panics.
-
-Fix: make scope-set + eval atomic under one lock, or thread an explicit
-=mg_id= through =eval= / =overrides_path= / =router.site= instead of
-ambient global scope; convert =with_microgrid= to an RAII guard so the
-pointer is restored on unwind.
-
 *** TODO [#A] Active and reactive setpoints share one timeout + reset :bounds:
 
 =do_set_power= (=src/server.rs=) calls =add_timeout(id, …)= for both
@@ -331,52 +307,6 @@ surface resets.
 
 ** Medium
 
-*** TODO [#B] Unbounded recursion on a topology cycle             :hardening:
-
-Power aggregation (=children_of= in =src/sim/microgrid_site.rs=, via
-=Meter::aggregate_active= and the inverters) has no visited-set or depth
-cap, and =connect= / =disconnect= aren't gated by the =ComponentGraph=
-validator. A user-introduced cycle (=(connect a b)= + =(connect b a)=)
-makes =telemetry()= / =tick= recurse to a stack overflow that aborts the
-site.
-
-Fix: thread a visited-set / depth limit through the aggregation walk, or
-reject cycle-creating edges in =connect=.
-
-*** TODO [#B] CommandDelay doesn't re-clamp an armed setpoint        :bounds:
-
-=BatteryInverter::tick= (and =SolarInverter::tick=) clamp the pending
-target to the envelope only on the tick a command is freshly armed; a
-later-arriving tighter augmentation / SoC-derate never pulls the armed
-target back in, so the ramp drives toward an out-of-envelope value. The
-EV charger already handles this.
-
-Fix: in the =delay.poll == None= branch re-clamp =ramp.target()= to the
-current =effective()= envelope and =set_target= if it changed, mirroring
-=ev_charger=.
-
-*** TODO [#B] persisted_overrides does file I/O under the interpreter lock :concurrency:lisp:
-
-=persisted_overrides= / =persisted_count= (=src/lisp/mod.rs=) hold the
-=ctx= write lock across =parse_file= (blocking I/O), reachable from sync
-HTTP handlers. That's the lock the 100 ms refresh loop and every eval
-contend on, so a slow / large overrides file stalls physics-input
-updates for every microgrid.
-
-Fix: parse the overrides file with a throwaway =TulispContext=, or read
-the bytes first and hold the lock only for the in-memory parse.
-
-*** TODO [#B] Lisp active-timers list grows unbounded across a long run :lisp:
-
-=random-outage= (=sim/scenarios.lisp=) conses a fresh one-shot timer
-handle onto =active-timers= each cycle and never prunes fired ones; only
-=reset-state= (reload) clears it. A multi-day scenario accumulates
-thousands of dead handles — the same slow-accumulation shape as the
-edge-app incident.
-
-Fix: prune fired one-shots when re-scheduling (filter on live status), or
-reuse a single tracked handle slot per outage chain.
-
 *** TODO [#B] Snapshot save/load ignore the per-request microgrid scope :concurrency:
 
 =snapshots_save= / =snapshots_load= (=src/ui/handlers/snapshots.rs=)
@@ -387,34 +317,6 @@ finding above.
 
 Fix: add explicit microgrid-scoped snapshot routes and apply the same
 atomic-scope fix.
-
-** Low
-
-Localized hardening / contract items from the same review:
-
-- AugmentBounds accepts inverted bounds (=lower > upper=); the empty
-  effective envelope turns =clamp= into an identity, disabling setpoint
-  enforcement for the augmentation's lifetime
-  (=augment_electrical_component_bounds= in =src/server.rs= /
-  =sim/bounds.rs=). Reject with =InvalidArgument=.
-- =telemetry_to_proto= (=src/proto_conv.rs=) emits a state snapshot even
-  when =states= is empty; only push the snapshot when non-empty.
-- No request-body size limit on =/api/eval=, =/api/format=, overrides-text
-  (=src/ui/=) — add a =DefaultBodyLimit= (matters once the UI is
-  bound non-loopback via =--ui-bind=).
-- =/api/eval= returns =ok:true= even when persisting the override to disk
-  failed (=src/lisp/mod.rs= append path) — surface a persist-failure flag.
-- Scenario =start= / =jump= (=src/sim/scenarios.rs=) leave the enterprise
-  half-started if a per-mg lambda errors mid-loop; match =auto_advance='s
-  log-and-continue instead.
-- =spawn_physics= (=src/sim/microgrid_site.rs=) rebuilds the interval on a
-  cadence change, firing one immediate extra tick.
-- Per-WS-connection forwarder tasks (=src/ui/events_ws.rs=) only exit on
-  the next site event; abort the handles on socket close so connections
-  to idle microgrids don't park.
-- =swctl= dashboard / pool =--tail= (=src/bin/swctl.rs=) aborts the whole
-  loop on a single transient HTTP error; warn and continue to the next
-  tick instead.
 
 * Review backlog — 2026-06-04
 
@@ -457,13 +359,6 @@ generation sees headroom that isn't there. Fold =min_avail_w= into the
 reported lower bound — but confirm against the real frequenz API (does it
 report irradiance-limited inclusion bounds for PV?).
 
-*** TODO [#B] kVA-circle not re-clamped when P drifts under a settled Q :reactive:
-=ReactivePath::step= (=src/sim/reactive.rs=) only re-clamps Q to
-=√(S²−P²)= when a command freshly promotes; if active power then drifts
-under a sustained Volt/VAR setpoint, published apparent power exceeds the
-rating until the next setpoint. Re-clamp the armed Q to the live envelope
-each tick.
-
 *** TODO [#B] dc_power_w is signed-apparent but its bounds are active-only :telemetry:reactive:
 A battery's =DcPower= telemetry value is =√(P²+Q²)·sign(P)= while the
 attached bounds are the active SoC-derated envelope (=battery.rs= /
@@ -492,54 +387,13 @@ part of I3.)
 
 ** Consistency
 
-*** TODO [#B] AugmentBounds wrongly enforces the 10 s setpoint minimum :api:bounds:
-=resolve_lifetime= (=src/server.rs:34=) applies =REQUEST_LIFETIME_MIN_S =
-10= to AugmentBounds too, but the augment proto's minimum is 5 s
-(SetPower's is 10 s). A 5–9 s augmentation lifetime is wrongly rejected.
-Split the constant per RPC.
-
-*** TODO [#B] SetPower response never sets valid_until_time             :api:
-=do_set_power= always returns =valid_until_time: None=, though the proto
-says populate it with now+lifetime on success (AugmentBounds does). A
-client watching the field to time its refresh sees no expiry.
-
 *** TODO [#B] Two TTL clocks: Instant (setpoints) vs Utc (augmentations) :api:bounds:
 =TimeoutTracker= keys setpoint expiry on monotonic =Instant=;
 =ComponentBounds::drop_expired= uses wall-clock =Utc=. An NTP / VM clock
 step expires augmented bounds without touching setpoint timeouts, so the
 two TTL guarantees handed to clients clock against different references.
 
-*** TODO [#B] Reactive no-constraint fallback gives 0 Q at P=0     :reactive:
-=q_bounds_at= (=src/sim/reactive.rs=) falls back to =(-|P|, |P|)= when
-both =pf_limit= and =apparent_va= are =None= — an undocumented implicit
-PF=1, so a node clearing both caps expecting "unconstrained" gets *zero*
-Q at idle. Document the fallback as PF=1, or make "both None" mean the
-full kVA circle.
-
 ** Structural / concurrency
-
-*** TODO [#B] make-microgrid probes id + port in separate unlocked steps :concurrency:lisp:
-=make-microgrid= (=src/lisp/mod.rs= ~1367) calls =next_free_id= then
-=next_free_port= under separate lock acquisitions before inserting, so a
-concurrent Lisp =make-microgrid= and HTTP =/api/microgrids/create= can
-hand out the same id / port. Pick both under one held guard
-(=next_free_id_in= / =next_free_port_in= already exist) and insert in the
-same critical section. (Distinct from the shared-id-allocator High item.)
-
-*** TODO [#B] register_arc / remove_component do non-atomic multi-lock writes :concurrency:
-=MicrogridSite::register_arc= writes =components=, =by_id=, =runtime=
-under three separate guards; =remove_component= removes from =by_id=
-before =components=. A concurrent =tick_once= (clones =components.read()=)
-or =get()= can observe a component present in one map and absent in
-another. Coordinate structural mutations under one lock, or document the
-interpreter-lock invariant precisely.
-
-*** TODO [#B] record_history_snapshot holds write locks across telemetry() :concurrency:
-=record_history_snapshot= (=src/sim/microgrid_site.rs=) holds =histories=
-+ =scenario_csv= write guards while calling =c.telemetry()=, which
-re-enters =runtime= / =connections= reads — fragile lock ordering vs
-=reset()='s =components→by_id→runtime→histories= order. Collect telemetry
-outside the history lock, then take it only to push.
 
 *** TODO [#B] sum_single silently drops multi-band bounds            :bounds:
 =VecBounds::sum_single= (=src/sim/bounds.rs=) keeps only =.first()= of
@@ -566,49 +420,7 @@ intended, and =effective()= is always intersected with finite rated
 bounds so =clamp= is never a half-open identity). The items below are
 deferred; nothing fixed this pass.
 
-** Adversarial follow-ups to this session's commits
-
-*** TODO [#C] Document that health and command modes aren't fully orthogonal :docs:
-=set_health(Ok)= (=src/sim/microgrid_site.rs:903=) forces
-=command = Normal=, which clobbers an independently-set =Timeout= /
-=OverBound=. This is *required* for recovery (otherwise the =Error=
-coupling sticks and the device stays uncommandable), so it's a deliberate
-trade-off — but document that once health couples command, the two axes
-aren't independent across an Error→Ok cycle. Same applies make-time
-(=apply_initial_modes= drops a non-Normal =:command-mode= under
-=:health 'error=, which is correct since Error subsumes it).
-
-*** TODO [#C] Document E's Standby handling                            :docs:
-=27e079d= gates inverter output on =health != Ok=, so =Standby= is treated
-like =Error= (zero output; the battery inverter also clears its setpoint
-and awaits re-dispatch). Reasonable, but a =Standby→Ok= transition that
-drops the prior setpoint may surprise — decide whether Standby should
-preserve the setpoint (resume) rather than await re-dispatch, and document
-the choice. (Refines I3.)
-
 ** Fidelity / consistency (new)
-
-*** TODO [#B] make_component_proto hardcodes microgrid_id: 0  :telemetry:api:
-Every =ElectricalComponent= in =ListElectricalComponents= and the assets
-=ListMicrogridElectricalComponents= carries =microgrid_id: 0=
-(=src/proto_conv.rs:122=). A multi-microgrid client that routes commands
-back by =component.microgrid_id= gets 0 for all of them. The
-=MicrogridServer= knows its own id; the assets server has it from the
-request — thread it through.
-
-*** TODO [#C] AugmentBounds logs a phantom setpoint for a not-found id :api:bounds:
-=augment_electrical_component_bounds= (=src/server.rs=) clones =site= and
-calls =log_setpoint= unconditionally, so a request to an unregistered id
-auto-creates a zombie =SetpointLog= entry that persists until reset. The
-SetPower path returns early on not-found before logging; make AugmentBounds
-match.
-
-*** TODO [#C] Timeout-mode setpoints never reach the setpoint log       :api:
-When =command == CommandMode::Timeout=, =gate_runtime_faults=
-(=src/server.rs=) parks in =future::pending()= until the client cancels,
-so neither SetPower nor AugmentBounds ever calls =log_setpoint=. The
-stuck-component case — exactly what a setpoint inspector exists to surface
-— is invisible. Log the attempt before parking.
 
 *** TODO [#B] Meter reactive aggregation drops :power-meter and CHP Q :reactive:telemetry:
 =Meter::aggregate_reactive= (=src/sim/meter.rs=) returns 0 when
@@ -617,125 +429,12 @@ load modelled via a =:power= meter contributes no Q to its parent. The
 main meter's =reactive_power_var= (and any PF / apparent-power derived
 from it) under-reports.
 
-*** TODO [#C] OverBound fault is active-only                            :api:
-The =OverBound= setpoint fault (=src/server.rs=) fires only for
-=PowerType::Active= and non-zero power; a reactive setpoint to an
-=OverBound= component passes untouched. Minor — =OverBound= is the rarest
-fault mode — but the lie is incomplete.
-
-*** TODO [#C] Solar telemetry never sets component_state          :telemetry:
-=SolarInverter::telemetry= (=src/sim/inverter/solar_inverter.rs=) never
-sets =component_state=, so every frame carries an empty state snapshot and
-a controller can't read idle-vs-generating. The battery inverter reports
-=power_state(p)=. The idle/generating axis is fillable today with the same
-helper (=p < 0= = generating); this is distinct from the I3 *error*-state
-policy question. (Also: =telemetry_to_proto= pushes the empty snapshot at
-all — the known 2026-06-01 Low.)
-
 *** TODO [#C] Meter + assets status are always healthy            :telemetry:
 =Meter::telemetry= always reports state =ready= regardless of children
 health/flow; =assets_server= =get_microgrid= always returns
 =MicrogridStatus::Active= even when every component is errored. A client
 gating on degraded status never sees one. Cosmetic for a simulator but a
 fidelity gap.
-
-** Structural / concurrency (new)
-
-*** DONE reload() orphans per-mg runtimes (physics, gRPC, loopback) — CONFIRMED :concurrency:lisp:
-Fixed 2026-06-11 in three commits: (1) =make-microgrid= reuses an
-existing entry's site (reset in place; name/tso update live, a changed
-:grpc-port warns and keeps the bound port), (2) =reload()= keeps the
-registry and resets every site instead of clearing, so the re-eval'd
-forms land on the sites the runtimes hold, (3) the binary listens on
-the registered channel and boots runtimes for microgrids that appear
-after boot (runtime =(make-microgrid …)= evals, reload-added entries,
-and the create endpoint — which now only notifies, giving one spawn
-path that can't double-boot). Covered by
-=make_microgrid_reuses_the_existing_site_on_reregistration=,
-=reload_rebuilds_topology_on_the_same_site=, and the extended
-=tests/hot_reload.rs= continuity assertion.
-
-Remaining limitation (inherent until sites get a cancel token): a
-microgrid the new config *removes* keeps its runtimes ticking an empty
-reset site and its port bound until a process restart; ports can't be
-moved by reload either.
-=Config::reload= (=src/lisp/mod.rs:979=) clears the registry and rebuilds
-every site via =make-microgrid= (fresh =MicrogridSite=, =:1395=) but does
-not call =spawn_physics= / =spawn_history_sampler=. Boot spawns them by
-iterating the registry (=switchyard.rs:97-104=); the only other spawn path
-is the =/api/microgrids/create= closure. =watch()→reload()= hits neither,
-so reloaded microgrids appear to get no physics loop (the boot-spawned
-loops keep ticking now-orphaned old sites).
-
-Confirmed on the 2026-06-11 review pass. =events_ws= only spawns event
-*forwarders* on the =microgrid_registered= channel, never runtimes. So
-after a hot reload: the new sites (the ones the registry, UI, lisp, and
-scenario layers act on) never tick — ramps and SoC freeze; the old sites
-keep ticking forever (=spawn_physics= has no exit path,
-=microgrid_site/mod.rs:695=) — one leaked physics + sampler task pair per
-microgrid per reload; and the per-port =MicrogridServer=s + loopback
-clients stay pinned to the orphaned pre-reload sites, so gRPC clients and
-the Dashboard tiles serve the *old* topology while =/api/topology= shows
-the new one. =AssetsServer= is immune — it resolves the site via the
-registry per request; that asymmetry with the pinned-site
-=MicrogridServer= is the heart of the bug. =tests/hot_reload.rs= passes
-because it only asserts via =/api/topology= (registry-resolved) and never
-checks post-reload physics or gRPC.
-
-Fix direction (smallest first): on =make-microgrid= for an id that
-already exists in the registry, reuse the existing entry's site
-(reset-in-place) instead of minting a fresh one — old runtimes, gRPC
-servers, and loopbacks then keep pointing at the live site and reload
-needs no new spawns. The alternative (generation/cancel tokens on sites
-plus a registry-listening spawner that owns all runtime lifecycles) is
-cleaner long-term but much larger.
-
-*** TODO [#B] dispatch_server update ignores a concurrent-delete race :dispatch:concurrency:
-=update_microgrid_dispatch= (=src/dispatch_server.rs=) is read-modify-write
-across two lock acquisitions and silently ignores =store.replace=='s
-=false= return (dispatch deleted in the window), returning OK with an
-unpersisted change. =set_active= handles the same race correctly; mirror it.
-
-*** TODO [#B] dispatch stream: double-delivery window + silent lag :dispatch:
-The stream takes =subscribe()= then the snapshot =list= without a lock
-between them (=src/dispatch_server.rs=), so a create in that window is
-delivered twice (at-most-twice, idempotent by id — document it). On a
-=Lagged= receiver the handler just =continue=s with no re-sync signal, so
-a streaming client silently diverges; send an error frame so it re-lists.
-
-*** TODO [#B] Per-mg dispatch create / set-active don't validate the mg id :dispatch:
-=dispatch_create_for_mg= / =dispatch_set_active_for_mg= (=src/ui/mod.rs=)
-and the gRPC create path don't check the microgrid exists, so a POST to
-=/api/mg/99999/dispatches= creates a phantom entry that accumulates with
-no TTL. Sibling per-mg routes (eval, overrides) guard with =contains_key=;
-make these consistent.
-
-*** TODO [#B] UI history ring never cleared on topology rebuild          :ui:
-=build_microgrid= (=src/ui/mod.rs=) clears =latest= on a rebuild but never
-=history=, so after a topology change that removes a stream category the
-stale ring keeps serving that series via =/api/mg/{id}/microgrid/history=
-indefinitely.
-
-*** TODO [#B] Lisp scenario-start/stop is current-site-only vs enterprise HTTP :lisp:
-The =(scenario-start)= / =(scenario-stop)= defuns (=src/lisp/mod.rs=)
-operate on =router.site()= (the current-microgrid pointer) while the HTTP
-=scenarios::start/stop= iterate all sites. A REPL/timer-driven scenario
-journals only the current mg and leaves others' journals open; per-mg
-reports diverge.
-
-*** DONE id_or_next casts a negative :id to a giant u64           :lisp:
-=id_or_next= (=src/lisp/make.rs:560=) does =explicit.map(|x| x as u64)=
-with no range check, so =:id -1= becomes =u64::MAX= — registers, never
-matches, leaks the map slot. =make-microgrid= guards =v > 0=; the
-per-component path doesn't. Reject =x <= 0=.
-
-Fixed 2026-06-11 alongside the duplicate-:id rejection (same function).
-
-*** TODO [#B] switchyard main: fire-and-forget UI/refresh, sequential join :hardening:
-=src/bin/switchyard.rs= awaits the gRPC server tasks sequentially and
-spawns the UI server + lisp refresh loop fire-and-forget, so a crash of
-either goes unnoticed and the process limps on degraded. Use a =JoinSet= /
-=select!= so a critical-task failure triggers a clean shutdown.
 
 ** Robustness / UI hardening (latent until --ui-bind ships)
 
@@ -750,24 +449,11 @@ recorded (2026-06-01) — fold them into the same hardening pass.
 
 ** Low / minor (new)
 
-- =dynamic_scalar.rs= caches via =Ordering::Relaxed= across the refresh
-  thread and the physics tick; visibility relies implicitly on surrounding
-  locks. Upgrade to =Release=/=Acquire= to make the contract explicit.
 - =runtime_modes.rs= =From<Health/…> for TulispObject= emits a *string*,
   not a symbol, so an enum round-tripped through a plist would type-mismatch
-  (=:health 'error= needs a symbol). Latent — no defun returns enum plists.
-- =swctl.rs=: =DispatchCreate= sends =Some(false)= for =start_immediately=
-  when a start time is given (prefer =None=); =snapshot --microgrid-id= is
-  silently ignored (warn instead).
-- =battery.rs= / =decay.rs=: no validation that
-  =soc_protect_margin_pct ≤ (upper−lower)/2=; an aggressive margin makes
-  both taper bands active mid-SoC, silently halving bounds both ways.
-- =solar_inverter.rs= =reset_setpoint= snaps to =min_avail_w()= (a power
-  step the upstream meter reflects) where the battery inverter ramps to 0;
-  inconsistent reset discontinuity.
-- =ui/mod.rs= =write_microgrid_stub= escapes only =\"= and =\\= in the
-  generated =.lisp= (not newlines/control chars); not currently exploitable
-  (tulisp strings allow embedded newlines) but sanitise for robustness.
+  (=:health 'error= needs a symbol). Latent — no defun returns enum plists;
+  blocked on a tulisp API for interning without a ctx (=From= can't reach
+  one).
 
 * Review backlog — 2026-06-06
 
@@ -792,17 +478,6 @@ to crib from), a =prost-wkt= style reflection dependency, or
 documenting the limitation honestly in =--json='s help text. Either
 fix or rename until fixed.
 
-** TODO [#B] Dispatch update is a lock-free read-modify-write :dispatch:concurrency:
-
-=update_microgrid_dispatch= (=src/dispatch_server.rs=) does get →
-merge → replace without holding the store lock across the sequence,
-so two concurrent updates to the same dispatch can lose one of the
-two writes (last replace wins wholesale). The mid-flight delete is
-now reported as NotFound, but the lost-update window remains. Fix
-shape: a =DispatchStore::update_with(microgrid_id, dispatch_id,
-FnOnce(&mut Dispatch))= that applies the merge under the inner write
-lock, used by both the gRPC update and =set_active=.
-
 ** TODO [#C] index.html + style.css fail biome's recommended rules       :ui:
 
 CI lints only the hand-written JS (all clean). Running biome over
@@ -812,235 +487,6 @@ CI lints only the hand-written JS (all clean). Running biome over
 the stylesheet. Worth a dedicated cleanup pass that then widens the
 CI lint to the whole directory; mechanical but touches a lot of
 lines, and the specificity fixes need visual verification.
-
-* Review backlog — 2026-06-10
-
-Exhaustive whole-codebase review: a 14-agent subsystem fan-out with an
-adversarial verifier per finding, deduped against the prior backlogs. 40
-raw findings → 13 refuted on a second read, 18 already tracked, 9
-confirmed new (below). First full pass over the post-refactor
-=ui-assets/= ES-module split and the =src/lisp/defuns/= tree — and the
-split is where the three High items come from: it dropped imports, so
-several UI flows are dead on the current build.
-
-** DONE editor.js calls readSelectedMg without importing it — canvas editing is dead :ui:
-Fixed 2026-06-11: =import { readSelectedMg }= added to editor.js's routing.js import.
-=editor.js= uses =readSelectedMg()= in =undoMgr.record/undo/redo= (lines
-80/94/118) but imports only =notify=, =showComponent=, =mgPath=,
-=topology=; =readSelectedMg= is exported from =routing.js=. =record()= is
-awaited as the first step of every canvas mutation (paste, delete, add,
-connect via =topology.js=, and =inspect.js='s =evalQuoted= → rename /
-health / command-mode / knob / disconnect), and the call sits outside its
-try/catch — so it throws =ReferenceError= before any mutation fetch runs.
-All visual editing silently no-ops with an unhandled rejection in the
-console; Ctrl-Z/Y throw too.
-
-Fix: =import { readSelectedMg } from "./routing.js"=.
-
-** DONE dialogs.js Save calls evalQuoted without importing it — Defaults editor is dead :ui:
-Fixed 2026-06-11: =evalQuoted= added to dialogs.js's inspect.js import.
-=renderDefaults='s Save handler calls =await evalQuoted(expr)=
-(=dialogs.js:382=), but =dialogs.js= imports only =clearSide= /
-=startScenarioReportLoop= from =inspect.js=, not =evalQuoted= (also
-exported there). Saving any per-category default throws =ReferenceError=,
-the =setq= never reaches the server, and nothing surfaces but an uncaught
-console rejection.
-
-Fix: add =evalQuoted= to the =inspect.js= import.
-
-** DONE panels.js microgrids panel uses readSelectedMg / renderReplMgChip unimported — breaks on load :ui:
-Fixed 2026-06-11: both imported from routing.js; =renderReplMgChip= is now exported there.
-=microgridsPanel.renderBreadcrumb()= calls =readSelectedMg()=
-(=panels.js:61=) and =refresh()= calls =renderReplMgChip()= (=:84=), but
-=panels.js= imports neither. =readSelectedMg= is exported from
-=routing.js=; =renderReplMgChip= is *not exported at all* (only
-=setupReplMgChip= is). =refresh()= runs on initial load via
-=applyInitialRoute → applyMode=, so it renders the list then throws in
-=renderBreadcrumb()= — the breadcrumb and REPL-target chip never paint and
-the 5 s list poll never starts.
-
-Fix: import =readSelectedMg=; =export= =renderReplMgChip= and import it
-(or route the chip refresh through =setupReplMgChip='s exported path).
-
-** TODO [#B] Battery tick f32::clamp panics on a NaN bound, freezing the physics loop :hardening:
-=Battery::tick= (=src/sim/battery.rs:163=) does
-=total_p.clamp(effective_lower_w, effective_upper_w)= with std
-=f32::clamp=, which panics on a NaN bound. The bounds are
-=rated_* * bounded_exp_decay(...)= and =rated_lower_w/upper_w= come
-straight from config (=make.rs=) with no finiteness check, so
-=(make-battery :rated-upper (/ 0.0 0.0))= yields a NaN bound. The tick
-runs in a bare =tokio::spawn= with no =catch_unwind=, so the panic kills
-that microgrid's physics task permanently while gRPC keeps serving stale
-telemetry — a silently dead site. The codebase already guards this exact
-hazard elsewhere (=Ramp= rejects NaN; =VecBounds::clamp= is hand-written
-NaN-safe).
-
-Fix: validate rated bounds for finiteness at construction, or use a
-NaN-safe clamp; consider wrapping =c.tick()= in =catch_unwind= so one bad
-component can't freeze the whole site.
-
-** TODO [#B] (set-frequency) accepts NaN/Inf and permanently poisons the shared OU state :lisp:hardening:
-=(set-frequency HZ)= (=src/lisp/defuns/frequency.rs:64=) writes
-=current_hz = hz as f32= unchecked. =(set-frequency (/ 0.0 0.0))= via
-=/api/eval= stores NaN; the OU =step()= does =current_hz += drift + noise=
-so it stays NaN forever. The same =SharedFrequency= is handed to every
-=MicrogridSite= (one AC grid → one frequency), so one bad call NaNs the
-frequency telemetry of *every* microgrid until restart.
-
-Fix: reject non-finite =hz= in the defun (and optionally reset =step()= to
-nominal if =current_hz= goes non-finite).
-
-** TODO [#C] parent_count doc is inverted — hidden edges are counted, not suppressed :docs:
-=parent_count='s doc (=microgrid_site/mod.rs:480=) claims it returns 0 for
-hidden children and callers clamp with =.max(1)=; in fact it iterates the
-raw =connections= vec, which includes hidden edges (=connect()= pushes
-all; only =connections()= / =hidden_connections()= filter). A connected
-hidden child has =parent_count ≥ 1=; =.max(1)= only ever guards a
-fully-unconnected child. Runtime behavior is correct — the comment just
-misstates the data flow (and would mislead the parallel-share divisor
-work).
-
-Fix: correct the comment.
-
-** TODO [#C] (make-microgrid :grpc-port N) silently truncates ports > 65535 :lisp:
-=microgrids.rs:118= does =Some(p) if p > 0 => p as u16=, so
-=:grpc-port 70000= wraps to 4464 (mod 65536): the microgrid binds a
-different port than asked, with no error, and may collide with an
-auto-allocated port.
-
-Fix: =Some(p) if (1..=65535).contains(&p) => p as u16=, else an
-=invalid_argument= naming the bad port.
-
-** TODO [#C] make-microgrid registers + announces before the :topology lambda is validated :lisp:hardening:
-=make-microgrid= inserts into the registry (=microgrids.rs:139=) and fires
-=registered_tx.send(id)= (=:150=) before funcalling the =:topology= lambda
-with =result?= (=:159=). On a runtime =/api/eval= / =/api/mg/{id}/eval= a
-failing topology leaves a zombie microgrid registered (counted by
-=/api/microgrids=, announced to WS) with a half-built site until the next
-full reload (the reload path clears the registry first, so it only
-self-heals there).
-
-Fix: build the site and run =:topology= first; insert + announce only on
-success (or remove on the error path).
-
-** TODO [#C] dispatchesPanel.render paints stale data on a navigation/WS race :ui:concurrency:
-=render(mgId)= (=app.js:268=) sets =currentMg= then awaits the dispatches
-fetch into the shared =#dispatches-body= with no generation/abort guard. A
-=dispatch_changed= for mg A racing a navigation to mg B's Dispatches tab
-can paint A's rows under B (last fetch wins); the row handlers then act on
-=currentMg=B= against A's rows. Partly mitigated by =repl.js='s
-=selectedMg= guard, but the nav-vs-WS interleave is still reachable.
-
-Fix: stamp each render with a generation / AbortController and drop a
-response whose mgId no longer matches.
-
-* Review backlog — 2026-06-11
-
-Single-pass exhaustive read: full line-by-line over =src/sim/=, the three
-gRPC servers, =proto_conv=, the lisp layer's load-bearing files, the
-switchyard binary, the UI server skeleton, and (this time) the complete
-=ui-assets/= ES-module set; spot-checks over the remaining handlers,
-swctl, and tests. Cross-checked against every prior backlog — most
-re-found issues were already filed; the reload =[#A]= above is now
-CONFIRMED with the full mechanism written into its entry. New items
-below. The three 2026-06-10 =[#A]= unimported-function UI bugs were
-re-verified as still present on this build.
-
-** Docs / behavior mismatches
-
-*** DONE CLAUDE.md + measured_w doc contradict the commanded-AC behavior :docs:
-Fixed 2026-06-11: both docs now state the commanded-AC publishing rule
-and point at d5.
-Two docs state the inverter publishes what it *delivered*; the code
-publishes what it *commanded*. CLAUDE.md's architectural rule says "the
-inverter publishes the measured aggregate it actually delivered", and the
-=measured_w= field doc (=battery_inverter.rs:62-66=) says it "differs
-from =ramp.actual()= whenever a battery's BMS clipped the share we
-pushed" — but =tick()= sets =measured_w = commanded_p= with an inline
-comment justifying exactly that. The behavior itself is a known design
-point (d5); the docs are what's wrong. Anyone trusting CLAUDE.md
-mis-models the meter aggregation path.
-
-Fix: reword both docs to match the code and point at d5.
-
-*** DONE manual_override never auto-resumes, contradicting jump()'s doc :lisp:docs:
-Fixed 2026-06-11: the catch-up tick (want == cur) now clears the flag;
-covered by =manual_override_clears_when_wallclock_catches_up=.
-=scenarios::jump= (=src/sim/scenarios.rs:258=) documents that auto-advance
-stays away "until the operator either restarts it or the wallclock
-catches up to that stage" — but =auto_advance_tick= skips any
-=manual_override= entry unconditionally and nothing clears the flag
-except =start=. Either implement the wallclock-catch-up resume (clear the
-flag when =wallclock_stage == current_stage=) or fix the comment.
-
-** Hardening / consistency
-
-*** DONE Duplicate component :id silently double-registers :lisp:hardening:
-Fixed 2026-06-11: =id_or_next= now rejects a colliding (or non-positive)
-explicit =:id= with a lisp error before any registration, and the auto
-path skips allocator values a pinned =:id= already claimed. =connect=
-endpoint validation + edge dedupe remain open — tracked by the
-connect sentence below if it starts to matter.
-=register_arc= (=microgrid_site/mod.rs:401=) pushes into the components
-vec and overwrites =by_id=; an explicit =:id= colliding with an existing
-component yields two ticking components of which only one is addressable
-(and one double-counted by parent meters). Nothing validates in
-=id_or_next= / =register=; the graph validator might flag it but is
-log-only. =connect()= similarly accepts edges to nonexistent ids and
-duplicate edges (a duplicate edge double-counts the child in meter
-aggregation). Distinct from the filed negative-=:id= cast item.
-
-Fix: make =register_arc= (or the =%make-*= path) reject an existing id
-with a lisp error; optionally have =connect= validate endpoints + dedupe.
-
-*** DONE scenarios::start/jump abort the per-mg fan-out on the first :on error :lisp:
-Fixed 2026-06-11: both now fan out to every microgrid and return the
-collected per-mg errors; covered by
-=start_fans_out_past_an_erroring_on_lambda=.
-=start= and =jump= propagate a lambda error with =?= from inside the
-per-microgrid loop, so an =:on= failure on the first microgrid leaves
-later microgrids without the stage's effects while the runtime already
-says the scenario started/jumped. =auto_advance_tick= gets this right
-(logs per-mg and continues); mirror that.
-
-*** DONE proto_conv battery subtype aliases diverge from graph_adapter :telemetry:
-Fixed 2026-06-11: proto_conv accepts both alias spellings; both sites
-carry a keep-in-sync cross-reference.
-=make_component_proto= matches ="li-ion"= / ="naion"= while
-=graph_adapter::lift_category= matches ="li-ion"|"liion"= and
-="na-ion"|"naion"=. A ="liion"= or ="na-ion"= battery classifies
-differently in gRPC listings vs. graph validation. Moot today (Battery
-has no subtype plist arg) but a trap for whoever adds it — unify the
-alias sets in one helper.
-
-*** DONE Inspector telemetry-mode dropdown is missing two server modes :ui:
-Fixed 2026-06-11: added =error-empty= / =not-found= to the telemetry
-dropdown and =over-bound= (same gap) to the command-mode one.
-=inspect.js= offers =normal / silent / closed= but the server also
-supports =error-empty= and =not-found= (both reachable via
-=(set-component-telemetry-mode)=). Add the two options so the fault modes
-are drivable from the inspector like the others.
-
-** Low / minor (new)
-
-*** DONE spawn_physics swaps intervals on cadence change, firing one immediate tick :sim:
-Fixed 2026-06-11: the replacement interval is built with =interval_at=.
-=microgrid_site/mod.rs:711= replaces the =tokio::interval= when
-=physics_tick= changes; a fresh interval's first tick fires immediately,
-so a cadence change produces one extra tick (dt stays correct, so this is
-cosmetic). =interval_at(now + target, target)= avoids it.
-
-*** DONE sort_dispatches sorts then reverses — unstable tie order :dispatch:
-Fixed 2026-06-11: descending now sorts by =Reverse(key)=.
-=dispatch_server.rs:457= uses a stable sort then =reverse()= for the
-default descending order, which inverts tie order for equal timestamps.
-Sort by =Reverse(key)= (or compare descending) instead.
-
-*** TODO [#C] dashboard battery/PV rows rebuild the whole grid per WS sample :ui:perf:
-=dashboard.js= =applySample= calls =render()= (full innerHTML rebuild of
-the section) on every matching 1 Hz sample — several rebuilds/sec/section
-on a busy microgrid. Fine at demo scale; batch per animation frame if row
-counts grow.
 
 * Open design questions
 
@@ -1284,118 +730,3 @@ Open decisions before speccing:
 3. REPL vs canvas — REPL scratch-by-default (D), or persist whenever
    the graph changed regardless of origin?
 
-* Archive
-
-** DONE Shared id-allocator rewound by a single-site reset       :concurrency:
-CLOSED: [2026-06-10 Mi]
-
-Fixed in =82cfdbd=: =MicrogridSite::reset()= no longer stores
-=FIRST_AUTO_ID= into the shared enterprise =next_id= allocator, so a lone
-=(reset-microgrid)= can't rewind the global counter under sibling sites'
-live ids. =Config::reload= still resets it explicitly, so ids restart at
-=FIRST_AUTO_ID= across full reloads. The determinism caveat (a bare
-per-site reset no longer restarts ids) was confirmed acceptable — no test
-relied on it.
-
-** DONE validate_augmentation reads effective bounds without dropping expired :bounds:
-CLOSED: [2026-06-10 Mi]
-
-Fixed in =5ff199a=: =ComponentBounds::effective_at(now)= skips
-augmentations past their =valid_until= even before =drop_expired= reaps
-them on the next tick, and =effective()= delegates with =Utc::now()=. So
-the AugmentBounds gate (via =effective_active_bounds=) no longer rejects
-a fresh augmentation disjoint from a just-expired one — the sub-tick
-window a tight augment loop (the protector, I2) hits.
-
-** DONE Expose the assets API                                     :switchyard:rust:
-CLOSED: [2026-05-16 Sa]
-:LOGBOOK:
-- State "DONE"       from "INPROGRESS"  [2026-05-16 Sa]
-- State "INPROGRESS" from              [2026-05-15 Fr]
-:END:
-
-Mounted the [[https://github.com/frequenz-floss/frequenz-api-assets][frequenz-api-assets]] gRPC service on [::1]:9900 (its own
-listener, separate from the per-microgrid =MicrogridServer= ports).
-=GetMicrogrid=, =ListMicrogridElectricalComponents=, and
-=ListMicrogridElectricalComponentConnections= dispatch per-request by
-looking the requested =microgrid_id= up in =Config::microgrids()=, so
-the single assets service answers for every microgrid switchyard
-manages. Unknown ids → =NotFound=. The missing =ListMicrogrids=
-discovery RPC is tracked as roadmap item =S2=.
-
-** DONE Back / forward navigation across screens
-
-Browser back / forward should walk the user's mode + microgrid +
-subview history: e.g. Microgrids list → per-mg Dashboard →
-Scenarios → back should land in the per-mg Dashboard, not the
-top of the Microgrids list. Currently mode + subview live in
-=localStorage= only, so the back/forward buttons walk the
-browser's URL history (which doesn't reflect SPA state) and end
-up at the previous page in the browser.
-
-Likely shape: push entries into =history.pushState= on every
-=applyMode= + =selectMicrogrid= + =setSubview= transition with
-the state as the payload; =window.onpopstate= reads it back and
-re-applies. The selected-mg id needs to round-trip through the
-URL so a back-then-refresh lands on the same view (currently a
-refresh keeps the mg from localStorage but the back button
-loses it).
-
-Acceptance: dashboard-of-mg-2200 → Scenarios → back puts the user
-back on dashboard-of-mg-2200 with the same subview; same for
-=switchyard.html#microgrids/2200/dashboard= deep-links.
-
-** DONE Undo in the topology editing canvas
-
-Cut / copy / paste land via =/api/mg/{id}/eval= and update the
-override file. There's no undo for the canvas-level operations
-(delete, paste, connect, disconnect, rename). The persisted-
-overrides dialog can hand-prune individual forms after the fact,
-but it's a row-by-row checkbox UI, not a Ctrl-Z stack.
-
-Want a per-mg undo stack the canvas + side-panel mutations push
-onto: each entry is enough state to revert. Two shapes:
-
-- *Optimistic snapshots.* Snapshot the override file before each
-  eval; Ctrl-Z restores it. Cheap but heavy (whole-file write per
-  edit) and doesn't help if the user evaluates via REPL.
-- *Inverse operations.* Each mutating verb produces an inverse
-  expression — =(rename-component 1 "old")=, =(connect a b)= →
-  =(disconnect a b)=, etc. — that the stack pushes. Lighter but
-  needs every mutating defun to declare its inverse.
-
-Probably start with snapshots (simpler) and refine.
-
-Acceptance: Ctrl-Z after a paste removes the pasted subgraph;
-Ctrl-Z after a rename restores the previous name; Ctrl-Shift-Z
-re-applies the undone step.
-
-** DONE Topology canvas: keep the graph centered
-
-Switching into the Topology subview often shows only half the
-graph — the user has to pan to see the full diagram. Small
-unrelated UI mutations (a side-panel open, a header chip update)
-sometimes shift the centering further. Likely a vis-network
-`fit()` issue: the fit is only called at first paint, not on
-resize / focus / panel toggle.
-
-Acceptance: switching into Topology always lands with the graph
-visible end-to-end; no follow-on action moves it off center
-unless the user pans / zooms themselves.
-
-** DONE Bottom splitter wedges the layout
-
-Dragging the bottom splitter (REPL drawer vs. main pane) past a
-threshold appears to take up the whole vertical space and the
-canvas + side panel become invisible. The side (vertical)
-splitter behaves normally.
-
-Reproduce via headless Firefox (selenium): start the binary,
-flip to Topology subview, drag the bottom splitter to ~0 px
-from the top, screenshot. Then investigate the CSS / JS — likely
-the splitter's min-height clamp is missing or the grid template
-collapses.
-
-Acceptance: dragging the splitter to either extreme leaves both
-panes visible (or at least recoverable via the splitter); a
-selenium regression test pins the behaviour.
