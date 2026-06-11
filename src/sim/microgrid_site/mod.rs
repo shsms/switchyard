@@ -398,6 +398,16 @@ impl MicrogridSite {
         self.register_arc(Arc::new(c))
     }
 
+    /// Register a component. Writes `components`, `by_id`, and
+    /// `runtime` under separate short guards — NOT atomically. The
+    /// standing invariant making that safe: every structural mutation
+    /// (register / remove / connect, all reached via the `make-*` and
+    /// editing defuns) runs while the caller holds the interpreter
+    /// lock, so two structural writers never interleave; concurrent
+    /// READERS (tick, gRPC, history) may observe a component in one
+    /// map and not yet the other for the duration of this call, which
+    /// every reader tolerates (`get` returning None / a skipped tick
+    /// for one pass).
     pub fn register_arc(&self, c: Arc<dyn SimulatedComponent>) -> ComponentHandle {
         let id = c.id();
         self.inner.components.write().push(c.clone());
