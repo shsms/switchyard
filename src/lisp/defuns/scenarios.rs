@@ -193,21 +193,50 @@ fn parse_expect_metric(name: &str) -> Option<Metric> {
 /// and `(scenario-stop)` when finished. The underlying journal lives
 /// on `MicrogridSite` and is read by the `/api/scenario` and
 /// `/api/scenario/events` endpoints.
-pub(super) fn register_lifecycle(ctx: &mut TulispContext, router: SharedSiteRouter) {
+pub(super) fn register_lifecycle(
+    ctx: &mut TulispContext,
+    router: SharedSiteRouter,
+    microgrids: crate::sim::microgrids::SharedMicrogrids,
+) {
+    // scenario-start / scenario-stop fan out across every registered
+    // microgrid, matching the HTTP scenario lifecycle — a REPL- or
+    // timer-driven scenario would otherwise journal only the current
+    // microgrid, leaving the others' journals open and per-mg reports
+    // diverging. The per-event defuns below (scenario-event, -expect,
+    // -record-csv, …) stay scoped to the current site: an event
+    // belongs to the microgrid whose context emitted it. With an
+    // empty registry (test fixtures, the tags pass) both fall back to
+    // the router-resolved site.
+    let reg = microgrids.clone();
     let r = router.clone();
     ctx.defun(
         "scenario-start",
         move |name: String| -> Result<bool, Error> {
-            let w = r.site();
-            w.scenario_start(name, Utc::now());
+            let now = Utc::now();
+            let sites: Vec<_> = reg.lock().values().map(|e| e.site.clone()).collect();
+            if sites.is_empty() {
+                r.site().scenario_start(name, now);
+            } else {
+                for site in sites {
+                    site.scenario_start(name.clone(), now);
+                }
+            }
             Ok(true)
         },
     );
 
+    let reg = microgrids.clone();
     let r = router.clone();
     ctx.defun("scenario-stop", move || -> Result<bool, Error> {
-        let w = r.site();
-        w.scenario_stop(Utc::now());
+        let now = Utc::now();
+        let sites: Vec<_> = reg.lock().values().map(|e| e.site.clone()).collect();
+        if sites.is_empty() {
+            r.site().scenario_stop(now);
+        } else {
+            for site in sites {
+                site.scenario_stop(now);
+            }
+        }
         Ok(true)
     });
 
@@ -603,8 +632,10 @@ mod tests {
         }
         assert_eq!(cfg.eval("(length active-timers)").unwrap(), "1");
         // An unrelated tracked timer survives the chain's pruning.
-        cfg.eval("(setq active-timers (cons (run-with-timer 9999 nil (lambda () nil)) active-timers))")
-            .unwrap();
+        cfg.eval(
+            "(setq active-timers (cons (run-with-timer 9999 nil (lambda () nil)) active-timers))",
+        )
+        .unwrap();
         cfg.eval("(random-outage--track (run-with-timer 9999 nil (lambda () nil)))")
             .unwrap();
         assert_eq!(cfg.eval("(length active-timers)").unwrap(), "2");

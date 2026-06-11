@@ -100,6 +100,13 @@ impl Config {
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|| "<no resolvable microgrid>".to_string());
             log::error!("Failed to append override to {label}: {e}");
+            // The eval succeeded but won't survive a reload — surface
+            // that on the site event bus (the UI shows it as a config
+            // error banner) instead of only burying it in the log.
+            self.router.site().broadcast_config_error(format!(
+                "eval applied but could not be persisted to {label}: {e} — \
+                 the edit will not survive a reload"
+            ));
         }
         // Bump the version on the microgrid the eval actually
         // mutated (the one current_microgrid points at, or — if no
