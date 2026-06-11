@@ -90,8 +90,8 @@ pub(in crate::lisp) fn register(
         );
     }
     use crate::sim::microgrids::{
-        DEFAULT_MICROGRID_ID, DEFAULT_MICROGRID_NAME, MicrogridDef, MicrogridEntry, next_free_id,
-        next_free_port, with_microgrid,
+        DEFAULT_MICROGRID_ID, DEFAULT_MICROGRID_NAME, MicrogridDef, MicrogridEntry,
+        next_free_id_in, next_free_port_in, with_microgrid,
     };
     let _ = router;
     ctx.defun(
@@ -100,19 +100,15 @@ pub(in crate::lisp) fn register(
               args: tulisp::Plist<MakeMicrogridArgs>|
               -> Result<i64, tulisp::Error> {
             let a = args.into_inner();
-            let id = match a.id {
-                Some(v) if v > 0 => v as u64,
-                _ => {
-                    let probed = next_free_id(&registry);
-                    if probed == DEFAULT_MICROGRID_ID
-                        && registry.lock().contains_key(&DEFAULT_MICROGRID_ID)
-                    {
-                        DEFAULT_MICROGRID_ID + 1
-                    } else {
-                        probed
-                    }
-                }
-            };
+            // `as u16` would silently wrap ports > 65535 onto a
+            // different port — validate the range up front.
+            if let Some(p) = a.grpc_port
+                && !(1..=65535).contains(&p)
+            {
+                return Err(tulisp::Error::invalid_argument(format!(
+                    "make-microgrid: :grpc-port {p} outside 1..=65535"
+                )));
+            }
             let name = a
                 .name
                 .clone()
@@ -128,55 +124,91 @@ pub(in crate::lisp) fn register(
             // that never ticks. Name / tso update live; the gRPC port
             // is pinned by the listening server, so a changed
             // :grpc-port is kept as-is with a warning.
-            let existing = registry
-                .lock()
-                .get(&id)
-                .map(|e| (e.def.grpc_port, e.site.clone()));
-            let (grpc_port, site, reused) = match existing {
-                Some((bound_port, site)) => {
-                    if let Some(p) = a.grpc_port
-                        && p > 0
-                        && p as u16 != bound_port
-                    {
-                        log::warn!(
-                            "make-microgrid #{id}: :grpc-port {p} ignored — the running \
-                             gRPC server is bound to :{bound_port} (restart to move it)"
-                        );
+            // One registry lock for the id probe, the port probe, the
+            // reuse check, AND the insert — separate acquisitions let
+            // a concurrent /api/microgrids/create hand out the same
+            // id or port between our probe and our insert.
+            let (id, reused) = {
+                let mut reg = registry.lock();
+                let id = match a.id {
+                    Some(v) if v > 0 => v as u64,
+                    _ => {
+                        let probed = next_free_id_in(&reg);
+                        if probed == DEFAULT_MICROGRID_ID && reg.contains_key(&DEFAULT_MICROGRID_ID)
+                        {
+                            DEFAULT_MICROGRID_ID + 1
+                        } else {
+                            probed
+                        }
                     }
-                    site.reset();
-                    (bound_port, site, true)
-                }
-                None => {
-                    let grpc_port = match a.grpc_port {
-                        Some(p) if p > 0 => p as u16,
-                        _ => next_free_port(&registry),
-                    };
-                    // Fresh site per microgrid that shares the
-                    // enterprise's id allocator with the bootstrap site
-                    // + every other microgrid — component ids stay
-                    // globally unique across the registry without
-                    // per-site coordination.
-                    let site = MicrogridSite::with_id_allocator(id_allocator.clone());
-                    // Same grid frequency source as every other site,
-                    // so their `frequency_hz` reads all return the same
-                    // OU value (one AC grid → one frequency).
-                    site.set_grid_frequency(grid_frequency.clone());
-                    (grpc_port, site, false)
-                }
+                };
+                let existing = reg.get(&id).map(|e| (e.def.grpc_port, e.site.clone()));
+                let (grpc_port, site, reused) = match existing {
+                    Some((bound_port, site)) => {
+                        if let Some(p) = a.grpc_port
+                            && p as u16 != bound_port
+                        {
+                            log::warn!(
+                                "make-microgrid #{id}: :grpc-port {p} ignored — the running \
+                                 gRPC server is bound to :{bound_port} (restart to move it)"
+                            );
+                        }
+                        site.reset();
+                        (bound_port, site, true)
+                    }
+                    None => {
+                        let grpc_port = match a.grpc_port {
+                            Some(p) => p as u16,
+                            None => next_free_port_in(&reg),
+                        };
+                        // Fresh site per microgrid that shares the
+                        // enterprise's id allocator with the bootstrap site
+                        // + every other microgrid — component ids stay
+                        // globally unique across the registry without
+                        // per-site coordination.
+                        let site = MicrogridSite::with_id_allocator(id_allocator.clone());
+                        // Same grid frequency source as every other site,
+                        // so their `frequency_hz` reads all return the same
+                        // OU value (one AC grid → one frequency).
+                        site.set_grid_frequency(grid_frequency.clone());
+                        (grpc_port, site, false)
+                    }
+                };
+                let def = MicrogridDef {
+                    id,
+                    name,
+                    grpc_port,
+                    tso: a.tso.clone(),
+                };
+                reg.insert(
+                    id,
+                    MicrogridEntry {
+                        def,
+                        site: site.clone(),
+                    },
+                );
+                (id, reused)
             };
-            let def = MicrogridDef {
-                id,
-                name,
-                grpc_port,
-                tso: a.tso.clone(),
-            };
-            registry.lock().insert(
-                id,
-                MicrogridEntry {
-                    def,
-                    site: site.clone(),
-                },
-            );
+            // Funcall the :topology lambda (if any) with the
+            // current-microgrid pointer flipped to this new entry, so
+            // the nested make-* calls register into the new site.
+            // This runs BEFORE the registered notification: a failing
+            // topology must not leave a zombie microgrid announced to
+            // subscribers — a fresh entry is removed again on error
+            // (a reused one stays; its reset site is the same state a
+            // failed reload leaves).
+            if let Some(topology) = a.topology {
+                let lambda = topology.into_inner();
+                if !lambda.null() {
+                    let nil = TulispObject::nil();
+                    if let Err(e) = with_microgrid(&current, id, || ctx.funcall(&lambda, &nil)) {
+                        if !reused {
+                            registry.lock().remove(&id);
+                        }
+                        return Err(e);
+                    }
+                }
+            }
             // Notify enterprise-wide subscribers (the WS event pump
             // and the binary's runtime spawner) that a new microgrid
             // landed. Reused entries skip this — their forwarders and
@@ -185,18 +217,6 @@ pub(in crate::lisp) fn register(
             // no UI session is open.
             if !reused {
                 let _ = registered_tx.send(id);
-            }
-            // Funcall the :topology lambda (if any) with the
-            // current-microgrid pointer flipped to this new
-            // entry, so the nested make-* calls register into
-            // the new site.
-            if let Some(topology) = a.topology {
-                let lambda = topology.into_inner();
-                if !lambda.null() {
-                    let nil = TulispObject::nil();
-                    let result = with_microgrid(&current, id, || ctx.funcall(&lambda, &nil));
-                    result?;
-                }
             }
             Ok(id as i64)
         },

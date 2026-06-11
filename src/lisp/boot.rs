@@ -72,7 +72,13 @@ impl Config {
         ctx.set_load_path(Some(&load_dir))
             .map_err(|e| format!("set_load_path({}): {e}", load_dir.display()))?;
 
-        defuns::register_runtime(&mut ctx, router.clone(), metadata.clone(), load_dir.clone());
+        defuns::register_runtime(
+            &mut ctx,
+            router.clone(),
+            metadata.clone(),
+            load_dir.clone(),
+            microgrids.clone(),
+        );
         defuns::register_clock(&mut ctx, clock.clone());
         defuns::register_watches(&mut ctx, load_dir.clone(), extra_watches.clone());
         defuns::register_scenarios(&mut ctx, scenarios.clone());
@@ -316,7 +322,7 @@ impl Config {
         // bootstrap site and every defun captures that one.
         let microgrids = crate::sim::microgrids::new_registry();
         let current = crate::sim::microgrids::new_current_microgrid();
-        let router = SiteRouter::new(microgrids, current, site.clone());
+        let router = SiteRouter::new(microgrids.clone(), current, site.clone());
 
         let load_dir: PathBuf = roots
             .first()
@@ -327,7 +333,7 @@ impl Config {
         ctx.set_load_path(Some(&load_dir))
             .map_err(|e| Error::os_error(format!("set_load_path({}): {e}", load_dir.display())))?;
 
-        defuns::register_runtime(&mut ctx, router, metadata, load_dir);
+        defuns::register_runtime(&mut ctx, router, metadata, load_dir, microgrids);
         // The Handle is unused here — tags_table is a one-shot parse
         // pass, no timers ever fire — but `register` still installs
         // the four builtins so that `(run-with-timer …)` etc. show up
