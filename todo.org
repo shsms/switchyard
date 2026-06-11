@@ -976,7 +976,9 @@ later microgrids without the stage's effects while the runtime already
 says the scenario started/jumped. =auto_advance_tick= gets this right
 (logs per-mg and continues); mirror that.
 
-*** TODO [#C] proto_conv battery subtype aliases diverge from graph_adapter :telemetry:
+*** DONE proto_conv battery subtype aliases diverge from graph_adapter :telemetry:
+Fixed 2026-06-11: proto_conv accepts both alias spellings; both sites
+carry a keep-in-sync cross-reference.
 =make_component_proto= matches ="li-ion"= / ="naion"= while
 =graph_adapter::lift_category= matches ="li-ion"|"liion"= and
 ="na-ion"|"naion"=. A ="liion"= or ="na-ion"= battery classifies

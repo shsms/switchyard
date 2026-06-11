@@ -93,6 +93,8 @@ fn lift_category(category: Category, subtype: Option<&str>) -> ComponentCategory
             Some("hybrid") => InverterType::Hybrid,
             _ => InverterType::Unspecified,
         }),
+        // Alias set must stay in sync with proto_conv's
+        // `make_component_proto` — see the comment there.
         Category::Battery => ComponentCategory::Battery(match subtype {
             Some("li-ion") | Some("liion") => BatteryType::LiIon,
             Some("na-ion") | Some("naion") => BatteryType::NaIon,
