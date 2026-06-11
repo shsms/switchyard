@@ -340,11 +340,19 @@ pub fn auto_advance_tick(
         let mut r = reg.lock();
         r.iter_mut()
             .filter_map(|(name, e)| {
-                if e.runtime.manual_override {
-                    return None;
-                }
                 let cur = e.runtime.current_stage?;
                 let want = wallclock_stage(&e.def, hour)?;
+                if e.runtime.manual_override {
+                    // An operator jump parks the scenario until the
+                    // wallclock catches up to the jumped-to stage;
+                    // from there normal auto-advance resumes (the
+                    // contract `jump` documents). No transition fires
+                    // on the catch-up tick itself — want == cur.
+                    if want == cur {
+                        e.runtime.manual_override = false;
+                    }
+                    return None;
+                }
                 if want == cur {
                     return None;
                 }
@@ -505,6 +513,72 @@ mod tests {
             .manual_override = true;
         let moved2 = auto_advance_tick(&reg, &ctx, &microgrids, &current, &clock, now);
         assert!(moved2.is_empty());
+    }
+
+    /// A manual jump parks auto-advance until the wallclock catches up
+    /// to the jumped-to stage; the catch-up tick clears the override
+    /// (without firing a transition) and later wallclock movement
+    /// advances normally again — the contract `jump` documents.
+    #[test]
+    fn manual_override_clears_when_wallclock_catches_up() {
+        let reg = new_registry();
+        reg.lock().insert(
+            "two-stage".into(),
+            ScenarioEntry {
+                def: ScenarioDef {
+                    name: "two-stage".into(),
+                    description: String::new(),
+                    date: None,
+                    stages: vec![
+                        Stage {
+                            name: "morning".into(),
+                            hour_from: 6.0,
+                            hour_to: 12.0,
+                            on: None,
+                        },
+                        Stage {
+                            name: "afternoon".into(),
+                            hour_from: 12.0,
+                            hour_to: 18.0,
+                            on: None,
+                        },
+                    ],
+                },
+                // Operator jumped back to "morning" while the clock
+                // reads afternoon.
+                runtime: ScenarioRuntime {
+                    current_stage: Some(0),
+                    manual_override: true,
+                    ..Default::default()
+                },
+            },
+        );
+        let ctx = SharedMut::new(TulispContext::new());
+        let microgrids = crate::sim::microgrids::new_registry();
+        let current = crate::sim::microgrids::new_current_microgrid();
+        let clock = Clock::default();
+        let at = |h: u32, m: u32| {
+            chrono::TimeZone::with_ymd_and_hms(&chrono_tz::Europe::Berlin, 2026, 1, 15, h, m, 0)
+                .single()
+                .unwrap()
+                .with_timezone(&chrono::Utc)
+        };
+
+        // Wallclock wants stage 1 but the override holds stage 0.
+        let moved = auto_advance_tick(&reg, &ctx, &microgrids, &current, &clock, at(15, 30));
+        assert!(moved.is_empty());
+        assert!(reg.lock()["two-stage"].runtime.manual_override);
+
+        // Wallclock catches up to the jumped-to stage: the override
+        // clears, still without a transition (want == cur).
+        let moved = auto_advance_tick(&reg, &ctx, &microgrids, &current, &clock, at(9, 0));
+        assert!(moved.is_empty());
+        assert!(!reg.lock()["two-stage"].runtime.manual_override);
+
+        // From there, normal auto-advance resumes.
+        let moved = auto_advance_tick(&reg, &ctx, &microgrids, &current, &clock, at(15, 30));
+        assert_eq!(moved, vec!["two-stage".to_string()]);
+        assert_eq!(reg.lock()["two-stage"].runtime.current_stage, Some(1));
     }
 
     #[test]

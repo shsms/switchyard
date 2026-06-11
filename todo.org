@@ -934,7 +934,9 @@ mis-models the meter aggregation path.
 
 Fix: reword both docs to match the code and point at d5.
 
-*** TODO [#C] manual_override never auto-resumes, contradicting jump()'s doc :lisp:docs:
+*** DONE manual_override never auto-resumes, contradicting jump()'s doc :lisp:docs:
+Fixed 2026-06-11: the catch-up tick (want == cur) now clears the flag;
+covered by =manual_override_clears_when_wallclock_catches_up=.
 =scenarios::jump= (=src/sim/scenarios.rs:258=) documents that auto-advance
 stays away "until the operator either restarts it or the wallclock
 catches up to that stage" — but =auto_advance_tick= skips any
