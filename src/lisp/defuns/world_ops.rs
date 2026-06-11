@@ -22,8 +22,12 @@ pub(super) fn register(ctx: &mut TulispContext, router: SharedSiteRouter) {
             let parent = arg_to_component_id(&parent)?;
             let child = arg_to_component_id(&child)?;
             let w = r.site();
-            // MicrogridSite::connect doesn't return a status; we always ack.
-            w.connect(parent, child);
+            if !w.connect(parent, child) {
+                return Err(Error::invalid_argument(format!(
+                    "connect {parent} -> {child} would create a cycle; \
+                     power aggregation requires an acyclic topology"
+                )));
+            }
             Ok(true)
         },
     );

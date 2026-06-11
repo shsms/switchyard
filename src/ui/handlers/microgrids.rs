@@ -126,11 +126,21 @@ fn write_microgrid_stub(
             path.display()
         ));
     }
-    // Escape only " and \ inside the name string. The TSO is one of
-    // the four short codes ("TN" / "AM" / "HZ" / "BW") or unset, so
-    // the same escape rule covers it.
+    // Escape " and \ inside the name string, and strip control
+    // characters (incl. newlines) — tulisp strings tolerate embedded
+    // newlines so this isn't currently exploitable, but a name that
+    // can't break out of its string literal is cheap insurance for a
+    // file we later re-eval. The TSO is one of the four short codes
+    // ("TN" / "AM" / "HZ" / "BW") or unset, so the same rule covers it.
     fn esc(s: &str) -> String {
-        s.replace('\\', "\\\\").replace('"', "\\\"")
+        s.chars()
+            .filter(|c| !c.is_control())
+            .flat_map(|c| match c {
+                '\\' => vec!['\\', '\\'],
+                '"' => vec!['\\', '"'],
+                c => vec![c],
+            })
+            .collect()
     }
     let tso_form = match tso {
         Some(t) if !t.is_empty() => format!(" :tso \"{}\"", esc(t)),

@@ -235,11 +235,14 @@ impl SimulatedComponent for SolarInverter {
     }
 
     fn reset_setpoint(&self) {
-        // Snap back to the cloud-cover-determined floor — same value
-        // the per-tick clamp uses, so a reset that races with a cloud
-        // shift lands consistently.
+        // Ramp back toward the cloud-cover-determined floor rather
+        // than snapping — a reset is a control event, not a physical
+        // discontinuity, and the battery inverter's reset ramps the
+        // same way. The per-tick clamp recomputes the target from
+        // live sunlight anyway, so a reset racing a cloud shift still
+        // converges on the right floor.
         self.delay.reset();
-        self.ramp.snap_to(self.min_avail_w());
+        self.ramp.set_target(self.min_avail_w());
         self.reactive.reset();
     }
 

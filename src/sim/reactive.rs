@@ -72,7 +72,11 @@ impl ReactiveCapability {
 
         // No constraint configured at all → "anything goes" is too
         // dangerous; clamp to a finite default so the proto bounds
-        // field doesn't carry ±∞.
+        // field doesn't carry ±∞. NOTE the consequence: clearing both
+        // caps does NOT mean "unconstrained" — it means |Q| ≤ |P|
+        // (PF ≥ 0.707), which is ZERO reactive headroom at P = 0. A
+        // config that wants full-circle Q at idle must set
+        // :reactive-apparent-va explicitly.
         if !lo.is_finite() || !hi.is_finite() {
             lo = -p.abs();
             hi = p.abs();
@@ -273,6 +277,34 @@ mod tests {
         assert!(p.accept_setpoint(0.0, 8000.0).is_ok());
         let q = p.step(9000.0, Utc::now(), Duration::from_millis(100));
         assert!(q < 4400.0 && q > 4350.0, "expected ~4359, got {q}");
+    }
+
+    /// P drifting AFTER a Q command settled must also re-clamp: the
+    /// delay queue keeps returning the armed value on every poll, so
+    /// each step re-clamps it to the live envelope at the current P —
+    /// a sustained Volt/VAR setpoint can't push apparent power past
+    /// the kVA rating when active power later rises.
+    #[test]
+    fn reactive_path_re_clamps_on_p_drift_after_settle() {
+        let p = ReactivePath::new(
+            ReactiveCapability {
+                pf_limit: None,
+                apparent_va: Some(10_000.0),
+            },
+            Duration::ZERO,
+            f32::INFINITY,
+        );
+        assert!(p.accept_setpoint(0.0, 8000.0).is_ok());
+        // Settles at the full 8 kVAR while P = 0.
+        let q = p.step(0.0, Utc::now(), Duration::from_millis(100));
+        assert!((q - 8000.0).abs() < 1.0, "expected 8000, got {q}");
+        // P rises to 9 kW under the settled Q — the next tick clamps
+        // to √(100−81)·1000 ≈ 4359.
+        let q = p.step(9000.0, Utc::now(), Duration::from_millis(100));
+        assert!(q < 4400.0 && q > 4350.0, "expected ~4359, got {q}");
+        // P falls back — the original commanded Q is restored.
+        let q = p.step(0.0, Utc::now(), Duration::from_millis(100));
+        assert!((q - 8000.0).abs() < 1.0, "expected 8000 back, got {q}");
     }
 
     #[test]

@@ -83,6 +83,19 @@ struct BatteryState {
 
 impl Battery {
     pub fn new(id: u64, interval: Duration, cfg: BatteryConfig) -> Self {
+        // An over-wide protect margin makes BOTH taper bands active
+        // across the whole mid-SoC range, silently derating in both
+        // directions. Warn rather than clamp — the config author may
+        // genuinely want an always-tapering cell, but should know.
+        if cfg.soc_protect_margin_pct * 2.0 > cfg.soc_upper_pct - cfg.soc_lower_pct {
+            log::warn!(
+                "battery {id}: soc-protect-margin {} covers more than half the \
+                 [{}, {}] SoC band; both tapers are active at every SoC",
+                cfg.soc_protect_margin_pct,
+                cfg.soc_lower_pct,
+                cfg.soc_upper_pct,
+            );
+        }
         let init_soc = cfg.initial_soc_pct;
         let (l, u) = soc_protected_bounds(&cfg, init_soc);
         Self {
@@ -160,7 +173,12 @@ impl SimulatedComponent for Battery {
         let total_q = s.pending_q;
         s.pending_p = 0.0;
         s.pending_q = 0.0;
-        s.power_w = total_p.clamp(s.effective_lower_w, s.effective_upper_w);
+        // NaN-safe clamp: std `f32::clamp` panics on a NaN bound, and
+        // the bounds derive from config-supplied rated values with no
+        // finiteness guarantee — a panic here kills this microgrid's
+        // physics task permanently while gRPC keeps serving stale
+        // telemetry. min/max propagate the finite side instead.
+        s.power_w = total_p.min(s.effective_upper_w).max(s.effective_lower_w);
         s.reactive_var = total_q;
 
         // 3. SoC update from settled P. ΔSoC = P · dt / capacity, in %.
