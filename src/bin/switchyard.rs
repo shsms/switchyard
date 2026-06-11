@@ -216,24 +216,30 @@ async fn main() {
         });
     }
 
-    tokio::spawn(async move {
+    // Critical long-running tasks (UI server, every gRPC listener)
+    // go into one JoinSet: any of them exiting means the process is
+    // limping with a dead surface, so main notices the FIRST exit and
+    // shuts the whole binary down instead of serving degraded. (The
+    // lisp refresh + timeout loops live inside Config and stay
+    // fire-and-forget for now.)
+    let mut tasks: tokio::task::JoinSet<&'static str> = tokio::task::JoinSet::new();
+    tasks.spawn(async move {
         if let Err(e) = ui::serve(ui_addr, ui_config, microgrid, loopbacks).await {
             log::error!("UI server exited: {e}");
         }
+        "UI server"
     });
 
     // One Microgrid gRPC server per registry entry. tonic Server's
     // `serve` future drives a single listener — we spawn one task
-    // per microgrid so the binary's main future is the join of all
-    // listeners.
-    let mut tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+    // per microgrid.
     for (id, name, port, site) in entries {
         let addr: std::net::SocketAddr = format!("[::1]:{port}")
             .parse()
             .unwrap_or_else(|e| panic!("invalid grpc port for microgrid {id}: {e}"));
         log::info!("Microgrid #{id} {name:?} gRPC listening on {addr}");
         let cfg_for_server = config.clone();
-        tasks.push(tokio::spawn(async move {
+        tasks.spawn(async move {
             let mg_server = MicrogridServer::new(cfg_for_server, id, site);
             if let Err(e) = Server::builder()
                 .add_service(MicrogridGrpcServer::new(mg_server))
@@ -242,7 +248,8 @@ async fn main() {
             {
                 log::error!("Microgrid #{id} gRPC server exited: {e}");
             }
-        }));
+            "Microgrid gRPC server"
+        });
     }
     // PlatformAssets sits on its own listener so it's reachable
     // regardless of which microgrid the client picks. Defaults to
@@ -253,7 +260,7 @@ async fn main() {
         .unwrap_or_else(|e| panic!("invalid assets socket addr {assets_addr_str:?}: {e}"));
     log::info!("PlatformAssets gRPC listening on {assets_addr}");
     let cfg_for_assets = config.clone();
-    tasks.push(tokio::spawn(async move {
+    tasks.spawn(async move {
         if let Err(e) = Server::builder()
             .add_service(AssetsGrpcServer::new(AssetsServer::new(cfg_for_assets)))
             .serve(assets_addr)
@@ -261,7 +268,8 @@ async fn main() {
         {
             log::error!("PlatformAssets gRPC server exited: {e}");
         }
-    }));
+        "PlatformAssets gRPC server"
+    });
     // The single (enterprise-wide) MicrogridDispatchService. Like
     // PlatformAssets it sits on its own listener — one service fronts
     // every microgrid, keyed by the microgrid_id carried in each
@@ -275,7 +283,7 @@ async fn main() {
     log::info!("MicrogridDispatch gRPC listening on {dispatch_addr}");
     let dispatch_store = config.dispatches();
     let dispatch_registry = config.microgrids();
-    tasks.push(tokio::spawn(async move {
+    tasks.spawn(async move {
         if let Err(e) = Server::builder()
             .add_service(DispatchGrpcServer::new(DispatchServer::new(
                 dispatch_store,
@@ -286,8 +294,16 @@ async fn main() {
         {
             log::error!("MicrogridDispatch gRPC server exited: {e}");
         }
-    }));
-    for h in tasks {
-        let _ = h.await;
+        "MicrogridDispatch gRPC server"
+    });
+    // First exit wins: a critical surface died (its own error was
+    // already logged), so stop the whole process rather than limping
+    // on with the remaining listeners.
+    if let Some(res) = tasks.join_next().await {
+        match res {
+            Ok(label) => log::error!("{label} exited; shutting down"),
+            Err(e) => log::error!("critical task panicked: {e}; shutting down"),
+        }
+        std::process::exit(1);
     }
 }
