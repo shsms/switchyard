@@ -706,10 +706,14 @@ impl MicrogridSite {
                 last = now;
                 self.tick_once(now, dt);
                 // Re-read the tick interval each iteration so config
-                // changes take effect without a restart.
+                // changes take effect without a restart. interval_at
+                // (first tick a full period out) — a plain interval's
+                // immediate first tick would fire one extra pass on
+                // every cadence change.
                 let target = self.physics_tick();
                 if interval.period() != target {
-                    interval = tokio::time::interval(target);
+                    interval =
+                        tokio::time::interval_at(tokio::time::Instant::now() + target, target);
                     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                 }
             }
