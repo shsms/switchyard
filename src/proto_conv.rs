@@ -50,8 +50,11 @@ pub fn category_to_proto(c: Category) -> ElectricalComponentCategory {
 }
 
 /// Build the static, type-defining `ElectricalComponent` for a
-/// component (used by `ListElectricalComponents`).
-pub fn make_component_proto(c: &dyn SimulatedComponent) -> ElectricalComponent {
+/// component (used by `ListElectricalComponents` and the assets
+/// listing). `microgrid_id` comes from the caller — the per-port
+/// Microgrid server knows its own id, the assets server takes it
+/// from the request — so multi-microgrid clients can route by it.
+pub fn make_component_proto(c: &dyn SimulatedComponent, microgrid_id: u64) -> ElectricalComponent {
     let cat = category_to_proto(c.category());
     let kind = match cat {
         ElectricalComponentCategory::Inverter => Some(Kind::Inverter(Inverter {
@@ -122,7 +125,7 @@ pub fn make_component_proto(c: &dyn SimulatedComponent) -> ElectricalComponent {
         id: c.id(),
         name: c.name().to_string(),
         category: cat as i32,
-        microgrid_id: 0,
+        microgrid_id,
         category_specific_info: Some(ElectricalComponentCategorySpecificInfo { kind }),
         metric_config_bounds: bounds,
         ..Default::default()
@@ -276,15 +279,22 @@ pub fn telemetry_to_proto(
         states.push(code as i32);
     }
 
+    // No state codes resolved → no snapshot at all; an empty snapshot
+    // would make a metrics-only frame look like a state report.
+    let state_snapshots = if states.is_empty() {
+        Vec::new()
+    } else {
+        vec![ElectricalComponentStateSnapshot {
+            origin_time: now,
+            states,
+            ..Default::default()
+        }]
+    };
     ReceiveElectricalComponentTelemetryStreamResponse {
         telemetry: Some(ElectricalComponentTelemetry {
             electrical_component_id: c.id(),
             metric_samples: samples,
-            state_snapshots: vec![ElectricalComponentStateSnapshot {
-                origin_time: now,
-                states,
-                ..Default::default()
-            }],
+            state_snapshots,
         }),
     }
 }

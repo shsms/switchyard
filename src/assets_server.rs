@@ -84,7 +84,7 @@ impl platform_assets_server::PlatformAssets for AssetsServer {
             .components()
             .iter()
             .filter(|c| !c.is_hidden())
-            .map(|c| make_component_proto(c.as_ref()))
+            .map(|c| make_component_proto(c.as_ref(), req.microgrid_id))
             .filter(|c| {
                 (req.component_ids.is_empty() || req.component_ids.contains(&c.id))
                     && (req.categories.is_empty() || req.categories.contains(&c.category))
