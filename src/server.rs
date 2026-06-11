@@ -15,25 +15,28 @@ use tokio_stream::wrappers::ReceiverStream;
 use crate::lisp::Config;
 use crate::proto::common::metrics::Metric;
 
-/// Per the Frequenz Microgrid API, request_lifetime on both
-/// SetElectricalComponentPower and AugmentElectricalComponentBounds
-/// must fit in this window. 10 s is long enough for a control loop
-/// to apply and settle; 15 min caps how long a forgotten request
-/// can park a component away from its default. Out-of-range values
-/// are rejected with InvalidArgument; absent values fall back to
+/// Per the Frequenz Microgrid API, request_lifetime must fit in an
+/// RPC-specific window. SetElectricalComponentPower's minimum is
+/// 10 s (long enough for a control loop to apply and settle);
+/// AugmentElectricalComponentBounds allows down to 5 s. Both share
+/// the 15 min cap on how long a forgotten request can park a
+/// component away from its default. Out-of-range values are
+/// rejected with InvalidArgument; absent values fall back to
 /// `Metadata::default_request_lifetime` (configurable from lisp).
-const REQUEST_LIFETIME_MIN_S: u64 = 10;
+const SET_POWER_LIFETIME_MIN_S: u64 = 10;
+const AUGMENT_LIFETIME_MIN_S: u64 = 5;
 const REQUEST_LIFETIME_MAX_S: u64 = 15 * 60;
 
 fn resolve_lifetime(
     req_lifetime_s: Option<u64>,
+    min_s: u64,
     fallback: Duration,
 ) -> Result<Duration, tonic::Status> {
     match req_lifetime_s {
         Some(s) => {
-            if !(REQUEST_LIFETIME_MIN_S..=REQUEST_LIFETIME_MAX_S).contains(&s) {
+            if !(min_s..=REQUEST_LIFETIME_MAX_S).contains(&s) {
                 return Err(tonic::Status::invalid_argument(format!(
-                    "request_lifetime {s} s outside [{REQUEST_LIFETIME_MIN_S}, \
+                    "request_lifetime {s} s outside [{min_s}, \
                      {REQUEST_LIFETIME_MAX_S}] s",
                 )));
             }
@@ -201,23 +204,29 @@ impl MicrogridServer {
         // `OverBound` is a setpoint-only fault: the gateway advertised
         // bounds that accept this value but rejects it against a tighter
         // internal limit just below the request, returning
-        // INVALID_ARGUMENT. Faulting is intermittent and rotating per
-        // component (see `over_bound_faulty_now`), so the set of currently
-        // rejecting components churns over time. Zero-power (fail-safe)
+        // INVALID_ARGUMENT. Applies to both power types — a device
+        // lying about its envelope lies on the reactive axis too.
+        // Faulting is intermittent and rotating per component (see
+        // `over_bound_faulty_now`), so the set of currently rejecting
+        // components churns over time. Zero-power (fail-safe)
         // setpoints are still accepted.
         if matches!(command, CommandMode::OverBound)
-            && matches!(power_type, PowerType::Active)
             && req.power != 0.0
             && Self::over_bound_faulty_now(req.electrical_component_id)
         {
             let allowed = (req.power.abs() * 0.97).round();
-            let direction = if req.power >= 0.0 {
-                "charge"
+            let label = match power_type {
+                PowerType::Active if req.power >= 0.0 => "charge power",
+                PowerType::Active => "discharge power",
+                _ => "reactive power",
+            };
+            let unit = if matches!(power_type, PowerType::Active) {
+                "W"
             } else {
-                "discharge"
+                "VAR"
             };
             return Err(tonic::Status::invalid_argument(format!(
-                "Requested {direction} power {} W exceeds the maximum allowed {allowed} W",
+                "Requested {label} {} {unit} exceeds the maximum allowed {allowed} {unit}",
                 req.power.abs().round()
             )));
         }
@@ -249,6 +258,7 @@ impl MicrogridServer {
         // registered while the client believes the request failed.
         let duration = resolve_lifetime(
             req.request_lifetime,
+            SET_POWER_LIFETIME_MIN_S,
             self.config.metadata().default_request_lifetime,
         )?;
 
@@ -264,11 +274,14 @@ impl MicrogridServer {
 
         site.add_timeout(req.electrical_component_id, duration);
 
+        // Per the proto, a successful response carries the expiry the
+        // TTL was armed with so a client can time its refresh.
+        let valid_until = Some(Timestamp::from(SystemTime::now() + duration));
         let (tx, rx) = tokio::sync::mpsc::channel(1);
         tokio::spawn(async move {
             let _ = tx
                 .send(Ok(SetElectricalComponentPowerResponse {
-                    valid_until_time: None,
+                    valid_until_time: valid_until,
                     status: SetElectricalComponentPowerRequestStatus::Success as i32,
                 }))
                 .await;
@@ -333,7 +346,7 @@ impl microgrid_server::Microgrid for MicrogridServer {
             .components()
             .iter()
             .filter(|c| !c.is_hidden())
-            .map(|c| make_component_proto(c.as_ref()))
+            .map(|c| make_component_proto(c.as_ref(), self.microgrid_id))
             .filter(|c| {
                 (req.electrical_component_ids.is_empty()
                     || req.electrical_component_ids.contains(&c.id))
@@ -408,11 +421,33 @@ impl microgrid_server::Microgrid for MicrogridServer {
         // the request is then rejected before any TTL takes effect.
         let ttl_s = resolve_lifetime(
             req.request_lifetime,
+            SET_POWER_LIFETIME_MIN_S,
             self.config.metadata().default_request_lifetime,
         )
         .ok()
         .map(|d| d.as_secs());
         let site = self.site.clone();
+        // A Timeout-fault component parks the request indefinitely
+        // (gate_runtime_faults pends until the client cancels), so the
+        // tail logging below would never run — yet the stuck-component
+        // case is exactly what the setpoint inspector exists to
+        // surface. Log the attempt up front for those.
+        if site.get(id).is_some() && site.runtime_of(id).command == CommandMode::Timeout {
+            site.log_setpoint(
+                id,
+                SetpointEvent {
+                    ts: chrono::Utc::now(),
+                    kind,
+                    value,
+                    ttl_s,
+                    outcome: SetpointOutcome::Rejected {
+                        reason: "command channel hung (timeout fault); request parked \
+                                 until the client deadline"
+                            .to_string(),
+                    },
+                },
+            );
+        }
         let response = self.do_set_power(req, power_type).await;
 
         let outcome = match &response {
@@ -602,6 +637,7 @@ impl microgrid_server::Microgrid for MicrogridServer {
 
         let lifetime = resolve_lifetime(
             req.request_lifetime,
+            AUGMENT_LIFETIME_MIN_S,
             self.config.metadata().default_request_lifetime,
         )?;
         let lifetime_s = lifetime.as_secs() as i64;
@@ -609,7 +645,28 @@ impl microgrid_server::Microgrid for MicrogridServer {
         let id = req.electrical_component_id;
 
         let site = self.site.clone();
-        let response = match site.get(id) {
+        let component = site.get(id);
+        let known = component.is_some();
+        // Timeout-fault components park the request inside
+        // gate_runtime_faults — log the attempt up front, same
+        // rationale as the SetPower path.
+        if known && site.runtime_of(id).command == CommandMode::Timeout {
+            site.log_setpoint(
+                id,
+                SetpointEvent {
+                    ts: now,
+                    kind: SetpointKind::AugmentBounds,
+                    value: 0.0,
+                    ttl_s: Some(lifetime.as_secs()),
+                    outcome: SetpointOutcome::Rejected {
+                        reason: "command channel hung (timeout fault); request parked \
+                                 until the client deadline"
+                            .to_string(),
+                    },
+                },
+            );
+        }
+        let response = match component {
             // Reject the augmentation for an errored/standby/unreachable
             // device, same as a setpoint command.
             Some(component) => match self.gate_runtime_faults(id).await {
@@ -646,16 +703,21 @@ impl microgrid_server::Microgrid for MicrogridServer {
                 reason: s.message().to_string(),
             },
         };
-        site.log_setpoint(
-            id,
-            SetpointEvent {
-                ts: now,
-                kind: SetpointKind::AugmentBounds,
-                value: 0.0,
-                ttl_s: Some(lifetime.as_secs()),
-                outcome,
-            },
-        );
+        // Don't auto-create a zombie SetpointLog ring for an id that
+        // was never registered — SetPower returns before logging on
+        // not-found; match it.
+        if known {
+            site.log_setpoint(
+                id,
+                SetpointEvent {
+                    ts: now,
+                    kind: SetpointKind::AugmentBounds,
+                    value: 0.0,
+                    ttl_s: Some(lifetime.as_secs()),
+                    outcome,
+                },
+            );
+        }
         response
     }
 
