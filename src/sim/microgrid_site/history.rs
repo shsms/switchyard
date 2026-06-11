@@ -57,12 +57,24 @@ impl MicrogridSite {
         // not active_power_w) get integrated too.
         let mut battery_samples: Vec<(u64, f32)> = Vec::new();
         let mut pv_samples: Vec<(u64, f32)> = Vec::new();
+        // Collect every telemetry snapshot BEFORE taking the
+        // histories / CSV write locks: `telemetry()` re-enters
+        // `runtime` / `connections` reads, and holding the write
+        // guards across it set up a fragile lock ordering against
+        // `reset()`'s components→by_id→runtime→histories sequence.
+        let snapshots: Vec<_> = components
+            .iter()
+            .map(|c| {
+                let snap = c.telemetry(self);
+                let bounds = c.effective_active_bounds();
+                (c, snap, bounds)
+            })
+            .collect();
         {
             let mut histories = self.inner.histories.write();
             let mut csv_sinks = self.inner.scenario_csv.write();
             let mut bounds_sinks = self.inner.scenario_bounds_csv.write();
-            for c in &components {
-                let snap = c.telemetry(self);
+            for (c, snap, bounds) in &snapshots {
                 match c.category() {
                     Category::Battery => {
                         if let Some(p) = snap.dc_power_w {
@@ -77,20 +89,20 @@ impl MicrogridSite {
                     _ => {}
                 }
                 if let Some(sink) = csv_sinks.get_mut(&c.id())
-                    && let Err(e) = sink.write_row(now, &snap)
+                    && let Err(e) = sink.write_row(now, snap)
                 {
                     log::warn!("CSV write failed for {}: {e}", c.id());
                 }
                 if let Some(sink) = bounds_sinks.get_mut(&c.id())
-                    && let Some(bounds) = c.effective_active_bounds()
-                    && let Err(e) = sink.write_bounds_row(now, &bounds)
+                    && let Some(bounds) = bounds
+                    && let Err(e) = sink.write_bounds_row(now, bounds)
                 {
                     log::warn!("bounds CSV write failed for {}: {e}", c.id());
                 }
                 let entry = histories
                     .entry(c.id())
                     .or_insert_with(|| ComponentHistory::new(HISTORY_CAPACITY));
-                for (m, v) in entry.push_snapshot(now, &snap) {
+                for (m, v) in entry.push_snapshot(now, snap) {
                     emitted.push((c.id(), m, v));
                 }
             }

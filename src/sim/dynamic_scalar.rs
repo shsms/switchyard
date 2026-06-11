@@ -96,15 +96,18 @@ impl DynamicScalar {
         Some(Self::from_funcall(obj.clone(), fallback))
     }
 
-    /// Read the cached resolved value. Cheap; never blocks.
+    /// Read the cached resolved value. Cheap; never blocks. Acquire
+    /// pairs with `set`'s Release so the physics-tick reader observes
+    /// the refresh thread's latest store without relying implicitly
+    /// on surrounding locks for visibility.
     pub fn get(&self) -> f32 {
-        f32::from_bits(self.cached.load(Ordering::Relaxed))
+        f32::from_bits(self.cached.load(Ordering::Acquire))
     }
 
     /// Overwrite the cached value. Used by `(set-meter-power id W)`-
     /// style external setters and by tests.
     pub fn set(&self, v: f32) {
-        self.cached.store(v.to_bits(), Ordering::Relaxed);
+        self.cached.store(v.to_bits(), Ordering::Release);
     }
 
     /// True if the source is a Lisp expression rather than a static
