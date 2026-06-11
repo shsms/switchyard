@@ -27,16 +27,23 @@ use crate::proto::common::streaming::Event;
 use crate::proto::common::types::Interval;
 use crate::proto::dispatch as pb;
 use crate::sim::dispatch::{
-    DispatchChange, DispatchError, SharedDispatchStore, is_recurring, stamp_updated, ts_to_dt,
+    DispatchChange, DispatchError, SharedDispatchStore, is_recurring, ts_to_dt,
 };
 
 pub struct DispatchServer {
     pub store: SharedDispatchStore,
+    /// Enterprise registry, used to reject creates against microgrid
+    /// ids that don't exist — a typo'd id would otherwise mint a
+    /// phantom store entry that accumulates forever (no TTL).
+    pub microgrids: crate::sim::microgrids::SharedMicrogrids,
 }
 
 impl DispatchServer {
-    pub fn new(store: SharedDispatchStore) -> Self {
-        Self { store }
+    pub fn new(
+        store: SharedDispatchStore,
+        microgrids: crate::sim::microgrids::SharedMicrogrids,
+    ) -> Self {
+        Self { store, microgrids }
     }
 }
 
@@ -51,6 +58,12 @@ impl pb::microgrid_dispatch_service_server::MicrogridDispatchService for Dispatc
         request: tonic::Request<pb::CreateMicrogridDispatchRequest>,
     ) -> Result<tonic::Response<pb::CreateMicrogridDispatchResponse>, tonic::Status> {
         let req = request.into_inner();
+        if !self.microgrids.lock().contains_key(&req.microgrid_id) {
+            return Err(tonic::Status::not_found(format!(
+                "microgrid {} not registered",
+                req.microgrid_id
+            )));
+        }
         let data = req
             .dispatch_data
             .ok_or_else(|| tonic::Status::invalid_argument("dispatch_data is required"))?;
@@ -115,10 +128,6 @@ impl pb::microgrid_dispatch_service_server::MicrogridDispatchService for Dispatc
         request: tonic::Request<pb::UpdateMicrogridDispatchRequest>,
     ) -> Result<tonic::Response<pb::UpdateMicrogridDispatchResponse>, tonic::Status> {
         let req = request.into_inner();
-        let mut dispatch = self
-            .store
-            .get(req.microgrid_id, req.dispatch_id)
-            .ok_or_else(|| not_found(req.microgrid_id, req.dispatch_id))?;
         let update = req
             .update
             .ok_or_else(|| tonic::Status::invalid_argument("update is required"))?;
@@ -135,41 +144,40 @@ impl pb::microgrid_dispatch_service_server::MicrogridDispatchService for Dispatc
             .map(|m| m.paths.iter().map(String::as_str).collect());
         let want = |path: &str| masked.as_ref().is_none_or(|s| s.contains(path));
 
-        let data = dispatch.data.get_or_insert_with(Default::default);
-        if want("start_time") && update.start_time.is_some() {
-            data.start_time = update.start_time;
-        }
-        if want("duration") && (masked.is_some() || update.duration.is_some()) {
-            // Under an explicit mask, a None clears the duration
-            // (indefinite); mask-less, only a present value applies.
-            data.duration = update.duration;
-        }
-        if want("target") && update.target.is_some() {
-            data.target = update.target;
-        }
-        if want("is_active")
-            && let Some(active) = update.is_active
-        {
-            data.is_active = active;
-        }
-        if want("payload") && update.payload.is_some() {
-            data.payload = update.payload;
-        }
-        if want("recurrence")
-            && let Some(rec) = &update.recurrence
-        {
-            let merged = recurrence_from_update(data.recurrence.as_ref(), rec);
-            data.recurrence = Some(merged);
-        }
-
-        // Re-stamp update_time + end_time after the merge. `replace`
-        // is false if the dispatch was deleted between our get and
-        // here — report NotFound rather than a phantom success,
-        // matching the store's own set_active.
-        stamp_updated(&mut dispatch);
-        if !self.store.replace(req.microgrid_id, dispatch.clone()) {
-            return Err(not_found(req.microgrid_id, req.dispatch_id));
-        }
+        // The merge runs inside `update_with`, under the store's write
+        // lock — a get → merge → replace sequence here raced concurrent
+        // updates (one write silently lost) and mid-flight deletes.
+        let dispatch = self
+            .store
+            .update_with(req.microgrid_id, req.dispatch_id, |dispatch| {
+                let data = dispatch.data.get_or_insert_with(Default::default);
+                if want("start_time") && update.start_time.is_some() {
+                    data.start_time = update.start_time;
+                }
+                if want("duration") && (masked.is_some() || update.duration.is_some()) {
+                    // Under an explicit mask, a None clears the duration
+                    // (indefinite); mask-less, only a present value applies.
+                    data.duration = update.duration;
+                }
+                if want("target") && update.target.is_some() {
+                    data.target = update.target;
+                }
+                if want("is_active")
+                    && let Some(active) = update.is_active
+                {
+                    data.is_active = active;
+                }
+                if want("payload") && update.payload.is_some() {
+                    data.payload = update.payload;
+                }
+                if want("recurrence")
+                    && let Some(rec) = &update.recurrence
+                {
+                    let merged = recurrence_from_update(data.recurrence.as_ref(), rec);
+                    data.recurrence = Some(merged);
+                }
+            })
+            .map_err(|_| not_found(req.microgrid_id, req.dispatch_id))?;
         log::info!(
             "UpdateMicrogridDispatch(microgrid_id={}, dispatch_id={})",
             req.microgrid_id,
@@ -215,8 +223,10 @@ impl pb::microgrid_dispatch_service_server::MicrogridDispatchService for Dispatc
         let mut changes = self.store.subscribe();
         // Snapshot the current dispatches *before* spawning so the
         // replay can't miss a create that lands between subscribe and
-        // the first recv (it would just be re-sent — events are
-        // idempotent by id downstream).
+        // the first recv. The same window means a create can be
+        // delivered TWICE (once in the snapshot, once from the bus) —
+        // at-most-twice, and events are idempotent by id downstream,
+        // so clients keying on dispatch_id converge either way.
         let snapshot = self.store.list_mg(microgrid_id);
         log::info!("StreamMicrogridDispatches(microgrid_id={microgrid_id}) subscribed");
 
@@ -251,10 +261,18 @@ impl pb::microgrid_dispatch_service_server::MicrogridDispatchService for Dispatc
                     }
                     // Event for another microgrid: ignore.
                     Ok(_) => continue,
-                    // Fell behind the ring; the client re-syncs via List.
+                    // Fell behind the ring — events were dropped, so the
+                    // client's picture has silently diverged. End the
+                    // stream with DATA_LOSS so it knows to re-list and
+                    // re-subscribe rather than carry on stale.
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                         log::warn!("dispatch stream (mg {microgrid_id}) lagged {n} events");
-                        continue;
+                        let _ = tx
+                            .send(Err(tonic::Status::data_loss(format!(
+                                "dispatch stream dropped {n} events; re-list and re-subscribe"
+                            ))))
+                            .await;
+                        break;
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
@@ -516,7 +534,24 @@ mod tests {
     use pb::microgrid_dispatch_service_server::MicrogridDispatchService;
 
     fn server() -> DispatchServer {
-        DispatchServer::new(new_store())
+        // Pre-register every microgrid id the tests create against —
+        // the create path rejects unknown ids.
+        let microgrids = crate::sim::microgrids::new_registry();
+        for id in [1u64, 7, 100, 200, 300, 2200] {
+            microgrids.lock().insert(
+                id,
+                crate::sim::microgrids::MicrogridEntry {
+                    def: crate::sim::microgrids::MicrogridDef {
+                        id,
+                        name: format!("mg-{id}"),
+                        grpc_port: 8800,
+                        tso: None,
+                    },
+                    site: crate::sim::MicrogridSite::new(),
+                },
+            );
+        }
+        DispatchServer::new(new_store(), microgrids)
     }
 
     fn data(type_: &str, active: bool) -> pb::DispatchData {

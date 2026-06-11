@@ -225,6 +225,32 @@ impl DispatchStore {
         Ok(dispatch)
     }
 
+    /// Apply `f` to a stored dispatch under ONE write-lock
+    /// acquisition, re-stamp `update_time` / `end_time`, and
+    /// broadcast `Updated`. This closes the read-modify-write window
+    /// a get → merge → replace sequence leaves open: two concurrent
+    /// updates (or an update racing a pause) would otherwise drop one
+    /// of the writes wholesale, last-replace-wins.
+    pub fn update_with(
+        &self,
+        microgrid_id: u64,
+        dispatch_id: u64,
+        f: impl FnOnce(&mut pb::Dispatch),
+    ) -> Result<pb::Dispatch, DispatchError> {
+        let updated = {
+            let mut guard = self.inner.write();
+            let slot = guard
+                .get_mut(&microgrid_id)
+                .and_then(|m| m.get_mut(&dispatch_id))
+                .ok_or(DispatchError::NotFound)?;
+            f(slot);
+            stamp_updated(slot);
+            slot.clone()
+        };
+        self.broadcast(microgrid_id, DispatchChange::Updated, updated.clone());
+        Ok(updated)
+    }
+
     /// Flip a dispatch's `is_active` flag (pause / resume), re-stamping
     /// `update_time` + `end_time` and broadcasting `Updated`. Returns
     /// [`DispatchError::NotFound`] if the dispatch is gone.
@@ -234,19 +260,11 @@ impl DispatchStore {
         dispatch_id: u64,
         active: bool,
     ) -> Result<pb::Dispatch, DispatchError> {
-        let mut dispatch = self
-            .get(microgrid_id, dispatch_id)
-            .ok_or(DispatchError::NotFound)?;
-        if let Some(data) = dispatch.data.as_mut() {
-            data.is_active = active;
-        }
-        stamp_updated(&mut dispatch);
-        // `replace` is false if the dispatch was deleted between our get
-        // and here — report NotFound rather than a phantom success.
-        if !self.replace(microgrid_id, dispatch.clone()) {
-            return Err(DispatchError::NotFound);
-        }
-        Ok(dispatch)
+        self.update_with(microgrid_id, dispatch_id, |dispatch| {
+            if let Some(data) = dispatch.data.as_mut() {
+                data.is_active = active;
+            }
+        })
     }
 
     /// Fetch a single dispatch by id.
