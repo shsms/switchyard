@@ -217,13 +217,24 @@ pub fn start(
         e.runtime.manual_override = false;
         e.def.stages.get(idx).and_then(|s| s.on.clone())
     };
+    // Fan out across every microgrid even when one :on lambda errors —
+    // aborting mid-loop would leave later microgrids without the
+    // stage's effects while the runtime already says the scenario
+    // started. Failures are collected and reported together.
+    let mut errors = Vec::new();
     for (mg_id, site) in registered_sites(microgrids) {
         site.scenario_start(name.to_owned(), now);
-        if let Some(ref lam) = on {
-            with_microgrid(current, mg_id, || funcall_lambda(ctx, lam))?;
+        if let Some(ref lam) = on
+            && let Err(e) = with_microgrid(current, mg_id, || funcall_lambda(ctx, lam))
+        {
+            errors.push(format!("mg #{mg_id}: {e}"));
         }
     }
-    Ok(())
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(":on errored on {}", errors.join("; ")))
+    }
 }
 
 /// Stop the scenario. Clears runtime state and records a
@@ -283,14 +294,22 @@ pub fn jump(
         }
         e.def.stages[idx].on.clone()
     };
+    // Same continue-on-error fan-out as `start` — see the comment there.
     let payload = format!("{name}:{idx}");
+    let mut errors = Vec::new();
     for (mg_id, site) in registered_sites(microgrids) {
         site.scenario_record("stage-jump".to_owned(), payload.clone(), now);
-        if let Some(ref lam) = on {
-            with_microgrid(current, mg_id, || funcall_lambda(ctx, lam))?;
+        if let Some(ref lam) = on
+            && let Err(e) = with_microgrid(current, mg_id, || funcall_lambda(ctx, lam))
+        {
+            errors.push(format!("mg #{mg_id}: {e}"));
         }
     }
-    Ok(())
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(":on errored on {}", errors.join("; ")))
+    }
 }
 
 /// `prev` and `next` are jumps by ±1 relative to the current stage.
@@ -579,6 +598,72 @@ mod tests {
         let moved = auto_advance_tick(&reg, &ctx, &microgrids, &current, &clock, at(15, 30));
         assert_eq!(moved, vec!["two-stage".to_string()]);
         assert_eq!(reg.lock()["two-stage"].runtime.current_stage, Some(1));
+    }
+
+    /// An erroring :on lambda must not abort the per-microgrid
+    /// fan-out: every site still journals the start, and the error
+    /// reports every affected microgrid.
+    #[test]
+    fn start_fans_out_past_an_erroring_on_lambda() {
+        let mut raw_ctx = TulispContext::new();
+        let lam = raw_ctx
+            .eval_string("(lambda () (no-such-fn))")
+            .expect("lambda parses");
+        let ctx = SharedMut::new(raw_ctx);
+
+        let reg = new_registry();
+        reg.lock().insert(
+            "broken".into(),
+            ScenarioEntry {
+                def: ScenarioDef {
+                    name: "broken".into(),
+                    description: String::new(),
+                    date: None,
+                    stages: vec![Stage {
+                        name: "all-day".into(),
+                        hour_from: 0.0,
+                        hour_to: 24.0,
+                        on: Some(lam),
+                    }],
+                },
+                runtime: ScenarioRuntime::default(),
+            },
+        );
+
+        let microgrids = crate::sim::microgrids::new_registry();
+        for id in [2200u64, 2201] {
+            microgrids.lock().insert(
+                id,
+                crate::sim::microgrids::MicrogridEntry {
+                    def: crate::sim::microgrids::MicrogridDef {
+                        id,
+                        name: format!("mg-{id}"),
+                        grpc_port: 8800,
+                        tso: None,
+                    },
+                    site: MicrogridSite::new(),
+                },
+            );
+        }
+        let current = crate::sim::microgrids::new_current_microgrid();
+        let clock = Clock::default();
+        let now = Utc::now();
+
+        let err = start(&reg, &ctx, &microgrids, &current, &clock, "broken", now)
+            .expect_err("the :on lambda errors");
+        // Both microgrids are named in the combined error...
+        assert!(err.contains("#2200") && err.contains("#2201"), "{err}");
+        // ...and both journals saw the start despite the failures.
+        for entry in reg.lock().values() {
+            assert_eq!(entry.runtime.current_stage, Some(0));
+        }
+        for (_, site) in microgrids
+            .lock()
+            .iter()
+            .map(|(id, e)| (*id, e.site.clone()))
+        {
+            assert_eq!(site.scenario_summary(now).name.as_deref(), Some("broken"));
+        }
     }
 
     #[test]
