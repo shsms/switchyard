@@ -623,7 +623,9 @@ async fn run_dispatch(
                 .create_microgrid_dispatch(CreateMicrogridDispatchRequest {
                     microgrid_id,
                     dispatch_data: Some(data),
-                    start_immediately: Some(start_immediately),
+                    // None (not Some(false)) when a start time was
+                    // given — absent is the proto's "not requested".
+                    start_immediately: start_immediately.then_some(true),
                 })
                 .await?
                 .into_inner();
@@ -792,8 +794,12 @@ async fn run_pool(
         PoolCmd::Pv { stream } => ("pv", stream),
     };
     loop {
-        let line = build_pool_line(&http, ui_addr, mg, kind, json).await?;
-        println!("{line}");
+        // Same transient-error tolerance as dashboard --tail.
+        match build_pool_line(&http, ui_addr, mg, kind, json).await {
+            Ok(line) => println!("{line}"),
+            Err(e) if stream => eprintln!("swctl: pool fetch failed ({e}); retrying"),
+            Err(e) => return Err(e),
+        }
         if !stream {
             return Ok(());
         }
@@ -903,8 +909,14 @@ async fn run_dashboard(
     let mg = resolve_microgrid_id(&http, ui_addr, microgrid_id).await?;
     let dt = std::time::Duration::from_secs_f64(interval.max(0.1));
     loop {
-        let line = build_dashboard_line(&http, ui_addr, mg).await?;
-        println!("{line}");
+        // In --tail mode a transient HTTP error (server mid-reload,
+        // loopback rebuilding) must not abort an overnight watch —
+        // warn and try again next tick. One-shot mode still errors.
+        match build_dashboard_line(&http, ui_addr, mg).await {
+            Ok(line) => println!("{line}"),
+            Err(e) if tail => eprintln!("swctl: dashboard fetch failed ({e}); retrying"),
+            Err(e) => return Err(e),
+        }
         if !tail {
             return Ok(());
         }
@@ -1062,13 +1074,20 @@ async fn run_scenario(
 async fn run_snapshot(
     cmd: SnapshotCmd,
     ui_addr: &str,
-    _microgrid_id: Option<u64>,
+    microgrid_id: Option<u64>,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Snapshots route through the legacy /api/snapshots/* endpoint
     // for now (per-mg /api/mg/{id}/snapshots/* lands when the
-    // override-path migration finishes). --microgrid-id is
-    // accepted for forward-compat but unused.
+    // override-path migration finishes). --microgrid-id is accepted
+    // for forward-compat but unused — say so instead of silently
+    // operating on the ambient scope the user didn't pick.
+    if let Some(id) = microgrid_id {
+        eprintln!(
+            "swctl: --microgrid-id {id} is not honoured by snapshots yet; \
+             the server's current scope applies"
+        );
+    }
     let http = reqwest::Client::new();
     match cmd {
         SnapshotCmd::Save { name } => {
