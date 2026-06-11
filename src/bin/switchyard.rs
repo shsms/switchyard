@@ -169,6 +169,53 @@ async fn main() {
         spawner_loopbacks.write().insert(id, slot);
     });
 
+    // Single spawn path for microgrids registered after boot. A
+    // `(make-microgrid …)` evaluated at runtime — REPL eval, a config
+    // reload that added an entry, or the create-microgrid HTTP
+    // endpoint (which only notifies; see handlers/microgrids.rs) —
+    // broadcasts on the registered channel, and this listener boots
+    // the same runtime set the boot loop below gives boot-time
+    // entries. Reused (reload) registrations don't notify and the
+    // `spawned` set drops duplicates, so no path double-boots a
+    // runtime.
+    {
+        let config = config.clone();
+        let spawner = spawner.clone();
+        let mut spawned: std::collections::HashSet<u64> =
+            entries.iter().map(|(id, _, _, _)| *id).collect();
+        tokio::spawn(async move {
+            let mut rx = config.subscribe_microgrid_registered();
+            loop {
+                let ids: Vec<u64> = match rx.recv().await {
+                    Ok(id) => vec![id],
+                    // Fell behind a registration burst — the per-id
+                    // notifications in the gap are lost, so re-snapshot
+                    // the registry and boot anything unseen.
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        log::warn!("microgrid spawner lagged {n} registrations; re-snapshotting");
+                        config.microgrids().lock().keys().copied().collect()
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                };
+                for id in ids {
+                    if !spawned.insert(id) {
+                        continue;
+                    }
+                    let entry = config.microgrids().lock().get(&id).cloned();
+                    match entry {
+                        Some(e) => spawner(e.def.id, &e.def.name, e.def.grpc_port, e.site),
+                        None => {
+                            // Registered then removed before we looked —
+                            // forget it so a later re-registration spawns.
+                            log::warn!("microgrid_registered({id}) but registry has no entry");
+                            spawned.remove(&id);
+                        }
+                    }
+                }
+            }
+        });
+    }
+
     tokio::spawn(async move {
         if let Err(e) = ui::serve(ui_addr, ui_config, microgrid, loopbacks, spawner).await {
             log::error!("UI server exited: {e}");

@@ -1,13 +1,11 @@
 //! `/api/microgrids` — list every registered microgrid + the
-//! create endpoint that allocates a fresh id + port and asks the
-//! injected spawner to boot the runtime.
+//! create endpoint that allocates a fresh id + port and notifies
+//! the binary's registered-microgrid listener to boot the runtime.
 
-use axum::{Extension, Json, extract::State, http::StatusCode};
+use axum::{Json, extract::State, http::StatusCode};
 use serde::{Deserialize, Serialize};
 
 use crate::lisp::Config;
-
-use super::super::state::MicrogridSpawner;
 
 pub(in crate::ui) async fn microgrids_list(
     State(config): State<Config>,
@@ -31,17 +29,18 @@ pub(in crate::ui) struct CreateMicrogridResp {
 }
 
 /// POST /api/microgrids/create — auto-allocates id + grpc_port,
-/// inserts a fresh entry in the registry, and invokes the
-/// configured `MicrogridSpawner` so the new microgrid actually
-/// boots its physics + history + Microgrid gRPC server +
-/// loopback client without a process restart.
+/// inserts a fresh entry in the registry, and broadcasts a
+/// registered-microgrid notification. The binary's listener (see
+/// `bin/switchyard.rs`) reacts by booting the runtime — physics +
+/// history + Microgrid gRPC server + loopback client — so there is
+/// exactly one spawn path shared with runtime `(make-microgrid …)`
+/// evals, and no path can double-boot a runtime.
 ///
 /// Empty-name requests are rejected. The new microgrid's site is
 /// constructed with the shared enterprise id allocator so its
 /// auto-allocated component ids stay globally unique.
 pub(in crate::ui) async fn microgrids_create(
     State(config): State<Config>,
-    Extension(spawner): Extension<MicrogridSpawner>,
     Json(body): Json<CreateMicrogridBody>,
 ) -> Result<Json<CreateMicrogridResp>, (StatusCode, String)> {
     use crate::sim::microgrids::{
@@ -87,13 +86,13 @@ pub(in crate::ui) async fn microgrids_create(
         registry.lock().remove(&id);
         return Err((StatusCode::INTERNAL_SERVER_ERROR, e));
     }
-    // Boot the new microgrid's runtime (physics + history +
-    // gRPC server + loopback) via the binary-supplied spawner.
-    // Tests pass a no-op spawner.
-    spawner(id, &name, grpc_port, site);
-    // Notify enterprise-wide subscribers (the WS event pump) so live
-    // UI sessions start receiving topology_changed / sample events
-    // from the new microgrid without a page reload.
+    // Notify enterprise-wide subscribers: the binary's listener boots
+    // the runtime (physics + history + gRPC server + loopback), and
+    // the WS event pump starts forwarding topology_changed / sample
+    // events to live UI sessions. The registry insert + stub write
+    // above both happen before this, so the listener's lookup finds
+    // the entry. Test fixtures run no listener — the entry simply
+    // gets no runtime, same as the old no-op spawner.
     config.notify_microgrid_registered(id);
     Ok(Json(CreateMicrogridResp {
         id,
