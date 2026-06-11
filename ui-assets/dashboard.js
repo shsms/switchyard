@@ -179,6 +179,22 @@ export const dashboardTiles = (() => {
   };
 })();
 
+// One-rAF render coalescer shared by the row modules: applySample
+// fires per metric per component per second, and re-building a
+// section's innerHTML for every frame is wasted work — batch all
+// the samples that land in one animation frame into one render.
+function makeRenderScheduler(render) {
+  let queued = false;
+  return () => {
+    if (queued) return;
+    queued = true;
+    requestAnimationFrame(() => {
+      queued = false;
+      render();
+    });
+  };
+}
+
 // Shared formatters reused by all per-component dashboard rows.
 function fmtRowPower(v) {
   if (v == null || !Number.isFinite(v)) return "—";
@@ -291,6 +307,7 @@ export const batteryPairs = (() => {
       grid.appendChild(wrap);
     }
   }
+  const scheduleRender = makeRenderScheduler(render);
   async function seedBattery(id) {
     try {
       const [soc, dc] = await Promise.all([
@@ -393,14 +410,14 @@ export const batteryPairs = (() => {
         if (ev.metric === "soc_pct") p.battery.soc = ev.value;
         else if (ev.metric === "dc_power_w") p.battery.power_w = ev.value;
         if (ev.metric === "soc_pct") resort();
-        render();
+        scheduleRender();
       } else if (TRACKED_INVERTER.has(ev.metric)) {
         const inv = inverters.get(ev.id);
         if (!inv) return;
         if (ev.metric === "active_power_w") inv.measured = ev.value;
         else if (ev.metric === "active_power_lower_bound_w") inv.lower = ev.value;
         else if (ev.metric === "active_power_upper_bound_w") inv.upper = ev.value;
-        render();
+        scheduleRender();
       }
     },
   };
@@ -491,6 +508,7 @@ export const pvRows = (() => {
       grid.appendChild(row);
     }
   }
+  const scheduleRender = makeRenderScheduler(render);
   async function seedFromHistory(id) {
     try {
       const [m, lo, hi] = await Promise.all([
@@ -539,7 +557,7 @@ export const pvRows = (() => {
       else if (ev.metric === "active_power_lower_bound_w") d.lower = ev.value;
       else if (ev.metric === "active_power_upper_bound_w") d.upper = ev.value;
       resort();
-      render();
+      scheduleRender();
     },
   };
 })();
@@ -580,6 +598,7 @@ export const evRows = (() => {
       grid.appendChild(row);
     }
   }
+  const scheduleRender = makeRenderScheduler(render);
   async function seedFromHistory(id) {
     try {
       const [p, soc] = await Promise.all([
@@ -618,7 +637,7 @@ export const evRows = (() => {
       if (!d) return;
       if (ev.metric === "soc_pct") d.soc = ev.value;
       else if (ev.metric === "dc_power_w") d.power_w = ev.value;
-      render();
+      scheduleRender();
     },
   };
 })();
@@ -655,6 +674,7 @@ export const chpRows = (() => {
       grid.appendChild(row);
     }
   }
+  const scheduleRender = makeRenderScheduler(render);
   async function seedFromHistory(id) {
     try {
       const p = await fetch(
@@ -689,7 +709,7 @@ export const chpRows = (() => {
       const d = data.get(ev.id);
       if (!d) return;
       d.power_w = ev.value;
-      render();
+      scheduleRender();
     },
   };
 })();
