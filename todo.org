@@ -996,13 +996,15 @@ are drivable from the inspector like the others.
 
 ** Low / minor (new)
 
-*** TODO [#C] spawn_physics swaps intervals on cadence change, firing one immediate tick :sim:
+*** DONE spawn_physics swaps intervals on cadence change, firing one immediate tick :sim:
+Fixed 2026-06-11: the replacement interval is built with =interval_at=.
 =microgrid_site/mod.rs:711= replaces the =tokio::interval= when
 =physics_tick= changes; a fresh interval's first tick fires immediately,
 so a cadence change produces one extra tick (dt stays correct, so this is
 cosmetic). =interval_at(now + target, target)= avoids it.
 
-*** TODO [#C] sort_dispatches sorts then reverses — unstable tie order :dispatch:
+*** DONE sort_dispatches sorts then reverses — unstable tie order :dispatch:
+Fixed 2026-06-11: descending now sorts by =Reverse(key)=.
 =dispatch_server.rs:457= uses a stable sort then =reverse()= for the
 default descending order, which inverts tie order for equal timestamps.
 Sort by =Reverse(key)= (or compare descending) instead.
