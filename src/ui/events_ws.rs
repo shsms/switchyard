@@ -58,7 +58,7 @@ async fn event_pump(mut socket: WebSocket, config: Config) {
         mg_id: u64,
         mut rx: tokio::sync::broadcast::Receiver<SiteEvent>,
         tx: tokio::sync::mpsc::Sender<(u64, SiteEvent)>,
-    ) {
+    ) -> tokio::task::JoinHandle<()> {
         use tokio::sync::broadcast::error::RecvError;
         tokio::spawn(async move {
             loop {
@@ -75,18 +75,26 @@ async fn event_pump(mut socket: WebSocket, config: Config) {
                     Err(RecvError::Closed) => break,
                 }
             }
-        });
+        })
     }
     // Track every mg id we've already spawned a forwarder for, so a
     // Lagged on the registered channel can re-snapshot the registry
     // and back-fill forwarders for any entries that landed during
     // the gap (mass-create burst) without duplicating live ones.
     let mut subscribed_ids: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    // Forwarder handles, aborted when the socket closes — without
+    // that, a forwarder for an idle microgrid parks until that
+    // site's NEXT event before noticing the closed mpsc and exiting.
+    let mut forwarders: Vec<tokio::task::JoinHandle<()>> = Vec::new();
     {
         let reg = config.microgrids();
         let r = reg.lock();
         for (id, entry) in r.iter() {
-            spawn_forwarder(*id, entry.site.subscribe_events(), fwd_tx.clone());
+            forwarders.push(spawn_forwarder(
+                *id,
+                entry.site.subscribe_events(),
+                fwd_tx.clone(),
+            ));
             subscribed_ids.insert(*id);
         }
     }
@@ -194,7 +202,11 @@ async fn event_pump(mut socket: WebSocket, config: Config) {
                     }
                     let entry = config.microgrids().lock().get(&id).cloned();
                     if let Some(e) = entry {
-                        spawn_forwarder(id, e.site.subscribe_events(), fwd_tx_keepalive.clone());
+                        forwarders.push(spawn_forwarder(
+                            id,
+                            e.site.subscribe_events(),
+                            fwd_tx_keepalive.clone(),
+                        ));
                         subscribed_ids.insert(id);
                     } else {
                         log::warn!("ws: microgrid_registered({id}) but registry has no entry");
@@ -217,11 +229,11 @@ async fn event_pump(mut socket: WebSocket, config: Config) {
                         .collect();
                     for (id, entry) in entries {
                         if subscribed_ids.insert(id) {
-                            spawn_forwarder(
+                            forwarders.push(spawn_forwarder(
                                 id,
                                 entry.site.subscribe_events(),
                                 fwd_tx_keepalive.clone(),
-                            );
+                            ));
                         }
                     }
                 }
@@ -232,5 +244,11 @@ async fn event_pump(mut socket: WebSocket, config: Config) {
                 }
             },
         }
+    }
+    // Socket closed (every `break` above lands here): abort the
+    // forwarders now instead of letting each park until its site's
+    // next event reveals the dropped mpsc.
+    for h in forwarders {
+        h.abort();
     }
 }
