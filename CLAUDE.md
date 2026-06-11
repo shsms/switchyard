@@ -58,8 +58,12 @@ is wiring the topology + animating the environment.
   perturb grid state or flip runtime knobs over time.
 - **No data coupling between inverter and battery.** A real inverter and
   battery share only an electrical bus. `Battery::set_dc_power` clamps to its
-  own SoC-derated bounds; the inverter publishes the measured aggregate it
-  actually delivered. The API gateway (server.rs) intersects bounds for
+  own SoC-derated bounds; the inverter publishes the value it *commanded*
+  its healthy children to take (zero when tripped or when no healthy child
+  accepted the push), and the battery separately publishes what it
+  accepted — a client wanting to see saturation reads both streams
+  (todo.org d5 tracks per-source attribution). The API gateway
+  (server.rs) intersects bounds for
   setpoint validation — components never read each other's bounds.
 - **Single physics tick, registration order = tick order.** `MicrogridSite::spawn_physics`
   runs one `tokio::time::interval` at `physics_tick_ms` and calls `tick()` on
