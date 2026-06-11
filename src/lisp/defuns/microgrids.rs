@@ -113,29 +113,63 @@ pub(in crate::lisp) fn register(
                     }
                 }
             };
-            let grpc_port = match a.grpc_port {
-                Some(p) if p > 0 => p as u16,
-                _ => next_free_port(&registry),
-            };
             let name = a
                 .name
                 .clone()
                 .unwrap_or_else(|| DEFAULT_MICROGRID_NAME.to_string());
+            // Re-registering an id that's already in the registry (the
+            // config-reload path re-evals every (make-microgrid …)
+            // form) REUSES the existing entry's site, reset in place.
+            // The boot-spawned physics + history tasks, the per-port
+            // gRPC server, and the loopback client all hold that site
+            // handle — minting a fresh one would orphan every runtime:
+            // the old site would keep ticking and serving gRPC while
+            // the registry (UI, lisp, scenarios) acts on a new site
+            // that never ticks. Name / tso update live; the gRPC port
+            // is pinned by the listening server, so a changed
+            // :grpc-port is kept as-is with a warning.
+            let existing = registry
+                .lock()
+                .get(&id)
+                .map(|e| (e.def.grpc_port, e.site.clone()));
+            let (grpc_port, site, reused) = match existing {
+                Some((bound_port, site)) => {
+                    if let Some(p) = a.grpc_port
+                        && p > 0
+                        && p as u16 != bound_port
+                    {
+                        log::warn!(
+                            "make-microgrid #{id}: :grpc-port {p} ignored — the running \
+                             gRPC server is bound to :{bound_port} (restart to move it)"
+                        );
+                    }
+                    site.reset();
+                    (bound_port, site, true)
+                }
+                None => {
+                    let grpc_port = match a.grpc_port {
+                        Some(p) if p > 0 => p as u16,
+                        _ => next_free_port(&registry),
+                    };
+                    // Fresh site per microgrid that shares the
+                    // enterprise's id allocator with the bootstrap site
+                    // + every other microgrid — component ids stay
+                    // globally unique across the registry without
+                    // per-site coordination.
+                    let site = MicrogridSite::with_id_allocator(id_allocator.clone());
+                    // Same grid frequency source as every other site,
+                    // so their `frequency_hz` reads all return the same
+                    // OU value (one AC grid → one frequency).
+                    site.set_grid_frequency(grid_frequency.clone());
+                    (grpc_port, site, false)
+                }
+            };
             let def = MicrogridDef {
                 id,
                 name,
                 grpc_port,
                 tso: a.tso.clone(),
             };
-            // Fresh site per microgrid that shares the enterprise's
-            // id allocator with the bootstrap site + every other
-            // microgrid — component ids stay globally unique across
-            // the registry without per-site coordination.
-            let site = MicrogridSite::with_id_allocator(id_allocator.clone());
-            // Same grid frequency source as every other site, so
-            // their `frequency_hz` reads all return the same OU
-            // value (one AC grid → one frequency).
-            site.set_grid_frequency(grid_frequency.clone());
             registry.lock().insert(
                 id,
                 MicrogridEntry {
@@ -143,11 +177,15 @@ pub(in crate::lisp) fn register(
                     site: site.clone(),
                 },
             );
-            // Notify enterprise-wide subscribers (currently the WS
-            // event pump) that a new microgrid landed. send() returns
-            // Err when there are no live receivers — fine to ignore;
-            // it just means no UI session is open.
-            let _ = registered_tx.send(id);
+            // Notify enterprise-wide subscribers (the WS event pump
+            // and the binary's runtime spawner) that a new microgrid
+            // landed. Reused entries skip this — their forwarders and
+            // runtimes already exist. send() returns Err when there
+            // are no live receivers — fine to ignore; it just means
+            // no UI session is open.
+            if !reused {
+                let _ = registered_tx.send(id);
+            }
             // Funcall the :topology lambda (if any) with the
             // current-microgrid pointer flipped to this new
             // entry, so the nested make-* calls register into
@@ -219,6 +257,46 @@ mod tests {
             e.site.get(1).is_some(),
             "grid-connection-point id=1 should be on the new site",
         );
+    }
+
+    /// Re-running `(make-microgrid …)` for an id that's already
+    /// registered must reuse the existing entry's site (reset in
+    /// place), not mint a fresh one — the boot-spawned runtimes and
+    /// the per-port gRPC server all hold the original handle, and a
+    /// fresh site would orphan them (frozen physics, stale gRPC).
+    #[test]
+    fn make_microgrid_reuses_the_existing_site_on_reregistration() {
+        let (cfg, _dir) = config_with("(set-microgrid-id 0)");
+        cfg.eval(
+            r#"
+            (make-microgrid
+              :name "yard" :id 7000 :grpc-port 8810
+              :topology (lambda () (%make-grid-connection-point :id 1)))
+            "#,
+        )
+        .unwrap();
+        // The handle a boot-spawned runtime would hold.
+        let live_site = cfg.microgrids().lock().get(&7000).unwrap().site.clone();
+        assert!(live_site.get(1).is_some());
+
+        // Re-register the same id with a different topology — the
+        // reload path's shape.
+        cfg.eval(
+            r#"
+            (make-microgrid
+              :name "yard v2" :id 7000 :grpc-port 8810
+              :topology (lambda () (%make-grid-connection-point :id 2)))
+            "#,
+        )
+        .unwrap();
+
+        // The pre-rerun handle sees the new topology: same site,
+        // reset and rebuilt in place.
+        assert!(live_site.get(1).is_none(), "old component is gone");
+        assert!(live_site.get(2).is_some(), "new component on the SAME site");
+        let entry = cfg.microgrids().lock().get(&7000).cloned().unwrap();
+        assert_eq!(entry.def.name, "yard v2");
+        assert!(entry.site.get(2).is_some());
     }
 
     /// Auto-allocated component ids stay globally unique across
