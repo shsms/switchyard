@@ -91,6 +91,14 @@ struct MicrogridSiteInner {
     /// registry) wires sites to a shared allocator via
     /// `MicrogridSite::with_id_allocator`.
     next_id: Arc<AtomicU64>,
+    /// Bumped by every STRUCTURAL mutation — register, connect,
+    /// disconnect, remove, rename — and read by `Config::eval`'s
+    /// persist gate: an eval that didn't move this counter (a
+    /// transient poke like `set-meter-power`, a query) is not
+    /// appended to the overrides file, so it can't resurrect as
+    /// config on the next reload. Distinct from `version`, which
+    /// bumps on every eval as the UI's refetch signal.
+    structural_version: AtomicU64,
     /// Bumped by `cancel_all_streams()`. Streaming tasks in server.rs
     /// compare against the value they captured at start and break when
     /// it has changed. Models a server-initiated graceful cancel of
@@ -191,6 +199,7 @@ impl MicrogridSite {
                 histories: RwLock::new(HashMap::new()),
                 setpoint_logs: RwLock::new(HashMap::new()),
                 version: AtomicU64::new(0),
+                structural_version: AtomicU64::new(0),
                 events: broadcast::channel(EVENT_BUS_CAPACITY).0,
                 timeout_tracker: TimeoutTracker::new(),
                 scenario: RwLock::new(ScenarioJournal::default()),
@@ -203,6 +212,20 @@ impl MicrogridSite {
                 sample_lag_ms: AtomicU64::new(0),
             }),
         }
+    }
+
+    /// Monotonic count of structural mutations (register / connect /
+    /// disconnect / remove / rename) on this site. `Config::eval`
+    /// snapshots it around an eval to decide whether the source is
+    /// config worth persisting or a transient poke.
+    pub fn structural_version(&self) -> u64 {
+        self.inner.structural_version.load(Ordering::Acquire)
+    }
+
+    fn bump_structural(&self) {
+        self.inner
+            .structural_version
+            .fetch_add(1, Ordering::Release);
     }
 
     /// Read the current sample-lag offset (ms). The server uses this
@@ -418,6 +441,7 @@ impl MicrogridSite {
         let id = c.id();
         self.inner.components.write().push(c.clone());
         self.inner.by_id.write().insert(id, c.clone());
+        self.bump_structural();
         // Default runtime mode: every flag at "Normal" — i.e. emit
         // telemetry, accept commands, report physics-derived state.
         self.inner.runtime.write().entry(id).or_default();
@@ -438,6 +462,8 @@ impl MicrogridSite {
             return false;
         }
         conns.push((parent, child));
+        drop(conns);
+        self.bump_structural();
         true
     }
 
@@ -597,6 +623,9 @@ impl MicrogridSite {
     /// the registry just stops handing it out from `get()`.
     pub fn remove_component(&self, id: u64) -> bool {
         let was_present = self.inner.by_id.write().remove(&id).is_some();
+        if was_present {
+            self.bump_structural();
+        }
         self.inner.components.write().retain(|c| c.id() != id);
         self.inner
             .connections
@@ -627,10 +656,16 @@ impl MicrogridSite {
     /// connections graph carries no positional identity, so there's
     /// no "remove only the first instance" semantics.
     pub fn disconnect(&self, parent: u64, child: u64) -> bool {
-        let mut edges = self.inner.connections.write();
-        let before = edges.len();
-        edges.retain(|(p, c)| !(*p == parent && *c == child));
-        edges.len() < before
+        let removed = {
+            let mut edges = self.inner.connections.write();
+            let before = edges.len();
+            edges.retain(|(p, c)| !(*p == parent && *c == child));
+            edges.len() < before
+        };
+        if removed {
+            self.bump_structural();
+        }
+        removed
     }
 
     /// Override a component's display name. Reads via `display_name`;
@@ -638,6 +673,9 @@ impl MicrogridSite {
     /// lines and physics-derived state keep their stable default.
     pub fn rename(&self, id: u64, name: String) {
         self.inner.name_overrides.write().insert(id, name);
+        // Renames count as structural for persistence purposes — a
+        // display name set from the UI should survive a reload.
+        self.bump_structural();
     }
 
     /// User-facing display name — override if present, else the

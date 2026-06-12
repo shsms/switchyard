@@ -87,12 +87,22 @@ impl Config {
     /// overrides append and the version bump stay inside the locked
     /// section because both resolve the ambient scope pointer — after
     /// the lock is released a concurrent scoped call may flip it.
+    ///
+    /// Persistence is GATED: only evals that changed the topology
+    /// (register / connect / disconnect / remove / rename, observed
+    /// via the structural fingerprint) or that edit a `*-defaults`
+    /// plist land in the overrides file. Everything else — transient
+    /// pokes like `set-meter-power`, health flips, timers, queries —
+    /// runs but is not replayed by `load-overrides` on the next
+    /// reload; pre-gate, a REPL poke silently resurrected as config.
     fn eval_locked(&self, ctx: &mut tulisp::TulispContext, src: &str) -> Result<String, String> {
+        let before = self.structural_fingerprint();
         let result = match ctx.eval_string(src) {
             Ok(v) => Ok(v.to_string()),
             Err(e) => Err(e.format(ctx)),
         };
         if result.is_ok()
+            && (self.structural_fingerprint() != before || contains_defaults_setq(src))
             && let Err(e) = self.append_to_overrides_file(src)
         {
             let label = self
@@ -129,6 +139,21 @@ impl Config {
             Ok(v) => Ok(v.to_string()),
             Err(e) => Err(e.format(&ctx)),
         }
+    }
+
+    /// Enterprise-wide structural fingerprint: the sum of every
+    /// site's structural version (bootstrap + registry) plus the
+    /// registry's entry count — the count term makes a registry
+    /// insert observable even while the new site is still empty
+    /// (an empty-topology `(make-microgrid …)` must persist).
+    fn structural_fingerprint(&self) -> (usize, u64) {
+        let reg = self.microgrids.lock();
+        let sum = reg
+            .values()
+            .map(|e| e.site.structural_version())
+            .sum::<u64>()
+            + self.site.structural_version();
+        (reg.len(), sum)
     }
 
     fn append_to_overrides_file(&self, src: &str) -> std::io::Result<()> {
@@ -367,6 +392,27 @@ impl Config {
     }
 }
 
+/// Does `src` contain a top-level defaults edit — `(setq <sym>-defaults …)`?
+/// The Defaults panel saves through eval; those shape FUTURE `make-*`
+/// calls rather than the live graph, so the structural gate alone would
+/// drop them — they're config worth keeping (todo d6's allowlist).
+fn contains_defaults_setq(src: &str) -> bool {
+    use tulisp_fmt::cst::CstNode;
+    let Ok(cst) = tulisp_fmt::parse(src) else {
+        return false;
+    };
+    cst.nodes.iter().any(|n| {
+        let CstNode::List { children, .. } = n else {
+            return false;
+        };
+        let mut atoms = children.iter().filter_map(|c| match c {
+            CstNode::Atom { text, .. } => Some(text.as_str()),
+            _ => None,
+        });
+        atoms.next() == Some("setq") && atoms.next().is_some_and(|s| s.ends_with("-defaults"))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::test_support::config_with;
@@ -387,6 +433,51 @@ mod tests {
         assert!(cfg.eval("(undefined-fn 1)").is_err());
         let body = std::fs::read_to_string(&path).unwrap();
         assert!(!body.contains("undefined-fn"));
+    }
+
+    /// Transient pokes run but do NOT persist: pre-gate, a REPL
+    /// `set-meter-power` landed in the overrides file and was
+    /// replayed by load-overrides on every reload, resurrecting a
+    /// one-off poke as permanent config. Structural edits and
+    /// `*-defaults` setqs (the d6 allowlist) still persist.
+    #[test]
+    fn persist_gate_keeps_config_drops_pokes() {
+        let (cfg, dir) = config_with(
+            "(set-microgrid-id 9)
+             (%make-meter :id 1)",
+        );
+        let path = dir.join("microgrids/config.9.overrides.lisp");
+
+        // A poke: applies (verifiable via the meter) but not persisted.
+        cfg.eval("(set-meter-power 1 4321.0)").unwrap();
+        let m = cfg.site().get(1).unwrap();
+        assert!((m.aggregate_power_w(&cfg.site()) - 4321.0).abs() < 1e-3);
+        assert!(
+            !path.exists()
+                || !std::fs::read_to_string(&path)
+                    .unwrap()
+                    .contains("set-meter-power")
+        );
+
+        // A query: not persisted either.
+        cfg.eval("(+ 2 3)").unwrap();
+
+        // Structural edits persist: make, connect, rename.
+        cfg.eval("(setq m2 (%make-meter :id 2))").unwrap();
+        cfg.eval("(connect 1 2)").unwrap();
+        cfg.eval("(rename-component 2 \"sub\")").unwrap();
+
+        // A defaults edit persists via the allowlist (no graph change).
+        cfg.eval("(setq battery-defaults '(:capacity 1000.0))")
+            .unwrap();
+
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(body.contains("%make-meter :id 2"), "{body}");
+        assert!(body.contains("(connect 1 2)"), "{body}");
+        assert!(body.contains("rename-component 2"), "{body}");
+        assert!(body.contains("battery-defaults"), "{body}");
+        assert!(!body.contains("set-meter-power"), "{body}");
+        assert!(!body.contains("(+ 2 3)"), "{body}");
     }
 
     /// Concurrent per-mg evals must not cross microgrids: the scope
