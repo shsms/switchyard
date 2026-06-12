@@ -246,7 +246,9 @@ async fn history_endpoint_returns_empty_for_unknown_component() {
 #[tokio::test]
 async fn overrides_endpoint_lists_appended_evals() {
     let cfg = config_with("(set-microgrid-id 7) (%make-grid-connection-point :id 1)").await;
-    // Two successful evals + one error. Errors don't append.
+    // One structural eval (persists), one error (doesn't), one
+    // non-structural poke (runs, but the d6 persist gate keeps it out
+    // of the overrides file so it can't replay as config on reload).
     call(cfg.clone(), post("/api/eval", "(rename-component 1 \"a\")")).await;
     call(cfg.clone(), post("/api/eval", "(undefined-fn 1)")).await;
     call(cfg.clone(), post("/api/eval", "(set-enterprise-id 42)")).await;
@@ -254,18 +256,19 @@ async fn overrides_endpoint_lists_appended_evals() {
     assert_eq!(status, StatusCode::OK);
     let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
     let entries = parsed["persisted"].as_array().unwrap();
-    assert_eq!(entries.len(), 2);
+    assert_eq!(entries.len(), 1);
     assert!(
         entries
             .iter()
             .any(|e| e["source"].as_str().unwrap().contains("rename"))
     );
     assert!(
-        entries
+        !entries
             .iter()
-            .any(|e| e["source"].as_str().unwrap().contains("set-enterprise-id"))
+            .any(|e| e["source"].as_str().unwrap().contains("set-enterprise-id")),
+        "non-structural pokes must not persist",
     );
-    assert_eq!(parsed["count"], 2);
+    assert_eq!(parsed["count"], 1);
 }
 
 /// Minimal local `load-overrides` defun for tests — real configs
