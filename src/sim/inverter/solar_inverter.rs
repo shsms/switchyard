@@ -250,6 +250,20 @@ impl SimulatedComponent for SolarInverter {
         self.reactive.reset();
     }
 
+    fn reset_setpoint_axis(&self, axis: crate::timeout_tracker::SetpointAxis) {
+        // Dual-axis: an expired curtailment (active) releases back to
+        // the sunlight floor without disturbing a running Volt/VAR
+        // command, and vice versa.
+        use crate::timeout_tracker::SetpointAxis;
+        match axis {
+            SetpointAxis::Active => {
+                self.delay.reset();
+                self.ramp.set_target(self.min_avail_w());
+            }
+            SetpointAxis::Reactive => self.reactive.reset(),
+        }
+    }
+
     fn augment_active_bounds(
         &self,
         ts: DateTime<Utc>,

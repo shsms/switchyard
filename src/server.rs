@@ -98,6 +98,7 @@ use crate::proto_conv::{make_component_proto, telemetry_to_proto};
 use crate::sim::runtime::{CommandMode, Health, TelemetryMode};
 use crate::sim::setpoints::{SetpointEvent, SetpointKind, SetpointOutcome};
 use crate::sim::{SetpointError, bounds::VecBounds};
+use crate::timeout_tracker::SetpointAxis;
 
 /// gRPC frontend for one microgrid. Each microgrid registered in
 /// `Config::microgrids` spawns its own server bound to its
@@ -272,7 +273,15 @@ impl MicrogridServer {
             return Err(setpoint_error_to_status(e));
         }
 
-        site.add_timeout(req.electrical_component_id, duration);
+        // The TTL is per power axis: this request's expiry resets only
+        // the axis it set, leaving a longer-lived command on the other
+        // axis running.
+        let axis = match power_type {
+            PowerType::Active => SetpointAxis::Active,
+            PowerType::Reactive => SetpointAxis::Reactive,
+            PowerType::Unspecified => unreachable!("rejected above"),
+        };
+        site.add_timeout(req.electrical_component_id, axis, duration);
 
         // Per the proto, a successful response carries the expiry the
         // TTL was armed with so a client can time its refresh.
