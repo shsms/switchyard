@@ -59,7 +59,11 @@ pub(super) fn register(
                     Duration::from_millis(clamped)
                 })
                 .unwrap_or_else(|| metadata.read().default_request_lifetime);
-            w.add_timeout(id as u64, lifetime);
+            w.add_timeout(
+                id as u64,
+                crate::timeout_tracker::SetpointAxis::Active,
+                lifetime,
+            );
             Ok(true)
         },
     );
@@ -83,11 +87,14 @@ mod tests {
         // 30-second lifetime — applies the setpoint and arms the
         // tracker; nothing should be expired yet.
         cfg.eval("(set-active-power 2 1500.0 30000)").unwrap();
-        assert_eq!(cfg.site().drain_expired_timeouts(), Vec::<u64>::new());
+        assert_eq!(cfg.site().drain_expired_timeouts(), Vec::new());
         // Lifetime 0 → instantly elapses; the next drain returns id.
         cfg.eval("(set-active-power 2 1500.0 0)").unwrap();
         std::thread::sleep(std::time::Duration::from_millis(2));
-        assert_eq!(cfg.site().drain_expired_timeouts(), vec![2]);
+        assert_eq!(
+            cfg.site().drain_expired_timeouts(),
+            vec![(2, crate::timeout_tracker::SetpointAxis::Active)]
+        );
     }
 
     /// set-active-power on an unknown id surfaces an error, and a setpoint

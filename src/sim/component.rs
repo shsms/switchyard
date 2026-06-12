@@ -224,11 +224,23 @@ pub trait SimulatedComponent: Send + Sync + fmt::Display {
         Err(SetpointError::Unsupported)
     }
 
-    /// Clear any pending / armed setpoint and snap back to the
-    /// component's idle value (0 for inverters, sunlight-driven
-    /// power for solar). Called by the `TimeoutTracker` when a
-    /// SetPower request lifetime elapses without a refresh.
+    /// Clear any pending / armed setpoint — BOTH axes — and snap back
+    /// to the component's idle value (0 for inverters, sunlight-driven
+    /// power for solar). The full fail-safe reset.
     fn reset_setpoint(&self) {}
+
+    /// Clear one power axis's setpoint, leaving the other running.
+    /// Called by the `TimeoutTracker` when that axis's request
+    /// lifetime elapses without a refresh — a short-lived Q command
+    /// expiring must not clear a long-lived P command.
+    ///
+    /// The default falls back to the full reset, which is exact for
+    /// single-axis components (their "everything" IS that axis).
+    /// Components that accept BOTH active and reactive setpoints must
+    /// override, or an expiry on one axis wipes the other.
+    fn reset_setpoint_axis(&self, _axis: crate::timeout_tracker::SetpointAxis) {
+        self.reset_setpoint();
+    }
 
     /// Add a time-limited active-power bounds augmentation, narrowing
     /// the rated envelope. Backs the `AugmentElectricalComponentBounds`

@@ -283,10 +283,12 @@ impl Config {
                 let sites: Vec<MicrogridSite> =
                     registry.lock().values().map(|e| e.site.clone()).collect();
                 for site in sites {
-                    for id in site.drain_expired_timeouts() {
-                        log::info!("Request timeout for component {id} — resetting setpoint");
+                    for (id, axis) in site.drain_expired_timeouts() {
+                        log::info!(
+                            "Request timeout for component {id} ({axis:?}) — resetting that axis"
+                        );
                         if let Some(c) = site.get(id) {
-                            c.reset_setpoint();
+                            c.reset_setpoint_axis(axis);
                         }
                     }
                 }

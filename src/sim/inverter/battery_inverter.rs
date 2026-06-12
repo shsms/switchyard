@@ -252,6 +252,21 @@ impl SimulatedComponent for BatteryInverter {
         *self.measured_w.lock() = 0.0;
     }
 
+    fn reset_setpoint_axis(&self, axis: crate::timeout_tracker::SetpointAxis) {
+        // Dual-axis component: each axis resets alone so one TTL
+        // expiring doesn't clear the other axis's running command.
+        // `measured_w` is recomputed from the ramp on the next tick,
+        // so neither arm needs to touch it.
+        use crate::timeout_tracker::SetpointAxis;
+        match axis {
+            SetpointAxis::Active => {
+                self.delay.reset();
+                self.ramp.set_target(0.0);
+            }
+            SetpointAxis::Reactive => self.reactive.reset(),
+        }
+    }
+
     fn augment_active_bounds(
         &self,
         ts: DateTime<Utc>,
@@ -431,6 +446,79 @@ mod tests {
         // command resumes in full.
         inv.tick(&w, t0 + chrono::Duration::milliseconds(100), dt);
         assert!((inv.aggregate_power_w(&w) - 8_000.0).abs() < 1.0);
+    }
+
+    /// An expired reactive TTL resets ONLY the reactive axis — the
+    /// active command keeps running (and vice versa). Pre-split, one
+    /// shared timeout called the full `reset_setpoint`, so a 10 s Q
+    /// command's expiry silently cleared a 15 min P command.
+    #[test]
+    fn axis_reset_leaves_the_other_axis_running() {
+        use crate::timeout_tracker::SetpointAxis;
+        // kVA-capped reactive envelope (not the default PF cap) so Q
+        // stays commandable while P parks at 0 — the point here is
+        // axis independence, not envelope coupling.
+        let w = MicrogridSite::new();
+        let bat = Battery::new(
+            100,
+            Duration::from_secs(1),
+            BatteryConfig {
+                rated_lower_w: -10_000.0,
+                rated_upper_w: 10_000.0,
+                capacity_wh: 100_000.0,
+                soc_protect_margin_pct: 0.0,
+                ..Default::default()
+            },
+        );
+        w.register(bat);
+        let inv = BatteryInverter::new(
+            200,
+            Duration::from_secs(1),
+            BatteryInverterConfig {
+                rated_lower_w: -10_000.0,
+                rated_upper_w: 10_000.0,
+                command_delay: Duration::ZERO,
+                ramp_rate_w_per_s: f32::INFINITY,
+                reactive: ReactiveCapability {
+                    pf_limit: None,
+                    apparent_va: Some(10_000.0),
+                },
+                reactive_command_delay: Duration::ZERO,
+                reactive_ramp_rate_var_per_s: f32::INFINITY,
+                ..Default::default()
+            },
+        );
+        w.register(inv);
+        w.connect(200, 100);
+        let inv = w.get(200).unwrap();
+        let dt = Duration::from_millis(100);
+
+        inv.set_active_setpoint(4_000.0).unwrap();
+        inv.set_reactive_setpoint(1_000.0).unwrap();
+        inv.tick(&w, Utc::now(), dt);
+        inv.tick(&w, Utc::now(), dt);
+        assert!((inv.aggregate_power_w(&w) - 4_000.0).abs() < 1.0);
+        assert!((inv.aggregate_reactive_var(&w) - 1_000.0).abs() < 1.0);
+
+        // Reactive TTL fires: Q parks, P keeps running.
+        inv.reset_setpoint_axis(SetpointAxis::Reactive);
+        inv.tick(&w, Utc::now(), dt);
+        assert!(
+            (inv.aggregate_power_w(&w) - 4_000.0).abs() < 1.0,
+            "P survives"
+        );
+        assert!(inv.aggregate_reactive_var(&w).abs() < 1.0, "Q parked");
+
+        // Re-arm Q, then expire the ACTIVE axis: P parks, Q runs on.
+        inv.set_reactive_setpoint(800.0).unwrap();
+        inv.tick(&w, Utc::now(), dt);
+        inv.reset_setpoint_axis(SetpointAxis::Active);
+        inv.tick(&w, Utc::now(), dt);
+        assert!(inv.aggregate_power_w(&w).abs() < 1.0, "P parked");
+        assert!(
+            (inv.aggregate_reactive_var(&w) - 800.0).abs() < 1.0,
+            "Q survives"
+        );
     }
 
     /// When every downstream battery is unhealthy the inverter delivers

@@ -274,21 +274,27 @@ impl MicrogridSite {
 
     // ─── Setpoint timeouts ────────────────────────────────────────────
     //
-    // Each accepted setpoint schedules a deadline; on expiry the gRPC
-    // / Config loop pulls the id out via `drain_expired_timeouts`
-    // and calls `reset_setpoint` on the component.
+    // Each accepted setpoint schedules a deadline on its own power
+    // axis; on expiry the Config loop pulls the (id, axis) out via
+    // `drain_expired_timeouts` and calls `reset_setpoint_axis` on the
+    // component — the other axis's command keeps running.
 
-    /// Schedule a setpoint expiry for `id` at `now + lifetime`.
-    /// Replaces any previously-scheduled deadline for that id —
-    /// "latest set wins" semantics, matching microsim's behavior.
-    pub fn add_timeout(&self, id: u64, lifetime: Duration) {
-        self.inner.timeout_tracker.add(id, lifetime);
+    /// Schedule a setpoint expiry for `id`'s `axis` at
+    /// `now + lifetime`. Replaces any previously-scheduled deadline
+    /// for that (id, axis) — "latest set wins" per axis.
+    pub fn add_timeout(
+        &self,
+        id: u64,
+        axis: crate::timeout_tracker::SetpointAxis,
+        lifetime: Duration,
+    ) {
+        self.inner.timeout_tracker.add(id, axis, lifetime);
     }
 
-    /// Drain any deadlines that have elapsed and return their ids.
-    /// Called by `Config`'s timeout loop, which then calls
-    /// `reset_setpoint` on each.
-    pub fn drain_expired_timeouts(&self) -> Vec<u64> {
+    /// Drain any deadlines that have elapsed and return their
+    /// (id, axis) pairs. Called by `Config`'s timeout loop, which
+    /// then calls `reset_setpoint_axis` on each.
+    pub fn drain_expired_timeouts(&self) -> Vec<(u64, crate::timeout_tracker::SetpointAxis)> {
         self.inner.timeout_tracker.remove_expired()
     }
 
