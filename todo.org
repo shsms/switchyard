@@ -329,13 +329,34 @@ Done in =sim/scenarios.lisp=: =(timeline (hold V :for S) (ramp :to V :over S [:f
 returns a dynamic source (lambda over scenario time) for set-meter-power /
 set-solar-sunlight; a ramp without :from chains from the previous segment's end.
 
-*** TODO I7. Sim-time + seeded RNG for scenarios                    :testing:
+*** DONE I7. Seeded RNG for scenarios                               :testing:
+:LOGBOOK:
+- State "DONE"       from "TODO"       [2026-06-15 Mo 21:02]
+:END:
+
+Scenario randomness (=random-outage=, =random-uniform=, =random-pick=)
+drew from the OS RNG, so a run couldn't be replayed. Add a seedable
+generator behind =(random)= so a scenario is reproducible.
+
+Done in =src/lisp/defuns/log.rs=: =(set-random-seed N)= installs a SplitMix64
+behind =(random)= (verified reproducible); =(clear-random-seed)= reverts to the
+OS RNG. Full run-to-run determinism still needs sim-time — see I8.
+
+*** TODO I8. Sim-time for scenarios                                 :testing:
 Scenario timers fire on the 100 ms refresh loop and =(scenario-elapsed)=
 is wall-clock, with per-stream jitter on top — fine for eyeballing, bad
-for asserting a timed ramp race or running in CI. Drive scenarios on
-simulated time with a seedable RNG so a run is reproducible and can go
-faster-than-real-time. Pairs with I2 to make =scenario-expect= pass/fail
-meaningful.
+for asserting a timed ramp race or running in CI, and the reason seeded
+randomness (I7) still isn't *fully* deterministic run-to-run: the seed
+fixes the draw *values*, but wall-clock timer ordering can still vary
+the order/count of draws between events. Drive scenarios on simulated
+time so a run is reproducible and can go faster-than-real-time. Pairs
+with I2 to make =scenario-expect= pass/fail meaningful.
+
+Deferred: =run-with-timer= / =every= are wall-clock timers from the
+external =tulisp-async= crate, and =(scenario-elapsed)= reads
+=Utc::now()= — virtualizing both (a sim clock threaded through the
+refresh loop + a timer wheel on sim-time) is a large cross-cutting
+change touching a dependency, not a contained add.
 
 * Review backlog — 2026-06-01
 
