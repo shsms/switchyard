@@ -94,3 +94,61 @@ schedule the restore callback."
       (set-component-health victim 'ok)
       (scenario-event 'restored (format "%d back" victim))
       (random-outage--schedule))))
+
+;; -----------------------------------------------------------------------------
+;; Declarative signal profiles (timeline / hold / ramp)
+;; -----------------------------------------------------------------------------
+;;
+;; Build a piecewise-linear driver as a sequence of segments instead of
+;; hand-rolling a `cond` on `(scenario-elapsed)`. `timeline` returns a
+;; dynamic source (a lambda re-resolved each tick), so it plugs straight
+;; into `set-meter-power` / `set-solar-sunlight`:
+;;
+;;   (set-meter-power 100 (timeline (hold 2000 :for 60)
+;;                                  (ramp :to 50000 :over 10)
+;;                                  (ramp :to 2000 :over 10)))
+;;
+;; Time is relative to `(scenario-start)`; before the first segment the
+;; value is its start, after the last it holds the last segment's end.
+
+(defun hold (value &rest plist)
+  "Timeline segment: stay at VALUE for :for seconds."
+  (list :dur (plist-get plist :for) :from value :to value))
+
+(defun ramp (&rest plist)
+  "Timeline segment: move linearly to :to over :over seconds, starting
+from :from — which defaults to the previous segment's end value."
+  (list :dur  (plist-get plist :over)
+        :to   (plist-get plist :to)
+        :from (plist-get plist :from)))
+
+(defun timeline--at (rows lastv tt)
+  "Value of the ROWS piecewise-linear profile at scenario time TT. Each
+row is (tstart tend vfrom vto); past the last row the value holds LASTV."
+  (let ((val lastv))
+    (dolist (row rows)
+      (if (and (>= tt (nth 0 row)) (< tt (nth 1 row)))
+          (setq val (+ (nth 2 row)
+                       (* (- (nth 3 row) (nth 2 row))
+                          (/ (- tt (nth 0 row)) (- (nth 1 row) (nth 0 row))))))))
+    val))
+
+(defun timeline (&rest segments)
+  "Return a dynamic source (a lambda over scenario time) walking
+SEGMENTS — each a `(hold V :for S)` or `(ramp :to V :over S [:from A])`.
+A ramp without :from continues from the previous segment's end value
+(0 at the start); after the last segment the value holds its end."
+  (let ((tstart 0.0)
+        (prev 0.0)
+        (rows nil))
+    (dolist (seg segments)
+      (let* ((dur (plist-get seg :dur))
+             (from (plist-get seg :from))
+             (to (plist-get seg :to))
+             (vfrom (if from from prev))
+             (tend (+ tstart dur)))
+        (setq rows (append rows (list (list tstart tend vfrom to))))
+        (setq tstart tend)
+        (setq prev to)))
+    (let ((lastv prev))
+      (lambda () (timeline--at rows lastv (scenario-elapsed))))))
