@@ -63,3 +63,68 @@ impl Default for NowSource {
 pub fn headless_base() -> DateTime<Utc> {
     DateTime::from_timestamp(1_577_836_800, 0).expect("2020-01-01T00:00:00Z is valid")
 }
+
+/// Parse a human time offset into a [`Duration`]. Accepts a unit suffix
+/// — `ms`, `s`, `sec`, `m`, `min`, `h`, `hr` — or a bare number (seconds).
+/// Used for relative scenario cue times (`"500ms"`, `"60s"`, `"3min"`).
+/// `None` on a malformed or negative value.
+pub fn parse_offset(s: &str) -> Option<std::time::Duration> {
+    let s = s.trim();
+    let (num, unit): (&str, &str) = match s.find(|c: char| c.is_alphabetic()) {
+        Some(i) => (s[..i].trim(), s[i..].trim()),
+        None => (s, "s"),
+    };
+    let v: f64 = num.parse().ok()?;
+    if !v.is_finite() || v < 0.0 {
+        return None;
+    }
+    let secs = match unit {
+        "ms" => v / 1000.0,
+        "s" | "sec" | "secs" => v,
+        "m" | "min" | "mins" => v * 60.0,
+        "h" | "hr" | "hrs" => v * 3600.0,
+        _ => return None,
+    };
+    Some(std::time::Duration::from_secs_f64(secs))
+}
+
+/// Parse an absolute wall time `"HH:MM"` (24-hour) into the offset from
+/// midnight. Used for `:schedule 'absolute` cue/stage times. `None` on a
+/// malformed value or out-of-range hour/minute.
+pub fn parse_time_of_day(s: &str) -> Option<std::time::Duration> {
+    let (h, m) = s.trim().split_once(':')?;
+    let h: u64 = h.trim().parse().ok()?;
+    let m: u64 = m.trim().parse().ok()?;
+    if h >= 24 || m >= 60 {
+        return None;
+    }
+    Some(std::time::Duration::from_secs(h * 3600 + m * 60))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_offset, parse_time_of_day};
+    use std::time::Duration;
+
+    #[test]
+    fn parse_offset_units() {
+        assert_eq!(parse_offset("500ms"), Some(Duration::from_millis(500)));
+        assert_eq!(parse_offset("60s"), Some(Duration::from_secs(60)));
+        assert_eq!(parse_offset("3min"), Some(Duration::from_secs(180)));
+        assert_eq!(parse_offset("2h"), Some(Duration::from_secs(7200)));
+        assert_eq!(parse_offset("90"), Some(Duration::from_secs(90))); // bare = seconds
+        assert_eq!(parse_offset("1.5s"), Some(Duration::from_millis(1500)));
+        assert_eq!(parse_offset("nope"), None);
+        assert_eq!(parse_offset("-5s"), None);
+        assert_eq!(parse_offset("5 light-years"), None);
+    }
+
+    #[test]
+    fn parse_time_of_day_hhmm() {
+        assert_eq!(parse_time_of_day("00:00"), Some(Duration::ZERO));
+        assert_eq!(parse_time_of_day("14:30"), Some(Duration::from_secs(52200)));
+        assert_eq!(parse_time_of_day("24:00"), None);
+        assert_eq!(parse_time_of_day("12:60"), None);
+        assert_eq!(parse_time_of_day("noon"), None);
+    }
+}
