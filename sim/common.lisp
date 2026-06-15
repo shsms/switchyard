@@ -63,6 +63,41 @@ cancel it on reload."
                 active-timers))))
 
 ;; -----------------------------------------------------------------------------
+;; In-sim controller
+;; -----------------------------------------------------------------------------
+
+(defun define-controller (&rest plist)
+  "Register an in-sim controller: call the :on-tick lambda every
+:every-ms ms (default 100) on Config's refresh loop. A controller is the
+closed-loop counterpart to the open-loop drivers — it *senses* live
+state and *actuates* in response, modelling an EMS / dispatcher.
+
+Inside :on-tick, read live state with `component-active-power`,
+`component-bound-lower`, and `component-bound-upper` (the latter two
+report the effective bounds, so they follow any cap a bounds-driving app
+like the  has applied), and actuate with `set-active-power` —
+pass its CLAMP arg `t` to command \"as much as the live cap allows\"
+without tracking the augmentations yourself. eg. a dispatcher that keeps
+a battery inverter charging at the highest power the  permits:
+
+  (define-controller :id 'ems
+    :on-tick (lambda () (set-active-power 300 (component-bound-upper 300) 2000 t)))
+
+The optional :id is a readability/label. The timer is tracked on
+`active-timers` so `reset-state` cancels it on reload.
+
+Cadence vs command-delay: re-commanding a component resets its
+command-delay timer, so a controller that re-sends every :every-ms must
+tick *slower* than the target's :command-delay-ms or the setpoint never
+arms. The default 100 ms suits fast actuators; for a battery inverter
+(default 1500 ms delay) raise :every-ms above the delay, or give the
+inverter a small :command-delay-ms."
+  (let* ((on-tick (plist-get plist :on-tick))
+         (req-ms (plist-get plist :every-ms))
+         (ms (if req-ms req-ms 100)))
+    (every :milliseconds ms :call on-tick)))
+
+;; -----------------------------------------------------------------------------
 ;; UI override file loader
 ;; -----------------------------------------------------------------------------
 

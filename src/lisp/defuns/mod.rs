@@ -29,6 +29,7 @@ mod load_drivers;
 mod log;
 mod metadata;
 mod microgrids;
+mod queries;
 mod reactive;
 mod reset;
 mod runtime_modes;
@@ -66,6 +67,7 @@ pub(super) fn register_runtime(
     time::register(ctx);
     reactive::register(ctx, router.clone());
     setpoints::register(ctx, router.clone(), metadata);
+    queries::register(ctx, router.clone());
     world_ops::register(ctx, router.clone());
     scenarios::register_lifecycle(ctx, router, microgrids);
     fs::register(ctx, load_dir);
