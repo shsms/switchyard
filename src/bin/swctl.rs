@@ -355,7 +355,12 @@ enum ScenarioCmd {
 
     /// Show aggregate metrics: peak / charge / discharge / SoC
     /// stats / 15-min averages.
-    Report,
+    Report {
+        /// Exit non-zero if any `(scenario-expect …)` check failed —
+        /// turns a scenario run into a CI gate.
+        #[arg(long)]
+        assert: bool,
+    },
 
     /// Show recent events in the journal.
     Events {
@@ -1048,7 +1053,7 @@ async fn run_scenario(
                 .await?;
             print_summary(&s, json);
         }
-        ScenarioCmd::Report => {
+        ScenarioCmd::Report { assert } => {
             let r: serde_json::Value = http
                 .get(format!("{ui_addr}/api/scenario/report"))
                 .send()
@@ -1056,6 +1061,12 @@ async fn run_scenario(
                 .json()
                 .await?;
             print_report(&r, json);
+            if assert {
+                let failed = r["checks_failed"].as_u64().unwrap_or(0);
+                if failed > 0 {
+                    return Err(format!("{failed} scenario check(s) failed").into());
+                }
+            }
         }
         ScenarioCmd::Events { since, limit } => {
             let e: serde_json::Value = http
