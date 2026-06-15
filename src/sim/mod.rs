@@ -23,6 +23,7 @@ pub(crate) mod scenario;
 pub(crate) mod scenario_csv;
 pub mod scenarios;
 pub mod setpoints;
+pub mod sim_clock;
 
 pub use battery::Battery;
 pub use chp::Chp;

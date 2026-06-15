@@ -74,3 +74,9 @@ path = "src/bin/swctl.rs"
 [[bin]]
 name = "switchyard-etags"
 path = "src/bin/switchyard-etags.rs"
+
+# Local override: develop the sim-time clock against a checkout of
+# tulisp-async (branch local-sim-clock). Remove once the clock change is
+# upstreamed and the git dep above points at the new rev.
+[patch."https://github.com/tulisp/tulisp-async"]
+tulisp-async = { path = "/vagrant/tulisp-async" }

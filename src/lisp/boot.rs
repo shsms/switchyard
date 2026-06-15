@@ -30,6 +30,26 @@ impl Config {
     /// rather than partially built; the caller is expected to retry
     /// or abort.
     pub fn new(filename: &str) -> Result<Self, String> {
+        Self::new_inner(filename, false)
+    }
+
+    /// Build a *headless* `Config` for deterministic, faster-than-real-
+    /// time scenario runs. Timers and scenario time run on a hand-
+    /// advanced [`ManualClock`](tulisp_async::ManualClock) (returned
+    /// alongside), and the background loops (physics, lisp refresh, the
+    /// request-timeout sweep, scenario auto-advance, the frequency
+    /// driver) are NOT spawned — the caller steps the simulation itself
+    /// via [`Config::sim_step`]. Used for CI scenario assertions.
+    pub fn new_headless(filename: &str) -> Result<(Self, Arc<tulisp_async::ManualClock>), String> {
+        let cfg = Self::new_inner(filename, true)?;
+        let clock = cfg
+            .sim_clock
+            .clone()
+            .expect("headless Config always has a sim clock");
+        Ok((cfg, clock))
+    }
+
+    fn new_inner(filename: &str, headless: bool) -> Result<Self, String> {
         use std::sync::atomic::AtomicU64;
         let mut ctx = TulispContext::new();
         let enterprise_id_allocator =
@@ -59,7 +79,13 @@ impl Config {
         // both attach to this slot.
         let grid_frequency = crate::sim::frequency::new_shared();
         site.set_grid_frequency(grid_frequency.clone());
-        crate::sim::frequency::spawn_driver(grid_frequency.clone());
+        // A headless run drives every tick itself; the wall-clock
+        // background loops (frequency driver here, plus the timeout
+        // sweep / lisp refresh / scenario auto-advance below) would race
+        // the stepped driver, so they're only spawned for a live build.
+        if !headless {
+            crate::sim::frequency::spawn_driver(grid_frequency.clone());
+        }
 
         // `Path::parent()` returns `Some("")` for bare filenames like
         // "config.lisp" — tulisp rejects empty paths, so fall back to
@@ -72,12 +98,30 @@ impl Config {
         ctx.set_load_path(Some(&load_dir))
             .map_err(|e| format!("set_load_path({}): {e}", load_dir.display()))?;
 
+        // Headless builds run the timer queue + scenario time on a
+        // hand-advanced ManualClock so a scenario can be stepped
+        // deterministically and faster than real time; live builds use
+        // the wall clock and the background loops below.
+        let sim_clock = if headless {
+            Some(Arc::new(tulisp_async::ManualClock::new()))
+        } else {
+            None
+        };
+        let now = match &sim_clock {
+            Some(clock) => crate::sim::sim_clock::NowSource::sim(
+                crate::sim::sim_clock::headless_base(),
+                clock.clone(),
+            ),
+            None => crate::sim::sim_clock::NowSource::wall(),
+        };
+
         defuns::register_runtime(
             &mut ctx,
             router.clone(),
             metadata.clone(),
             load_dir.clone(),
             microgrids.clone(),
+            now.clone(),
         );
         defuns::register_clock(&mut ctx, clock.clone());
         defuns::register_watches(&mut ctx, load_dir.clone(), extra_watches.clone());
@@ -105,8 +149,11 @@ impl Config {
         // `spawn_lisp_refresh_loop` task ticks at 100 ms cadence
         // to fire pending timer firings. Without it the mailbox
         // would just accumulate.
-        let timer_handle =
-            tulisp_async::register(&mut ctx, Arc::new(tulisp_async::TokioExecutor::new()));
+        let executor = Arc::new(tulisp_async::TokioExecutor::new());
+        let timer_handle = match &sim_clock {
+            Some(clock) => tulisp_async::register_with_clock(&mut ctx, executor, clock.clone()),
+            None => tulisp_async::register(&mut ctx, executor),
+        };
 
         // One-per-process loop that walks every registered
         // MicrogridSite's TimeoutTracker and calls reset_setpoint on
@@ -114,7 +161,9 @@ impl Config {
         // and the Lisp `(set-active-power …)` defun add to the
         // tracker; this loop is what makes their request-lifetime
         // semantics visible.
-        Self::start_timeout_loop(microgrids.clone());
+        if !headless {
+            Self::start_timeout_loop(microgrids.clone());
+        }
 
         if let Err(e) = ctx.eval_file(filename) {
             let formatted = e.format(&ctx);
@@ -158,20 +207,22 @@ impl Config {
         //  - `Config::refresh_once` exposes the same work
         //    synchronously for tests that drive `tick_once` and
         //    expect the lambda result to be visible immediately.
-        Self::spawn_lisp_refresh_loop(microgrids.clone(), ctx.clone(), timer_handle.clone());
+        if !headless {
+            Self::spawn_lisp_refresh_loop(microgrids.clone(), ctx.clone(), timer_handle.clone());
 
-        // Scenarios auto-advance task — polls the wallclock and
-        // transitions running scenarios on stage boundaries. Lives
-        // on the same runtime as the gRPC + UI servers; the
-        // interpreter lock it grabs to funcall :on lambdas is the
-        // same one the pre-tick hook uses, so no extra plumbing.
-        crate::sim::scenarios::spawn_auto_advance(
-            scenarios.clone(),
-            ctx.clone(),
-            microgrids.clone(),
-            current_microgrid.clone(),
-            clock.clone(),
-        );
+            // Scenarios auto-advance task — polls the wallclock and
+            // transitions running scenarios on stage boundaries. Lives
+            // on the same runtime as the gRPC + UI servers; the
+            // interpreter lock it grabs to funcall :on lambdas is the
+            // same one the pre-tick hook uses, so no extra plumbing.
+            crate::sim::scenarios::spawn_auto_advance(
+                scenarios.clone(),
+                ctx.clone(),
+                microgrids.clone(),
+                current_microgrid.clone(),
+                clock.clone(),
+            );
+        }
 
         Ok(Self {
             filename: filename.to_string(),
@@ -189,6 +240,8 @@ impl Config {
             enterprise_id_allocator,
             microgrid_registered,
             timer_handle,
+            now,
+            sim_clock,
         })
     }
 
@@ -219,6 +272,51 @@ impl Config {
             }
         }
         self.timer_handle.tick(&mut guard);
+    }
+
+    /// Advance a headless simulation by `dt`: move the sim clock
+    /// forward, re-resolve lisp-driven inputs + fire now-due timers
+    /// ([`refresh_once`](Self::refresh_once)), then tick physics on
+    /// every site at the new sim-time. Deterministic and as fast as the
+    /// caller loops it — no real-time sleeping. No-op (logged) on a live
+    /// `Config` (one built by [`Config::new`] rather than
+    /// [`Config::new_headless`]).
+    pub fn sim_step(&self, dt: Duration) {
+        let Some(clock) = self.sim_clock.as_ref() else {
+            log::warn!("Config::sim_step called on a live Config; ignored");
+            return;
+        };
+        clock.advance(dt);
+        // Timers + dynamic inputs first (a `timeline` source reads
+        // scenario-elapsed, now at the advanced sim-time), then physics.
+        self.refresh_once();
+        let now = self.now.now();
+        let sites: Vec<MicrogridSite> = self
+            .microgrids
+            .lock()
+            .values()
+            .map(|e| e.site.clone())
+            .collect();
+        for site in sites {
+            site.tick_once(now, dt);
+        }
+    }
+
+    /// Step a headless simulation to `until` sim-time in `dt` increments.
+    /// Returns the number of steps taken. No-op on a live `Config`.
+    pub fn sim_run(&self, until: Duration, dt: Duration) -> u64 {
+        if self.sim_clock.is_none() {
+            log::warn!("Config::sim_run called on a live Config; ignored");
+            return 0;
+        }
+        let mut steps = 0;
+        let mut elapsed = Duration::ZERO;
+        while elapsed < until {
+            self.sim_step(dt);
+            elapsed += dt;
+            steps += 1;
+        }
+        steps
     }
 
     /// Spawn the Lisp refresh + timer-drain loop. Runs at 100 ms
@@ -335,7 +433,14 @@ impl Config {
         ctx.set_load_path(Some(&load_dir))
             .map_err(|e| Error::os_error(format!("set_load_path({}): {e}", load_dir.display())))?;
 
-        defuns::register_runtime(&mut ctx, router, metadata, load_dir, microgrids);
+        defuns::register_runtime(
+            &mut ctx,
+            router,
+            metadata,
+            load_dir,
+            microgrids,
+            crate::sim::sim_clock::NowSource::wall(),
+        );
         // The Handle is unused here — tags_table is a one-shot parse
         // pass, no timers ever fire — but `register` still installs
         // the four builtins so that `(run-with-timer …)` etc. show up
@@ -577,6 +682,66 @@ mod tests {
         assert!(
             err.contains("this-is-not-a-defun-anywhere"),
             "error should name the offending symbol: {err}",
+        );
+    }
+
+    /// A headless `Config` runs physics, timers, and scenario time on a
+    /// hand-advanced sim clock: `sim_run` drives a 60 s scenario in
+    /// near-zero wall time, the timer fires at sim t=30, and the battery
+    /// SoC integrates on sim-time (3.6 kW into 1 kWh for 60 s = +6%).
+    #[test]
+    fn headless_sim_runs_physics_and_timers_on_sim_time() {
+        use std::time::Duration;
+        let body = "(set-enterprise-id 1)
+(make-microgrid :id 9 :grpc-port 18901 :topology
+  (lambda ()
+    (%make-grid-connection-point :id 1
+      :successors (list (%make-meter :id 2 :main t
+        :successors (list (%make-battery-inverter :id 3 :rated-lower -5000.0 :rated-upper 5000.0
+          :successors (list (%make-battery :id 4 :rated-lower -5000.0 :rated-upper 5000.0
+            :capacity 1000.0 :initial-soc 50.0)))))))))
+(setq fired 0)
+(run-with-timer 30 nil (lambda () (setq fired 1)))
+(scenario-start \"sim\")
+(set-active-power 3 3600.0 600000)";
+        let mut dir = std::env::temp_dir();
+        dir.push(format!(
+            "switchyard-headless-{}-{}",
+            std::process::id(),
+            next_unique(),
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.lisp");
+        std::fs::write(&path, body).unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let (cfg, _clock) = rt
+            .block_on(async { Config::new_headless(path.to_str().unwrap()) })
+            .expect("headless config builds");
+        std::mem::forget(rt);
+
+        let start = std::time::Instant::now();
+        let steps = cfg.sim_run(Duration::from_secs(60), Duration::from_secs(1));
+        let wall = start.elapsed();
+
+        assert_eq!(steps, 60);
+        // 60 sim-seconds elapsed in near-zero wall time.
+        let elapsed: f64 = cfg
+            .eval_silent("(scenario-elapsed)")
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!((elapsed - 60.0).abs() < 2.0, "scenario-elapsed = {elapsed}");
+        assert!(wall < Duration::from_secs(5), "headless wall time {wall:?}");
+        // Timer fired at sim t=30.
+        assert_eq!(cfg.eval_silent("fired").unwrap(), "1");
+        // Physics integrated SoC on sim-time: 50% -> ~56%. Asserted via
+        // the scenario-expect check itself (I2), exercising the whole
+        // stack.
+        assert_eq!(
+            cfg.eval_silent("(scenario-expect :component 4 :metric 'soc :approx 56.0 :tol 1.0)")
+                .unwrap(),
+            "t",
+            "battery SoC should integrate on sim-time to ~56%",
         );
     }
 

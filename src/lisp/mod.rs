@@ -162,6 +162,15 @@ pub struct Config {
     /// callbacks; `Config::refresh_once` ticks it synchronously for
     /// tests that drive ticks deterministically.
     pub(crate) timer_handle: tulisp_async::Handle,
+    /// Source of "now" for scenario time + headless physics stepping.
+    /// Wall-clock in a normal (live) `Config`; tied to `sim_clock` in a
+    /// headless one. See [`crate::sim::sim_clock`].
+    pub(crate) now: crate::sim::sim_clock::NowSource,
+    /// Present only for a headless `Config` (built by
+    /// [`Config::new_headless`]): the hand-advanced clock that drives
+    /// the timer queue and `now`. `None` for a live `Config`, whose
+    /// timers run on the wall clock and whose background loops tick it.
+    pub(crate) sim_clock: Option<Arc<tulisp_async::ManualClock>>,
 }
 
 impl Config {

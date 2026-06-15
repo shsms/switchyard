@@ -6,7 +6,6 @@
 //! Both surfaces share data via `MicrogridSite`'s scenario journal;
 //! keeping them in one file makes the read-write story obvious.
 
-use chrono::Utc;
 use tulisp::{Error, TulispContext, TulispObject};
 
 use crate::sim::history::Metric;
@@ -197,6 +196,7 @@ pub(super) fn register_lifecycle(
     ctx: &mut TulispContext,
     router: SharedSiteRouter,
     microgrids: crate::sim::microgrids::SharedMicrogrids,
+    now: crate::sim::sim_clock::NowSource,
 ) {
     // scenario-start / scenario-stop fan out across every registered
     // microgrid, matching the HTTP scenario lifecycle — a REPL- or
@@ -209,10 +209,11 @@ pub(super) fn register_lifecycle(
     // the router-resolved site.
     let reg = microgrids.clone();
     let r = router.clone();
+    let nowsrc = now.clone();
     ctx.defun(
         "scenario-start",
         move |name: String| -> Result<bool, Error> {
-            let now = Utc::now();
+            let now = nowsrc.now();
             let sites: Vec<_> = reg.lock().values().map(|e| e.site.clone()).collect();
             if sites.is_empty() {
                 r.site().scenario_start(name, now);
@@ -227,8 +228,9 @@ pub(super) fn register_lifecycle(
 
     let reg = microgrids.clone();
     let r = router.clone();
+    let nowsrc = now.clone();
     ctx.defun("scenario-stop", move || -> Result<bool, Error> {
-        let now = Utc::now();
+        let now = nowsrc.now();
         let sites: Vec<_> = reg.lock().values().map(|e| e.site.clone()).collect();
         if sites.is_empty() {
             r.site().scenario_stop(now);
@@ -241,6 +243,7 @@ pub(super) fn register_lifecycle(
     });
 
     let r = router.clone();
+    let nowsrc = now.clone();
     ctx.defun(
         "scenario-event",
         move |kind: TulispObject, payload: TulispObject| -> Result<i64, Error> {
@@ -255,7 +258,7 @@ pub(super) fn register_lifecycle(
                 String::try_from(kind)?
             };
             let payload_str = payload.to_string();
-            let id = w.scenario_record(kind_str, payload_str, Utc::now());
+            let id = w.scenario_record(kind_str, payload_str, nowsrc.now());
             Ok(id as i64)
         },
     );
@@ -268,6 +271,7 @@ pub(super) fn register_lifecycle(
     // condition a test should catch); an unknown metric name or a
     // malformed comparator is a script bug and errors instead.
     let r = router.clone();
+    let nowsrc = now.clone();
     ctx.defun(
         "scenario-expect",
         move |_ctx: &mut TulispContext,
@@ -317,7 +321,7 @@ pub(super) fn register_lifecycle(
             let actual = w.get(id).and_then(|c| c.telemetry(&w).metric_value(metric));
             let passed = actual.is_some_and(|v| expectation.passes(v as f64));
             w.scenario_record_check(ScenarioCheck {
-                ts: Utc::now(),
+                ts: nowsrc.now(),
                 component_id: id,
                 metric: metric.as_str().into(),
                 expectation: expectation.describe(),
@@ -347,9 +351,10 @@ pub(super) fn register_lifecycle(
     });
 
     let r = router;
+    let nowsrc = now;
     ctx.defun("scenario-elapsed", move || -> Result<f64, Error> {
         let w = r.site();
-        Ok(w.scenario_elapsed_s(Utc::now()))
+        Ok(w.scenario_elapsed_s(nowsrc.now()))
     });
 }
 

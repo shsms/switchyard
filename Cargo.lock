@@ -2379,7 +2379,6 @@ source = "git+https://github.com/shsms/tulisp#bb901e3e7d18aa104aafbf8382054879c3
 [[package]]
 name = "tulisp-async"
 version = "0.1.0"
-source = "git+https://github.com/tulisp/tulisp-async#5dba696aae53daa4f1190480bb07dffcaad0f440"
 dependencies = [
  "tokio",
  "tulisp",

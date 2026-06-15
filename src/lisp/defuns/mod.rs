@@ -55,6 +55,7 @@ pub(super) fn register_runtime(
     metadata: Arc<RwLock<Metadata>>,
     load_dir: PathBuf,
     microgrids: crate::sim::microgrids::SharedMicrogrids,
+    now: crate::sim::sim_clock::NowSource,
 ) {
     log::register(ctx);
     handle::register(ctx);
@@ -69,7 +70,7 @@ pub(super) fn register_runtime(
     setpoints::register(ctx, router.clone(), metadata);
     queries::register(ctx, router.clone());
     world_ops::register(ctx, router.clone());
-    scenarios::register_lifecycle(ctx, router, microgrids);
+    scenarios::register_lifecycle(ctx, router, microgrids, now);
     fs::register(ctx, load_dir);
     super::csv_profile::register(ctx);
 }
