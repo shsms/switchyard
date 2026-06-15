@@ -1,5 +1,6 @@
 #+TITLE: Switchyard — roadmap and deferred work
 #+TODO: TODO INPROGRESS WAIT | DONE CANCELLED
+#+startup: logdrawer
 
 Forward-looking residue. The reactive-input + scenario framework
 + integration-test + CI tracks all landed; what's left is the
@@ -282,7 +283,11 @@ AugmentBounds / SetPower requests received (value + ttl + arrival time)
 and the effective-bounds timeline. Lets a scenario replay-assert "the
 app held a stable cap" vs "it oscillated" without an external log scrape.
 
-*** TODO I5. First-class in-sim controllers / actors                :testing:
+*** DONE I5. First-class in-sim controllers / actors                :testing:
+:LOGBOOK:
+- State "DONE"       from "TODO"       [2026-06-15 Mo 20:51]
+:END:
+
 Scenarios are open-loop: they perturb the environment but can't model
 an agent that *reacts* to live state. Testing a bound-setting app
 against a realistic dispatcher (e.g. "charge the battery at the max the
@@ -298,6 +303,14 @@ small DSL primitives: =component-bound-upper/lower= (read effective
 bounds) and a clamping =set-active-power= variant that never errors on
 an over-bound request. Turns the sim genuinely closed-loop and lets a
 scenario mock other controllers too.
+
+Done: =component-active-power= / =component-bound-lower= / =component-bound-upper=
+expose live power + effective bounds (rated ∩ augmentations); =set-active-power=
+gained a CLAMP arg that clamps into the live envelope instead of erroring; and
+=define-controller= schedules an :on-tick lambda on the refresh loop. A
+controller is now =(define-controller :on-tick (lambda () (set-active-power ID
+(component-bound-upper ID) MS t)))=. Caveat: re-commanding resets the
+command-delay, so :every-ms must exceed the target's :command-delay-ms.
 
 *** TODO I6. Declarative signal profiles for environment drivers    :testing:
 Driving a load curve means hand-rolling a =cond= on =(scenario-elapsed)=
