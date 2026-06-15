@@ -282,6 +282,40 @@ AugmentBounds / SetPower requests received (value + ttl + arrival time)
 and the effective-bounds timeline. Lets a scenario replay-assert "the
 app held a stable cap" vs "it oscillated" without an external log scrape.
 
+*** TODO I5. First-class in-sim controllers / actors                :testing:
+Scenarios are open-loop: they perturb the environment but can't model
+an agent that *reacts* to live state. Testing a bound-setting app
+against a realistic dispatcher (e.g. "charge the battery at the max the
+ currently allows") is impossible — the DSL can fire
+=set-active-power= but it errors once the cap drops below the request,
+there's no =ignore-errors= in this tulisp, and a script can't read back
+effective bounds to clamp its own command.
+
+Add a registered per-tick callback with read access to telemetry +
+effective bounds and write access to setpoints, e.g.
+=(define-controller :id 'ems :on-tick (lambda (mg) …))=. Needs two
+small DSL primitives: =component-bound-upper/lower= (read effective
+bounds) and a clamping =set-active-power= variant that never errors on
+an over-bound request. Turns the sim genuinely closed-loop and lets a
+scenario mock other controllers too.
+
+*** TODO I6. Declarative signal profiles for environment drivers    :testing:
+Driving a load curve means hand-rolling a =cond= on =(scenario-elapsed)=
+inside a =set-meter-power= lambda. Add a small composable vocabulary —
+=hold= / =ramp= / =pulse= over a timeline — so intent reads directly:
+=(drive-meter 100 (timeline (hold 2kW :for 60s) (ramp :to 60kW :over 10s)
+(ramp :to 2kW :over 10s)))=. Resolves once per tick like today's dynamic
+sources; far more readable than the imperative form for multi-segment
+profiles.
+
+*** TODO I7. Sim-time + seeded RNG for scenarios                    :testing:
+Scenario timers fire on the 100 ms refresh loop and =(scenario-elapsed)=
+is wall-clock, with per-stream jitter on top — fine for eyeballing, bad
+for asserting a timed ramp race or running in CI. Drive scenarios on
+simulated time with a seedable RNG so a run is reproducible and can go
+faster-than-real-time. Pairs with I2 to make =scenario-expect= pass/fail
+meaningful.
+
 * Review backlog — 2026-06-01
 
 Whole-codebase review (8-agent subsystem fan-out + clippy/fmt; clippy
