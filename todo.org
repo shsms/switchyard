@@ -264,8 +264,9 @@ power-bounds-lower/upper family) and records a pass/fail check into the report;
 =swctl scenario report= prints them and, with =--assert=, exits non-zero on any
 failure — a CI gate. (The =--assert= flag was the remaining piece.)
 
-*** INPROGRESS I3. Disambiguate health vs availability vs output :telemetry:docs:
+*** DONE I3. Disambiguate health vs availability vs output   :telemetry:docs:
 :LOGBOOK:
+- State "DONE"       from "INPROGRESS" [2026-06-15 Mo 23:30]
 - State "INPROGRESS" from "TODO"       [2026-06-09 Di 15:59]
 :END:
 
@@ -279,8 +280,14 @@ health" item). Decide whether health should drive an ERROR state
 snapshot or stay an orthogonal knob, and document the three axes (stream
 health, bounds-availability, physical output).
 
-*** INPROGRESS I4. Record a component's bounds + received setpoints over time :testing:
+Done: Health::state_label() drives the ERROR/STANDBY state snapshot when health is
+non-Ok (server.rs telemetry path overrides the physics-derived component_state);
+physics labels apply when Ok. The three axes (stream health, command/bounds
+handling, physical output) are documented at the top of sim/runtime.rs.
+
+*** DONE I4. Record a component's bounds + received setpoints over time :testing:
 :LOGBOOK:
+- State "DONE"       from "INPROGRESS" [2026-06-15 Mo 23:30]
 - State "INPROGRESS" from "TODO"       [2026-06-09 Di 15:59]
 :END:
 
@@ -289,6 +296,11 @@ setting app you also want the *inputs it pushed*: a per-component log of
 AugmentBounds / SetPower requests received (value + ttl + arrival time)
 and the effective-bounds timeline. Lets a scenario replay-assert "the
 app held a stable cap" vs "it oscillated" without an external log scrape.
+
+Done: scenario-record-csv now also writes <id>-setpoints.csv (each SetPower /
+SetReactive / AugmentBounds received — value + resolved TTL + arrival + outcome)
+and <id>-bounds.csv (the effective active-power envelope over time), so a run is
+replay-assertable without scraping the app's logs.
 
 *** DONE I5. First-class in-sim controllers / actors                :testing:
 :LOGBOOK:
