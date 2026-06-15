@@ -349,7 +349,11 @@ Done in =src/lisp/defuns/log.rs=: =(set-random-seed N)= installs a SplitMix64
 behind =(random)= (verified reproducible); =(clear-random-seed)= reverts to the
 OS RNG. Full run-to-run determinism still needs sim-time — see I8.
 
-*** TODO I8. Sim-time for scenarios                                 :testing:
+*** DONE I8. Sim-time for scenarios                                 :testing:
+:LOGBOOK:
+- State "DONE"       from "TODO"       [2026-06-15 Mo 22:28]
+:END:
+
 Scenario timers fire on the 100 ms refresh loop and =(scenario-elapsed)=
 is wall-clock, with per-stream jitter on top — fine for eyeballing, bad
 for asserting a timed ramp race or running in CI, and the reason seeded
@@ -364,6 +368,14 @@ external =tulisp-async= crate, and =(scenario-elapsed)= reads
 =Utc::now()= — virtualizing both (a sim clock threaded through the
 refresh loop + a timer wheel on sim-time) is a large cross-cutting
 change touching a dependency, not a contained add.
+
+Done: a pluggable Clock landed in tulisp-async (ManualClock + register_with_clock),
+and switchyard grew Config::new_headless + sim_step / sim_run — a headless runner
+that advances one sim clock driving timers, scenario time, and physics integration
+together, so a scenario runs deterministically and faster than real time (with I7's
+seeded RNG, fully reproducible) and scenario-expect (I2) makes it a CI gate. Live
+mode is unchanged (wall-clock). tulisp-async change is on a local checkout pending
+upstream; switchyard pins it via a Cargo [patch].
 
 * Review backlog — 2026-06-01
 
