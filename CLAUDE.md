@@ -201,6 +201,41 @@ config.lisp does.
    `(run-with-timer …)` from the config to script behaviour over time.
 3. Demonstrate via a new line in `config.lisp` and verify via swctl.
 
+## Testing an external bounds-driving app (e.g. the )
+
+Switchyard is used to test apps whose job is to push
+`AugmentElectricalComponentBounds` and watch `power_bounds` react (the
+`fz-microgrid-` GCP active-power limiter is the motivating
+case; `-test.lisp` + `scenarios/-cases.lisp`).
+
+- **Both battery and solar inverters curtail to their effective
+  (rated ∩ augmentation) bounds every tick.** `CommandDelay::poll`
+  returns the armed setpoint on every tick, and `tick()` re-clamps it
+  to the live envelope — so an external app narrowing a bound actually
+  slews the inverter down at `ramp_rate`, and it recovers when the
+  augmentation relaxes (tests: `late_augmentation_re_clamps_an_armed_setpoint`;
+  `solar_inverter::tick`). Curtail-to-bounds already exists — don't
+  reimplement it. A controller commands a setpoint **once**; it need
+  not re-send, since the armed value persists and keeps curtailing.
+- `set_active_setpoint` **hard-errors** a command outside the live
+  (augmentation-narrowed) envelope — faithful to the real API gateway
+  gating out-of-envelope setpoints. An EMS wanting "max within the cap"
+  reads the bounds and commands within them.
+- An inverter set to `:health 'error` (or `'standby`) **trips offline
+  to zero output** *and* is dropped from the healthy `power_bounds`
+  aggregate. A battery inverter clears its setpoint and awaits
+  re-dispatch on recovery; a PV inverter resumes from sunlight.
+- Drive sim state ad-hoc by POSTing lisp to
+  `http://127.0.0.1:8801/api/eval`, e.g.
+  `--data "(set-component-health 201 'error)"` → `{"ok":true,…}`.
+- The limiter app itself reads **`NITROGEN_LOG_LEVEL`** (not
+  `RUST_LOG`) for tracing: `info` shows the per-breach plan,
+  `fz_microgrid_=trace` the per-inverter caps it pushes.
+- Switchyard's physics supports closed-loop bound tests today; the
+  remaining gaps are ergonomic, not physical — scenario assertions,
+  an in-sim controller/actor that reacts to live bounds, declarative
+  signal profiles, and deterministic sim-time. See `todo.org` §I.
+
 ## Roadmap and deferred work
 
 See `todo.org` for the forward-looking roadmap (scenario framework,
