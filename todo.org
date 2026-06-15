@@ -243,8 +243,9 @@ ran against a 2-PV microgrid (=-test.lisp=,
 =scenarios/-cases.lisp=); the gaps below are what made that
 harder than it should be.
 
-*** INPROGRESS I2. Scenario-level assertions (expect / assert)      :testing:
+*** DONE I2. Scenario-level assertions (expect / assert)            :testing:
 :LOGBOOK:
+- State "DONE"       from "INPROGRESS" [2026-06-15 Mo 21:38]
 - State "INPROGRESS" from "TODO"       [2026-06-09 Di 15:59]
 :END:
 
@@ -256,6 +257,12 @@ into =/api/scenario/report= + =swctl scenario report=, turning
 scenarios into self-checking integration tests. eg.
 =(scenario-expect :component 200 :metric active-power-bounds-lower
 :approx -15000.0 :tol 500.0)=.
+
+Done: =(scenario-expect :component ID :metric M (:approx V :tol T | :min L :max U))=
+reads the live metric (power, soc, frequency, and the active/reactive
+power-bounds-lower/upper family) and records a pass/fail check into the report;
+=swctl scenario report= prints them and, with =--assert=, exits non-zero on any
+failure — a CI gate. (The =--assert= flag was the remaining piece.)
 
 *** INPROGRESS I3. Disambiguate health vs availability vs output :telemetry:docs:
 :LOGBOOK:
