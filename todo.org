@@ -312,7 +312,11 @@ controller is now =(define-controller :on-tick (lambda () (set-active-power ID
 (component-bound-upper ID) MS t)))=. Caveat: re-commanding resets the
 command-delay, so :every-ms must exceed the target's :command-delay-ms.
 
-*** TODO I6. Declarative signal profiles for environment drivers    :testing:
+*** DONE I6. Declarative signal profiles for environment drivers    :testing:
+:LOGBOOK:
+- State "DONE"       from "TODO"       [2026-06-15 Mo 20:56]
+:END:
+
 Driving a load curve means hand-rolling a =cond= on =(scenario-elapsed)=
 inside a =set-meter-power= lambda. Add a small composable vocabulary —
 =hold= / =ramp= / =pulse= over a timeline — so intent reads directly:
@@ -320,6 +324,10 @@ inside a =set-meter-power= lambda. Add a small composable vocabulary —
 (ramp :to 2kW :over 10s)))=. Resolves once per tick like today's dynamic
 sources; far more readable than the imperative form for multi-segment
 profiles.
+
+Done in =sim/scenarios.lisp=: =(timeline (hold V :for S) (ramp :to V :over S [:from A]) …)=
+returns a dynamic source (lambda over scenario time) for set-meter-power /
+set-solar-sunlight; a ramp without :from chains from the previous segment's end.
 
 *** TODO I7. Sim-time + seeded RNG for scenarios                    :testing:
 Scenario timers fire on the 100 ms refresh loop and =(scenario-elapsed)=
