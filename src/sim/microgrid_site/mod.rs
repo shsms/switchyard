@@ -579,6 +579,23 @@ impl MicrogridSite {
         }
     }
 
+    /// The active-power envelope a setpoint for `id` must fall within:
+    /// the component's own effective AC bounds intersected with the
+    /// summed DC bounds of its children. `None` when the component has
+    /// no children exposing bounds — then only its own bounds apply
+    /// (enforced by the component's `set_active_setpoint`).
+    ///
+    /// Both setpoint entry points gate against this so a command outside
+    /// the intersection is rejected, not silently saturated by the
+    /// battery: the gRPC `SetElectricalComponentPower` gateway
+    /// ([`crate::server`]) and the `(set-active-power)` DSL
+    /// (`lisp::defuns::setpoints`).
+    pub fn active_setpoint_envelope(&self, id: u64) -> Option<crate::sim::bounds::VecBounds> {
+        let child_env = self.aggregate_child_bounds(id)?;
+        let own = self.get(id)?.effective_active_bounds().unwrap_or_default();
+        Some(own.intersect(&child_env))
+    }
+
     /// Wipe every registered component. Called from `(reset-state)` in
     /// the config DSL on hot-reload. Also resets the id allocator so a
     /// reloaded config sees the same ids the previous load saw,

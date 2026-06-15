@@ -241,16 +241,13 @@ impl MicrogridServer {
         // fail-safe park) is always allowed, whatever the envelope.
         if matches!(power_type, PowerType::Active)
             && req.power != 0.0
-            && let Some(child_env) = site.aggregate_child_bounds(req.electrical_component_id)
+            && let Some(envelope) = site.active_setpoint_envelope(req.electrical_component_id)
+            && !envelope.contains(req.power)
         {
-            let own = component.effective_active_bounds().unwrap_or_default();
-            let envelope = own.intersect(&child_env);
-            if !envelope.contains(req.power) {
-                return Err(tonic::Status::failed_precondition(format!(
-                    "set-point {} W exceeds combined envelope {}",
-                    req.power, envelope
-                )));
-            }
+            return Err(tonic::Status::failed_precondition(format!(
+                "set-point {} W exceeds combined envelope {}",
+                req.power, envelope
+            )));
         }
 
         // Resolve the request lifetime *before* actuating: an out-of-range

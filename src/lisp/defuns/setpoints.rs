@@ -45,6 +45,19 @@ pub(super) fn register(
             let component = w.get(id as u64).ok_or_else(|| {
                 Error::invalid_argument(format!("set-active-power: component {id} not found"))
             })?;
+            // Gateway-level envelope check, mirroring the gRPC SetPower
+            // path: a command outside the inverter's own bounds
+            // intersected with its children's DC bounds is rejected, not
+            // silently saturated by the battery. 0 W (the fail-safe park)
+            // is always allowed.
+            if watts != 0.0
+                && let Some(envelope) = w.active_setpoint_envelope(id as u64)
+                && !envelope.contains(watts as f32)
+            {
+                return Err(Error::invalid_argument(format!(
+                    "set-active-power: set-point {watts} W exceeds combined envelope {envelope}"
+                )));
+            }
             component
                 .set_active_setpoint(watts as f32)
                 .map_err(|e| Error::invalid_argument(format!("set-active-power: {e}")))?;
@@ -95,6 +108,36 @@ mod tests {
             cfg.site().drain_expired_timeouts(),
             vec![(2, crate::timeout_tracker::SetpointAxis::Active)]
         );
+    }
+
+    /// set-active-power gates against the *intersection* of the
+    /// inverter's own bounds and its battery child's bounds — not just
+    /// the inverter's own — so a value the inverter alone would accept
+    /// but the battery can't is rejected, not silently saturated.
+    #[test]
+    fn set_active_power_rejects_outside_battery_inverter_intersection() {
+        let (cfg, _dir) = config_with(
+            // Inverter rated ±5 kW, but its battery only ±1 kW -> the
+            // combined envelope is ±1 kW.
+            "(set-microgrid-id 9)
+             (setq b1 (%make-battery :id 1 :rated-lower -1000.0 :rated-upper 1000.0))
+             (%make-battery-inverter :id 2 :rated-lower -5000.0 :rated-upper 5000.0
+                                       :successors (list b1))",
+        );
+        // +3 kW is inside the inverter's own ±5 kW but outside the
+        // battery's ±1 kW -> rejected against the intersection.
+        let res = cfg.eval("(set-active-power 2 3000.0 30000)");
+        assert!(res.is_err(), "expected rejection, got {res:?}");
+        assert!(
+            res.as_ref().unwrap_err().contains("envelope"),
+            "expected 'envelope' in error, got {res:?}"
+        );
+        // Discharge side mirrors it.
+        assert!(cfg.eval("(set-active-power 2 -3000.0 30000)").is_err());
+        // Within the ±1 kW intersection is accepted.
+        cfg.eval("(set-active-power 2 800.0 30000)").unwrap();
+        // 0 W (the fail-safe park) is always accepted.
+        cfg.eval("(set-active-power 2 0.0 30000)").unwrap();
     }
 
     /// set-active-power on an unknown id surfaces an error, and a setpoint

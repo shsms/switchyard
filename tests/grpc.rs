@@ -123,6 +123,26 @@ const ERRORED_INVERTER_TOPOLOGY: &str = r#"
                                              :rated-upper  5000.0)))))))
 "#;
 
+/// Inverter rated ±5 kW but its battery only ±1 kW, so the combined
+/// envelope the gateway must enforce is ±1 kW — narrower than the
+/// inverter's own bounds.
+const NARROW_BATTERY_TOPOLOGY: &str = r#"
+(set-microgrid-id 7)
+(%make-grid-connection-point :id 1
+            :successors
+            (list (%make-meter :id 2 :main t
+                               :successors
+                               (list (%make-battery-inverter
+                                      :id 4
+                                      :rated-lower -5000.0
+                                      :rated-upper  5000.0
+                                      :successors
+                                      (list (%make-battery
+                                             :id 3
+                                             :rated-lower -1000.0
+                                             :rated-upper  1000.0)))))))
+"#;
+
 /// An errored inverter refuses every command — both setpoints and bounds
 /// augmentations (the latter were previously accepted unconditionally).
 #[tokio::test(flavor = "multi_thread")]
@@ -227,6 +247,45 @@ async fn set_power_outside_envelope_is_rejected() {
         err.message().contains("envelope") || err.message().contains("bounds"),
         "expected envelope/bounds in message, got {:?}",
         err.message()
+    );
+}
+
+/// A setpoint inside the inverter's own bounds but outside its battery's
+/// (narrower) bounds is rejected against the *intersection* — not
+/// silently saturated. The complement of the inverter-only-bounds test.
+#[tokio::test(flavor = "multi_thread")]
+async fn set_power_outside_battery_inverter_intersection_is_rejected() {
+    let s = TestServer::start(NARROW_BATTERY_TOPOLOGY).await;
+    let mut c = connect(&s).await;
+    // +3 kW: within the inverter's ±5 kW, outside the battery's ±1 kW.
+    let err = c
+        .set_electrical_component_power(SetElectricalComponentPowerRequest {
+            electrical_component_id: 4,
+            power: 3_000.0,
+            power_type: PowerType::Active as i32,
+            request_lifetime: Some(30),
+        })
+        .await
+        .expect_err("expected rejection against the ±1 kW intersection");
+    assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+    assert!(
+        err.message().contains("envelope"),
+        "expected 'envelope' in message, got {:?}",
+        err.message()
+    );
+    // Within the ±1 kW intersection is accepted.
+    let resp = c
+        .set_electrical_component_power(SetElectricalComponentPowerRequest {
+            electrical_component_id: 4,
+            power: 800.0,
+            power_type: PowerType::Active as i32,
+            request_lifetime: Some(30),
+        })
+        .await
+        .expect("800 W is within the intersection");
+    assert_eq!(
+        resp.into_inner().message().await.unwrap().unwrap().status,
+        SetElectricalComponentPowerRequestStatus::Success as i32,
     );
 }
 
