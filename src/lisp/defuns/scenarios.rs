@@ -672,6 +672,67 @@ mod tests {
         assert_eq!(cfg.eval("(random-pick '())").unwrap(), "nil");
     }
 
+    /// The `define-scenario` section wrappers build introspectable
+    /// plists (and, for `event`, a thunk): drive-meter / drive-solar
+    /// tag their kind + target + source; controller resolves :every to
+    /// ms; at / check resolve human times to seconds (offset and
+    /// clock-time forms both); event yields a callable that journals.
+    #[test]
+    fn section_wrappers_build_introspectable_data() {
+        let (cfg, dir) = config_with("(set-microgrid-id 9)");
+        let src = std::path::Path::new("sim/scenarios.lisp");
+        let dst_dir = dir.join("sim");
+        std::fs::create_dir_all(&dst_dir).unwrap();
+        std::fs::copy(src, dst_dir.join("scenarios.lisp")).unwrap();
+        cfg.eval("(load \"sim/scenarios.lisp\")").unwrap();
+
+        // drive-meter / drive-solar shape.
+        assert_eq!(
+            cfg.eval("(plist-get (drive-meter 100 2000.0) :kind)").unwrap(),
+            "drive-meter"
+        );
+        assert_eq!(
+            cfg.eval("(plist-get (drive-meter 100 2000.0) :target)").unwrap(),
+            "100"
+        );
+        assert_eq!(
+            cfg.eval("(plist-get (drive-solar 200 50.0) :kind)").unwrap(),
+            "drive-solar"
+        );
+
+        let f = |e: &str| -> f64 { cfg.eval(e).unwrap().parse().unwrap() };
+
+        // controller resolves :every to milliseconds; defaults to 100ms.
+        assert_eq!(
+            cfg.eval("(plist-get (controller 'ems :every \"500ms\" (lambda () nil)) :id)")
+                .unwrap(),
+            "ems"
+        );
+        assert_eq!(
+            f("(plist-get (controller 'ems :every \"500ms\" (lambda () nil)) :every-ms)"),
+            500.0
+        );
+        assert_eq!(
+            f("(plist-get (controller 'ems (lambda () nil)) :every-ms)"),
+            100.0
+        );
+
+        // at / check resolve relative offsets and clock times.
+        assert_eq!(f("(plist-get (at \"60s\" (lambda () nil)) :at-s)"), 60.0);
+        assert_eq!(
+            f("(plist-get (check \"02:00\" :component 2 :metric 'soc :min 0.0) :at-s)"),
+            7200.0
+        );
+
+        // event yields a thunk that journals a scenario-event when run.
+        cfg.eval("(scenario-start \"wrap\")").unwrap();
+        cfg.eval("(funcall (event 'clouds \"rolling in\"))").unwrap();
+        let events = cfg.site().scenario_events_since(0, 10);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "clouds");
+        assert!(events[0].payload.contains("rolling in"));
+    }
+
     /// The outage chain keeps exactly one live handle on
     /// `active-timers` — each re-schedule drops the chain's previous
     /// (fired) handle instead of consing forever.

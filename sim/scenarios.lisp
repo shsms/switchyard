@@ -152,3 +152,60 @@ A ramp without :from continues from the previous segment's end value
         (setq prev to)))
     (let ((lastv prev))
       (lambda () (timeline--at rows lastv (scenario-elapsed))))))
+
+;; -----------------------------------------------------------------------------
+;; Section wrappers for `define-scenario`
+;; -----------------------------------------------------------------------------
+;;
+;; Each wrapper builds an introspectable plist (or, for `event`, a
+;; thunk) that a `define-scenario` section holds and the runner (§J2)
+;; compiles to the existing primitives. Authoring reads directly:
+;;
+;;   (define-scenario :name "cloud-fade" :schedule 'relative :length "4min"
+;;     :drive  (list (drive-meter 100 2000000.0)
+;;                   (drive-solar 200 (timeline (hold 100 :for 120)
+;;                                              (ramp :to 20 :over 27))))
+;;     :agents (list (controller 'ems :every "500ms"
+;;                     (lambda () (set-active-power 300 (component-bound-upper 300) "2s" t))))
+;;     :cues   (list (at "60s" (event 'clouds "rolling in")))
+;;     :expect (list (check "110s" :component 2 :metric 'active-power
+;;                          :approx 1500000.0 :tol 300000.0)))
+;;
+;; Cue / check times are resolved to seconds by `resolve-time`, which
+;; auto-detects a relative offset ("60s") vs a clock time ("14:00").
+
+(defun drive-meter (id source)
+  "Drive section: feed meter ID from SOURCE (a constant, a symbol, or a
+dynamic source like `timeline`). Compiles to `set-meter-power`."
+  (list :kind 'drive-meter :target id :source source))
+
+(defun drive-solar (target source)
+  "Drive section: feed solar inverter(s) TARGET (an id or id list)
+sunlight % from SOURCE. Compiles to `set-solar-sunlight`."
+  (list :kind 'drive-solar :target target :source source))
+
+(defun controller (id &rest args)
+  "Agents section: an in-sim controller named ID firing :every TIME
+(default \"100ms\"), running the trailing LAMBDA each tick. Compiles to
+`define-controller`."
+  (let ((every (or (plist-get args :every) "100ms"))
+        (on-tick (car (last args))))
+    (list :id id
+          :every-ms (* 1000 (resolve-time every))
+          :on-tick on-tick)))
+
+(defun at (tt action)
+  "Cues section: run ACTION (a thunk, e.g. from `event`, or any 0-arg
+lambda) at scenario time TT."
+  (list :at-s (resolve-time tt) :action action))
+
+(defun check (tt &rest expect-args)
+  "Expect section: at scenario time TT, run a `scenario-expect` check
+with EXPECT-ARGS (the same plist scenario-expect takes:
+:component / :metric / :approx / :tol / :min / :max)."
+  (list :at-s (resolve-time tt) :expect expect-args))
+
+(defun event (kind payload)
+  "Cue action: a thunk that journals a `scenario-event` when run. Use
+inside `at`, e.g. (at \"60s\" (event 'clouds \"rolling in\"))."
+  (lambda () (scenario-event kind payload)))

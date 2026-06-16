@@ -50,6 +50,27 @@ pub(super) fn register(ctx: &mut TulispContext) {
     ctx.defun("parse-time-of-day", |t: TulispObject| -> Result<f64, Error> {
         time_to_secs(&t, parse_time_of_day, "parse-time-of-day")
     });
+
+    // Resolve a scenario cue/check time to seconds, auto-detecting the
+    // form so the section wrappers (`at` / `check`) don't need the
+    // scenario's schedule: a number rides through; a string with a
+    // ":" is a clock time (parse-time-of-day); any other string is a
+    // relative offset (parse-offset). In both cases the result is an
+    // offset in seconds from the schedule's zero point.
+    ctx.defun("resolve-time", |t: TulispObject| -> Result<f64, Error> {
+        if t.numberp() {
+            return f64::try_from(t);
+        }
+        let s = String::try_from(t)?;
+        let parsed = if s.contains(':') {
+            parse_time_of_day(&s)
+        } else {
+            parse_offset(&s)
+        };
+        parsed
+            .map(|d| d.as_secs_f64())
+            .ok_or_else(|| Error::os_error(format!("resolve-time: malformed time {s:?}")))
+    });
 }
 
 /// Shared body for the two time-parsing defuns: a number is returned
