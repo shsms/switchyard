@@ -229,15 +229,15 @@ impl Config {
         self.current_microgrid.clone()
     }
 
-    /// Configured display-zone clock handle. The scenarios HTTP
-    /// layer calls this to derive `local_hour(now)` so `start` /
-    /// `auto_advance` agree on which stage wallclock-NOW maps to.
+    /// Configured display-zone clock handle. The live scenario runner
+    /// (todo §J2) reads it to resolve absolute (`HH:MM`) cue times in
+    /// the configured timezone.
     pub fn clock_handle(&self) -> crate::sim::clock::SharedClock {
         self.clock.clone()
     }
 
-    /// Clone of the tulisp interpreter handle. Exposed so the
-    /// scenarios state machine can funcall stage `:on` lambdas from
+    /// Clone of the tulisp interpreter handle. Exposed so the scenario
+    /// runner (todo §J2) can funcall scenario section forms from
     /// outside `lisp::Config::eval`; everything else inside the
     /// crate should reach for `eval` / `eval_silent` instead.
     pub fn interpreter(&self) -> SharedMut<TulispContext> {

@@ -272,22 +272,10 @@ enum DispatchCmd {
 
 #[derive(Subcommand, Debug)]
 enum ScenariosCmd {
-    /// List every registered scenario with its current runtime
-    /// state (running / stopped, current stage, manual-override
-    /// flag).
+    /// List every registered scenario with its schedule / clock /
+    /// length and per-section counts. Running a scenario from the
+    /// registry lands with the runners (todo §J3: `scenario run`).
     List,
-    /// Start NAME at the wallclock-current stage. Runs that
-    /// stage's :on lambda immediately.
-    Start { name: String },
-    /// Stop NAME. MicrogridSite state (component setpoints, installed
-    /// timers) is NOT rolled back automatically.
-    Stop { name: String },
-    /// Advance NAME by one stage. Pins manual_override = true.
-    Next { name: String },
-    /// Step NAME back one stage. Pins manual_override = true.
-    Prev { name: String },
-    /// Jump NAME to stage IDX (0-indexed).
-    Jump { name: String, idx: usize },
 }
 
 #[derive(Subcommand, Debug)]
@@ -700,45 +688,6 @@ async fn run_scenarios(
             }
             print_scenarios(&resp);
         }
-        ScenariosCmd::Start { name } => {
-            post_scenario_action(&http, ui_addr, &name, "start", json).await?
-        }
-        ScenariosCmd::Stop { name } => {
-            post_scenario_action(&http, ui_addr, &name, "stop", json).await?
-        }
-        ScenariosCmd::Next { name } => {
-            post_scenario_action(&http, ui_addr, &name, "next", json).await?
-        }
-        ScenariosCmd::Prev { name } => {
-            post_scenario_action(&http, ui_addr, &name, "prev", json).await?
-        }
-        ScenariosCmd::Jump { name, idx } => {
-            post_scenario_action(&http, ui_addr, &name, &format!("jump/{idx}"), json).await?
-        }
-    }
-    Ok(())
-}
-
-async fn post_scenario_action(
-    http: &reqwest::Client,
-    ui_addr: &str,
-    name: &str,
-    action: &str,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let resp = http
-        .post(format!("{ui_addr}/api/scenarios/{name}/{action}"))
-        .send()
-        .await?;
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        return Err(format!("{status}: {body}").into());
-    }
-    if json {
-        println!("{}", resp.text().await?);
-    } else {
-        println!("{action} {name}");
     }
     Ok(())
 }
@@ -755,34 +704,28 @@ fn print_scenarios(resp: &serde_json::Value) {
     for s in arr {
         let name = s.get("name").and_then(|v| v.as_str()).unwrap_or("?");
         let desc = s.get("description").and_then(|v| v.as_str()).unwrap_or("");
-        let stages = s
-            .get("stages")
-            .and_then(|v| v.as_array())
-            .map(|a| a.len())
-            .unwrap_or(0);
-        let rt = s.get("runtime").cloned().unwrap_or_default();
-        let cur = rt.get("current_stage");
-        let manual = rt
-            .get("manual_override")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        let state = match cur {
-            Some(serde_json::Value::Null) | None => "stopped".to_owned(),
-            Some(serde_json::Value::Number(n)) => {
-                let i = n.as_u64().unwrap_or(0) as usize;
-                let stage_name = s
-                    .get("stages")
-                    .and_then(|v| v.as_array())
-                    .and_then(|a| a.get(i))
-                    .and_then(|st| st.get("name"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("?");
-                let m = if manual { " (manual)" } else { "" };
-                format!("running stage {i}/{stages} = {stage_name}{m}")
-            }
-            _ => "?".to_owned(),
+        let schedule = s.get("schedule").and_then(|v| v.as_str()).unwrap_or("?");
+        let clock = s.get("clock").and_then(|v| v.as_str()).unwrap_or("?");
+        let count = |k: &str| s.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
+        let len = match s.get("length_s").and_then(|v| v.as_f64()) {
+            Some(secs) => format!("{secs:.0}s"),
+            None => "open".to_owned(),
         };
-        println!("{name}  [{state}]  {desc}");
+        // schedule/clock + run length, then the populated sections.
+        let sections = [
+            ("setup", u64::from(s.get("has_setup").and_then(|v| v.as_bool()) == Some(true))),
+            ("drive", count("n_drive")),
+            ("agents", count("n_agents")),
+            ("cues", count("n_cues")),
+            ("expect", count("n_expect")),
+            ("record", u64::from(s.get("records").and_then(|v| v.as_bool()) == Some(true))),
+        ]
+        .iter()
+        .filter(|(_, n)| *n > 0)
+        .map(|(k, n)| format!("{k}={n}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+        println!("{name}  [{schedule}/{clock} {len}]  {sections}  {desc}");
     }
 }
 

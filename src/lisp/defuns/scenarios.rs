@@ -12,21 +12,23 @@ use crate::sim::history::Metric;
 use crate::sim::microgrids::SharedSiteRouter;
 use crate::sim::scenario::ScenarioCheck;
 
-/// Newtype around `TulispObject` so `Vec<RawStage>` satisfies the
+/// Newtype around `TulispObject` so `Vec<RawForm>` satisfies the
 /// AsPlist field bound (which needs `TryFrom<TulispObject, Error =
 /// tulisp::Error>`; the blanket impl on `TulispObject` is `Error =
-/// Infallible`). Mirrors tradingsim's same-named helper.
-pub struct RawStage(tulisp::TulispObject);
+/// Infallible`). Used for the list-valued scenario sections, whose
+/// elements are forms produced by the section wrappers (`drive-solar`,
+/// `at`, `check`, …) and kept raw for the runner.
+pub struct RawForm(tulisp::TulispObject);
 
-impl TryFrom<tulisp::TulispObject> for RawStage {
+impl TryFrom<tulisp::TulispObject> for RawForm {
     type Error = tulisp::Error;
     fn try_from(v: tulisp::TulispObject) -> Result<Self, tulisp::Error> {
-        Ok(RawStage(v))
+        Ok(RawForm(v))
     }
 }
 
-impl From<RawStage> for tulisp::TulispObject {
-    fn from(v: RawStage) -> tulisp::TulispObject {
+impl From<RawForm> for tulisp::TulispObject {
+    fn from(v: RawForm) -> tulisp::TulispObject {
         v.0
     }
 }
@@ -35,58 +37,107 @@ tulisp::AsPlist! {
     pub struct DefineScenarioArgs {
         name: String,
         description: Option<String> {= None},
-        /// Calendar date the scenario is treated as taking place
-        /// on, ISO `YYYY-MM-DD`. Optional — `None` falls back to
-        /// wallclock-today.
+        /// `relative` (default) or `absolute` — symbol or string.
+        schedule: Option<crate::lisp::value::LispValue> {= None},
+        /// Default clock driver: `real` (default) or `stepped`.
+        clock: Option<crate::lisp::value::LispValue> {= None},
+        /// Run length — a human offset string (`"4min"`) or a number
+        /// of seconds. `None` runs until stopped.
+        length: Option<crate::lisp::value::LispValue> {= None},
+        /// Calendar date anchoring an `absolute` schedule, ISO
+        /// `YYYY-MM-DD`. `None` falls back to wallclock-today.
         date: Option<String> {= None},
-        stages: Vec<RawStage>,
+        /// Optional RNG seed (deterministic with a `stepped` clock).
+        seed: Option<i64> {= None},
+        /// Runs once at start.
+        setup: Option<crate::lisp::value::LispValue> {= None},
+        /// Continuous environment sources.
+        drive: Option<Vec<RawForm>> {= None},
+        /// In-sim controllers.
+        agents: Option<Vec<RawForm>> {= None},
+        /// Discrete timed actions.
+        cues: Option<Vec<RawForm>> {= None},
+        /// Timed assertions.
+        expect: Option<Vec<RawForm>> {= None},
+        /// Recording directive (`'csv` or a directory).
+        record: Option<crate::lisp::value::LispValue> {= None},
     }
 }
 
-tulisp::AsPlist! {
-    pub struct StageArgs {
-        name: String,
-        hour_from<":hour-from">: f64,
-        hour_to<":hour-to">: f64,
-        /// Optional tulisp lambda funcalled on stage entry by the
-        /// auto-advance task. Receives no args; side-effects via
-        /// the existing setter defuns (`set-active-power`,
-        /// `set-meter-power`, `(every …)`, …) drive whatever the
-        /// stage represents. Wrapped via `LispValue` so the raw
-        /// lambda rides through `AsPlist!` (the bare `TulispObject`
-        /// has `TryFrom::Error = Infallible`, which doesn't fit the
-        /// macro's expected error shape).
-        on: Option<crate::lisp::value::LispValue> {= None},
+/// A single non-nil form from a `LispValue` section arg, or `None`.
+fn opt_form(v: Option<crate::lisp::value::LispValue>) -> Option<tulisp::TulispObject> {
+    v.map(crate::lisp::value::LispValue::into_inner)
+        .filter(|o| !o.null())
+}
+
+/// A list-valued section's non-nil forms.
+fn form_list(v: Option<Vec<RawForm>>) -> Vec<tulisp::TulispObject> {
+    v.unwrap_or_default()
+        .into_iter()
+        .map(|r| r.0)
+        .filter(|o| !o.null())
+        .collect()
+}
+
+/// Resolve a `:schedule` / `:clock` plist value (symbol or string) to
+/// its name, e.g. `'relative` → `"relative"`.
+fn sym_name(o: &tulisp::TulispObject) -> Result<String, tulisp::Error> {
+    if o.symbolp() {
+        Ok(o.to_string())
+    } else {
+        String::try_from(o.clone())
     }
 }
 
-/// `(define-scenario)` populates the multi-stage registry shared
-/// with the UI Scenarios panel + the auto-advance task.
+/// `(define-scenario …)` parses the unified scenario model into the
+/// registry shared with the UI Scenarios panel + the runners (§J2).
 pub(in crate::lisp) fn register_registry(
     ctx: &mut TulispContext,
     scenarios: crate::sim::scenarios::SharedScenarios,
 ) {
-    use crate::sim::scenarios::{ScenarioDef, ScenarioEntry, ScenarioRuntime, Stage};
-    use tulisp::Plistable as _;
+    use crate::sim::scenarios::{ClockDriver, ScenarioDef, Schedule};
+    use crate::sim::sim_clock::parse_offset;
     ctx.defun(
         "define-scenario",
-        move |ctx: &mut TulispContext,
+        move |_ctx: &mut TulispContext,
               args: tulisp::Plist<DefineScenarioArgs>|
               -> Result<String, tulisp::Error> {
             let a = args.into_inner();
-            let mut stages = Vec::new();
-            for raw in a.stages {
-                let s = StageArgs::from_plist(ctx, &raw.0)?;
-                let on =
-                    s.on.map(crate::lisp::value::LispValue::into_inner)
-                        .filter(|o| !o.null());
-                stages.push(Stage {
-                    name: s.name,
-                    hour_from: s.hour_from,
-                    hour_to: s.hour_to,
-                    on,
-                });
-            }
+
+            let schedule = match opt_form(a.schedule) {
+                None => Schedule::Relative,
+                Some(o) => {
+                    let s = sym_name(&o)?;
+                    Schedule::parse(&s).ok_or_else(|| {
+                        tulisp::Error::os_error(format!(
+                            "define-scenario: :schedule must be 'relative or 'absolute, got {s:?}"
+                        ))
+                    })?
+                }
+            };
+            let clock = match opt_form(a.clock) {
+                None => ClockDriver::Real,
+                Some(o) => {
+                    let s = sym_name(&o)?;
+                    ClockDriver::parse(&s).ok_or_else(|| {
+                        tulisp::Error::os_error(format!(
+                            "define-scenario: :clock must be 'real or 'stepped, got {s:?}"
+                        ))
+                    })?
+                }
+            };
+            let length_s = match opt_form(a.length) {
+                None => None,
+                Some(o) if o.numberp() => Some(f64::try_from(o)?),
+                Some(o) => {
+                    let s = String::try_from(o)?;
+                    Some(parse_offset(&s).map(|d| d.as_secs_f64()).ok_or_else(|| {
+                        tulisp::Error::os_error(format!(
+                            "define-scenario: :length must be a human offset or seconds, got {s:?}"
+                        ))
+                    })?)
+                }
+            };
             let date = match a.date.as_deref() {
                 None => None,
                 Some(s) => Some(
@@ -97,19 +148,23 @@ pub(in crate::lisp) fn register_registry(
                     })?,
                 ),
             };
+
             let def = ScenarioDef {
                 name: a.name.clone(),
                 description: a.description.unwrap_or_default(),
+                schedule,
+                clock,
+                length_s,
                 date,
-                stages,
+                seed: a.seed,
+                setup: opt_form(a.setup),
+                drive: form_list(a.drive),
+                agents: form_list(a.agents),
+                cues: form_list(a.cues),
+                expect: form_list(a.expect),
+                record: opt_form(a.record),
             };
-            scenarios.lock().insert(
-                a.name.clone(),
-                ScenarioEntry {
-                    def,
-                    runtime: ScenarioRuntime::default(),
-                },
-            );
+            scenarios.lock().insert(a.name.clone(), def);
             Ok(a.name)
         },
     );
@@ -682,44 +737,81 @@ mod tests {
         assert!(frozen.ended_at.is_some());
     }
 
-    /// `(define-scenario)` parses a multi-stage definition into the
-    /// shared registry. Stage windows + the optional :on lambda
-    /// round-trip; missing :on leaves `Stage::on = None` so the
-    /// auto-advance task knows to skip the funcall step.
+    /// `(define-scenario)` parses the unified model into the registry:
+    /// schedule / clock / length / seed metadata plus the optional
+    /// section forms (kept raw for the runner). The section wrappers
+    /// are tested separately; here the sections are plain forms.
     #[test]
-    fn define_scenario_registers_with_stages() {
+    fn define_scenario_registers_unified_model() {
+        use crate::sim::scenarios::{ClockDriver, Schedule};
         let (cfg, _dir) = config_with("(set-microgrid-id 9)");
         cfg.eval(
             r#"
             (define-scenario
-              :name "evening-peak"
-              :description "Consumer ramp 17:00 → 21:00"
-              :date "2026-01-15"
-              :stages
-              '((:name "ramp" :hour-from 17 :hour-to 18
-                 :on (lambda () (set-active-power 1001 5000)))
-                (:name "peak" :hour-from 18 :hour-to 20
-                 :on (lambda () (set-active-power 1001 25000)))
-                (:name "wind-down" :hour-from 20 :hour-to 21)))
+              :name "cloud-fade"
+              :description "PV fades; the limiter holds the cap"
+              :schedule 'relative
+              :clock 'stepped
+              :length "4min"
+              :seed 42
+              :setup (lambda () nil)
+              :drive (list (lambda () nil) (lambda () nil))
+              :cues (list (lambda () nil))
+              :expect (list (lambda () nil) (lambda () nil) (lambda () nil))
+              :record 'csv)
             "#,
         )
         .unwrap();
         let regs = cfg.scenarios();
         let r = regs.lock();
-        let e = r.get("evening-peak").expect("registered");
-        assert_eq!(e.def.description, "Consumer ramp 17:00 → 21:00");
-        assert_eq!(
-            e.def.date,
-            Some(chrono::NaiveDate::from_ymd_opt(2026, 1, 15).unwrap())
+        let d = r.get("cloud-fade").expect("registered");
+        assert_eq!(d.description, "PV fades; the limiter holds the cap");
+        assert_eq!(d.schedule, Schedule::Relative);
+        assert_eq!(d.clock, ClockDriver::Stepped);
+        assert_eq!(d.length_s, Some(240.0));
+        assert_eq!(d.seed, Some(42));
+        assert!(d.setup.is_some());
+        assert_eq!(d.drive.len(), 2);
+        assert!(d.agents.is_empty());
+        assert_eq!(d.cues.len(), 1);
+        assert_eq!(d.expect.len(), 3);
+        assert!(d.record.is_some());
+    }
+
+    /// Schedule / clock default to relative / real; an absolute
+    /// schedule keeps its `:date`; bad enum values error.
+    #[test]
+    fn define_scenario_defaults_and_validation() {
+        use crate::sim::scenarios::{ClockDriver, Schedule};
+        let (cfg, _dir) = config_with("(set-microgrid-id 9)");
+        cfg.eval(r#"(define-scenario :name "bare")"#).unwrap();
+        cfg.eval(
+            r#"(define-scenario :name "day" :schedule 'absolute :date "2026-06-15")"#,
+        )
+        .unwrap();
+        {
+            let regs = cfg.scenarios();
+            let r = regs.lock();
+            let bare = r.get("bare").unwrap();
+            assert_eq!(bare.schedule, Schedule::Relative);
+            assert_eq!(bare.clock, ClockDriver::Real);
+            assert_eq!(bare.length_s, None);
+            assert!(bare.cues.is_empty());
+            let day = r.get("day").unwrap();
+            assert_eq!(day.schedule, Schedule::Absolute);
+            assert_eq!(
+                day.date,
+                Some(chrono::NaiveDate::from_ymd_opt(2026, 6, 15).unwrap())
+            );
+        }
+        assert!(
+            cfg.eval(r#"(define-scenario :name "x" :schedule 'sometime)"#)
+                .is_err()
         );
-        assert_eq!(e.def.stages.len(), 3);
-        assert_eq!(e.def.stages[0].name, "ramp");
-        assert_eq!(e.def.stages[0].hour_from, 17.0);
-        assert_eq!(e.def.stages[0].hour_to, 18.0);
-        assert!(e.def.stages[0].on.is_some());
-        assert!(e.def.stages[1].on.is_some());
-        // Third stage has no :on -> Stage::on stays None.
-        assert!(e.def.stages[2].on.is_none());
+        assert!(
+            cfg.eval(r#"(define-scenario :name "x" :clock 'quartz)"#)
+                .is_err()
+        );
     }
 
     /// Battery DC power integrates into the journal's per-battery

@@ -209,20 +209,10 @@ impl Config {
         //    expect the lambda result to be visible immediately.
         if !headless {
             Self::spawn_lisp_refresh_loop(microgrids.clone(), ctx.clone(), timer_handle.clone());
-
-            // Scenarios auto-advance task — polls the wallclock and
-            // transitions running scenarios on stage boundaries. Lives
-            // on the same runtime as the gRPC + UI servers; the
-            // interpreter lock it grabs to funcall :on lambdas is the
-            // same one the pre-tick hook uses, so no extra plumbing.
-            crate::sim::scenarios::spawn_auto_advance(
-                scenarios.clone(),
-                ctx.clone(),
-                microgrids.clone(),
-                current_microgrid.clone(),
-                clock.clone(),
-            );
         }
+        // The scenario runners (todo §J2) replace the old day-stage
+        // auto-advance task; until they land, registered scenarios are
+        // introspectable but not yet runnable from the registry.
 
         Ok(Self {
             filename: filename.to_string(),
