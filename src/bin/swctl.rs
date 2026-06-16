@@ -185,12 +185,6 @@ enum Cmd {
         cmd: PoolCmd,
     },
 
-    /// List + control registered multi-stage scenarios (`define-
-    /// scenario` from config.lisp). The journal-only verbs are
-    /// under the singular `scenario` subcommand.
-    #[command(subcommand)]
-    Scenarios(ScenariosCmd),
-
     /// Terminal-resident pulse bar — one line per second showing
     /// component health, the grid / PV / battery readouts, and the
     /// loopback Microgrid status. Useful in a tmux pane next to
@@ -271,14 +265,6 @@ enum DispatchCmd {
 }
 
 #[derive(Subcommand, Debug)]
-enum ScenariosCmd {
-    /// List every registered scenario with its schedule / clock /
-    /// length and per-section counts. Running a scenario from the
-    /// registry lands with the runners (todo §J3: `scenario run`).
-    List,
-}
-
-#[derive(Subcommand, Debug)]
 enum PoolCmd {
     /// Battery pool — power + active-power envelope.
     Battery {
@@ -310,6 +296,37 @@ enum SnapshotCmd {
 
 #[derive(Subcommand, Debug)]
 enum ScenarioCmd {
+    /// List every registered scenario with its schedule / clock /
+    /// length and per-section counts (`GET /api/scenarios`).
+    List,
+
+    /// Run a registered scenario. Default (live) starts it on the
+    /// running server's wall clock. `--stepped` instead boots a
+    /// headless deterministic run in-process from `--config` and
+    /// prints the report — the CI gate; pair with `--assert`.
+    Run {
+        /// Registered scenario name.
+        name: String,
+        /// Run headless + deterministic on a sim clock, in-process,
+        /// rather than against the live server.
+        #[arg(long)]
+        stepped: bool,
+        /// Config file to boot for a `--stepped` run (the one that
+        /// registered the scenario).
+        #[arg(long)]
+        config: Option<String>,
+        /// `--stepped` clock step in milliseconds (default 100).
+        #[arg(long)]
+        step: Option<u64>,
+        /// `--stepped` run length override in seconds; defaults to the
+        /// scenario's `:length`.
+        #[arg(long)]
+        until: Option<u64>,
+        /// Exit non-zero if any `(scenario-expect …)` check failed.
+        #[arg(long)]
+        assert: bool,
+    },
+
     /// Begin a fresh scenario. Resets the journal + reporters.
     Start {
         /// Scenario name. Lands as `(scenario-start NAME)`.
@@ -412,9 +429,6 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     if let Cmd::Pool { cmd } = cli.cmd {
         return run_pool(cmd, &cli.ui_addr, cli.microgrid_id, cli.json).await;
     }
-    if let Cmd::Scenarios(s) = cli.cmd {
-        return run_scenarios(s, &cli.ui_addr, cli.json).await;
-    }
     let mut client = MicrogridClient::connect(cli.addr.clone()).await?;
     match cli.cmd {
         Cmd::Info => cmd_info(&mut client, cli.json).await,
@@ -438,11 +452,10 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             upper,
             lifetime,
         } => cmd_augment(&mut client, id, lower, upper, lifetime).await,
-        // Dispatch, Scenario, Scenarios, Snapshot, Dashboard, Pool
-        // handled before the gRPC connect above.
+        // Dispatch, Scenario, Snapshot, Dashboard, Pool handled before
+        // the gRPC connect above.
         Cmd::Dispatch(_)
         | Cmd::Scenario(_)
-        | Cmd::Scenarios(_)
         | Cmd::Snapshot(_)
         | Cmd::Dashboard { .. }
         | Cmd::Pool { .. } => unreachable!(),
@@ -665,31 +678,6 @@ async fn run_dispatch(
             Ok(())
         }
     }
-}
-
-async fn run_scenarios(
-    cmd: ScenariosCmd,
-    ui_addr: &str,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let http = reqwest::Client::new();
-    match cmd {
-        ScenariosCmd::List => {
-            let resp: serde_json::Value = http
-                .get(format!("{ui_addr}/api/scenarios"))
-                .send()
-                .await?
-                .error_for_status()?
-                .json()
-                .await?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&resp)?);
-                return Ok(());
-            }
-            print_scenarios(&resp);
-        }
-    }
-    Ok(())
 }
 
 fn print_scenarios(resp: &serde_json::Value) {
@@ -955,6 +943,81 @@ async fn run_scenario(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let http = reqwest::Client::new();
     match cmd {
+        ScenarioCmd::List => {
+            let resp: serde_json::Value = http
+                .get(format!("{ui_addr}/api/scenarios"))
+                .send()
+                .await?
+                .error_for_status()?
+                .json()
+                .await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&resp)?);
+            } else {
+                print_scenarios(&resp);
+            }
+        }
+        ScenarioCmd::Run {
+            name,
+            stepped,
+            config,
+            step,
+            until,
+            assert,
+        } => {
+            if stepped {
+                // Headless, deterministic, in-process — no server. Boots
+                // the config that registered the scenario, runs on a sim
+                // clock, prints the report, and (with --assert) exits
+                // non-zero on any failed check: the CI gate.
+                let config = config
+                    .ok_or("`scenario run --stepped` needs --config <file>")?;
+                let dt = std::time::Duration::from_millis(step.unwrap_or(100));
+                let (cfg, _clock) = switchyard::lisp::Config::new_headless(&config)
+                    .map_err(|e| format!("headless boot failed: {e}"))?;
+                let steps = match until {
+                    Some(secs) => {
+                        switchyard::sim::scenarios::start(
+                            &cfg.interpreter(),
+                            &cfg.scenarios(),
+                            &name,
+                        )?;
+                        cfg.sim_run(std::time::Duration::from_secs(secs), dt)
+                    }
+                    None => cfg.run_scenario_stepped(&name, dt)?,
+                };
+                let rv = cfg.scenario_report_json();
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&rv)?);
+                } else {
+                    print_report(&rv, false);
+                    eprintln!("(stepped {steps} steps)");
+                }
+                let failed = rv["checks_failed"].as_u64().unwrap_or(0);
+                if assert && failed > 0 {
+                    return Err(format!("{failed} scenario check(s) failed").into());
+                }
+            } else {
+                // Live: fire-and-forget against the running server's wall
+                // clock. --assert is meaningless here (the run hasn't
+                // finished when start returns) — steer to --stepped.
+                if assert {
+                    return Err(
+                        "`--assert` requires `--stepped` (a live run is fire-and-forget)".into(),
+                    );
+                }
+                let resp = http
+                    .post(format!("{ui_addr}/api/scenarios/{name}/start"))
+                    .send()
+                    .await?;
+                if !resp.status().is_success() {
+                    let status = resp.status();
+                    let body = resp.text().await.unwrap_or_default();
+                    return Err(format!("{status}: {body}").into());
+                }
+                println!("scenario run {name} (live)");
+            }
+        }
         ScenarioCmd::Start { name } => {
             // Quote the name as a Lisp string. We don't accept
             // arbitrary expressions here on purpose — names are
