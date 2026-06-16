@@ -1,11 +1,12 @@
-//! Scenarios HTTP surface: list the registry plus the per-scenario
-//! summary / events / report readers. Running a registered scenario
-//! lands with the runners (todo §J2); the old stage-mutation
-//! endpoints (next/prev/jump) are gone with the day-stage model.
+//! Scenarios HTTP surface: list the registry, start (the live runner),
+//! plus the per-scenario summary / events / report readers. The old
+//! stage-mutation endpoints (next/prev/jump) are gone with the
+//! day-stage model.
 
 use axum::{
     Json,
-    extract::{Query, State},
+    extract::{Path, Query, State},
+    http::StatusCode,
 };
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -17,6 +18,22 @@ pub(in crate::ui) async fn scenarios_list(
     State(config): State<Config>,
 ) -> Json<Vec<crate::sim::scenarios::ScenarioView>> {
     Json(crate::sim::scenarios::snapshot(&config.scenarios()))
+}
+
+/// Live runner: compile + start scenario NAME on the wall clock. Its
+/// cue / check timers fire on the refresh loop as real time passes.
+/// Runs on a blocking thread since `start` holds the interpreter lock.
+pub(in crate::ui) async fn scenarios_start(
+    State(config): State<Config>,
+    Path(name): Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let res = tokio::task::spawn_blocking(move || {
+        crate::sim::scenarios::start(&config.interpreter(), &config.scenarios(), &name)
+    })
+    .await
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("join: {e}")))?;
+    res.map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 /// Snapshot of the running scenario's lifecycle. Empty (`name:
