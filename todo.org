@@ -431,7 +431,11 @@ Already built (on the =scenario-support= work this stacks on): =timeline=
 day= helpers. The revamp is the authoring + registry + runner + UI layer
 over this.
 
-*** TODO J1. Unified scenario model + DSL                    :scenarios:rust:
+*** DONE J1. Unified scenario model + DSL                    :scenarios:rust:
+:LOGBOOK:
+- State "DONE"       from "TODO"       [2026-06-16 Di 15:11]
+:END:
+
 New =define-scenario= data model (schedule / clock / length / seed +
 setup / drive / agents / cues / expect / record) parsed into a registry
 entry; the section wrappers (=drive-solar= / =drive-meter= / =controller=
@@ -439,7 +443,23 @@ entry; the section wrappers (=drive-solar= / =drive-meter= / =controller=
 =parse-time-of-day=). Compiles to the existing primitives. Delete the
 =Stage= / =ScenarioDef= day model. Tests.
 
-*** TODO J2. Runners off the registry                        :scenarios:rust:
+Done: =define-scenario= now parses the unified two-axis model — =:schedule=
+(=relative=/=absolute=) × =:clock= (=real=/=stepped=) plus =:length= / =:seed=
+and the six optional sections (=setup= / =drive= / =agents= / =cues= / =expect= /
+=record=), each kept as raw forms in =ScenarioDef= for the runner. Section
+wrappers =drive-meter= / =drive-solar= / =controller= / =at= / =check= / =event=
+(=sim/scenarios.lisp=) build that data and resolve human times via a =resolve-time=
+defun (auto-detects =60s= offsets vs =14:00= clock times — tulisp has no
+stringp/numberp to branch on in Lisp). The day-stage =Stage= / =ScenarioDef= /
+auto-advance model and its prev/next/jump endpoints + swctl verbs are deleted;
+=ScenarioView= now reports schedule/clock/length + per-section counts. Running a
+registered scenario is intentionally unwired — that's J2.
+
+*** DONE J2. Runners off the registry                        :scenarios:rust:
+:LOGBOOK:
+- State "DONE"       from "TODO"       [2026-06-16 Di 15:24]
+:END:
+
 =scenarios::start NAME= compiles a scenario to scenario-start + funcalled
 setup/drive/agents + scheduled run-with-timer cues/checks. Live runner =
 the existing refresh loop fires them in real time; stepped runner =
@@ -447,15 +467,60 @@ headless =sim_run= over the registry (deterministic). Replace the
 stage-advance / jump / prev / next / auto-advance machinery (and drop
 =spawn_auto_advance= from =Config::new=). Tests.
 
-*** TODO J3. swctl + report integration                           :scenarios:
+Done: a scenario *compiles* to the existing primitives — no separate runner
+machinery. =scenario--run= (=sim/scenarios.lisp=) emits =scenario-start= +
+funcalled setup/drive/agents + =run-with-timer= cue/check timers; the Rust
+=scenarios::start= reads a registered scenario and evals a quoted
+=(scenario--run …)= call (record-kind resolved Rust-side — tulisp Lisp has no
+stringp/symbolp). The same compile path serves both runners; only the clock
+differs. =Config::run_scenario_stepped= drives it on the headless sim clock for
+the scenario's =:length= (deterministic + faster than real time, the CI gate —
+end-to-end test: a =timeline= drive + two timed =check=s fire as sim-time timers
+and pass in <5 s wall). The live runner is =POST /api/scenarios/{name}/start= on
+the wall clock (timers fire on the refresh loop). =swctl scenario run= is J3; UI
+is J5.
+
+*** DONE J3. swctl + report integration                           :scenarios:
+:LOGBOOK:
+- State "DONE"       from "TODO"       [2026-06-16 Di 15:37]
+:END:
+
 =swctl scenario run NAME [--stepped] [--until] [--step] [--assert]= and
 =scenario list= over the new registry; keep =scenario report --assert=
 as the CI gate.
 
-*** TODO J4. Migrate scenarios + delete old                  :scenarios:rust:
+Done: =swctl scenario run NAME --stepped --config FILE [--until S] [--step MS]
+[--assert]= boots a headless Config in-process and runs the scenario
+deterministically on a sim clock for its =:length= (or =--until=), prints the
+report, and with =--assert= exits non-zero on a failed check — a serverless CI
+gate (=--stepped= runs locally, since a wall-clock server can't be
+deterministic). Without =--stepped= it fires the scenario on a running server
+(=POST /api/scenarios/{name}/start=). =scenario list= moved onto the singular
+=scenario= subcommand over the new registry; the leftover plural =scenarios=
+group is gone; =scenario report --assert= stays. Config grew a public
+=scenario_report_json= so the out-of-crate runner reads + asserts without
+exposing the internal report type. Known gap: stepped report *aggregate* metrics
+(peak / charged Wh) read 0 — =sim_step= doesn't sample history; =scenario-expect=
+checks read live telemetry so the gate is unaffected.
+
+*** DONE J4. Migrate scenarios + delete old                  :scenarios:rust:
+:LOGBOOK:
+- State "DONE"       from "TODO"       [2026-06-16 Di 15:55]
+:END:
+
 Rewrite =-consumption-*= (and any day-stage scenarios) to one
 =define-scenario= each; remove the old stage code, defuns, and the
 load-to-run path.
+
+Done: the seven day-stage =:stages= library scenarios (which the new
+=define-scenario= rejects — default =config.lisp= boot was broken) are rewritten
+as relative scenarios — opening state in =:setup=, stage transitions as =:cues=
+one a minute via the =at= wrapper (=index.lisp= loads =sim/scenarios.lisp= for
+it). They run as UI-dropdown demos; true time-of-day (absolute-clock) scheduling
+is deferred (J6). A boot test asserts the shipped config registers the library.
+=-cases.lisp= moved from the load-to-run driver pattern to a registered
+=define-scenario= (run via =swctl scenario run=). Absolute-schedule live cue
+firing is the remaining runner gap.
 
 *** TODO J5. UI revamp                                          :scenarios:ui:
 Scenarios mode lists every registered scenario (name / schedule / clock /
