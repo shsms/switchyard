@@ -36,6 +36,19 @@ pub(in crate::ui) async fn scenarios_start(
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
+/// Stop the running scenario (whichever the journal currently holds) —
+/// the registry is single-journal, so stop is name-less. Freezes the
+/// report + flushes any CSV sinks via the `scenario-stop` defun.
+pub(in crate::ui) async fn scenarios_stop(
+    State(config): State<Config>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let res = tokio::task::spawn_blocking(move || config.eval("(scenario-stop)").map(|_| ()))
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("join: {e}")))?;
+    res.map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
 /// Snapshot of the running scenario's lifecycle. Empty (`name:
 /// null`, zero counts) before any `(scenario-start)`; freezes
 /// `elapsed_s` once `(scenario-stop)` fires.

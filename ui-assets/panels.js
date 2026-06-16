@@ -3,7 +3,6 @@
 // respond to clicks / WS pushes by re-fetching + re-rendering.
 
 import { escapeHtml, notify, selectMicrogrid } from "./app.js";
-import { clockState } from "./chrome.js";
 import { readSelectedMg, renderReplMgChip } from "./routing.js";
 
 export const microgridsPanel = (() => {
@@ -117,269 +116,269 @@ export const microgridsPanel = (() => {
 // snapshot every 5 s while the mode is active — auto-advance
 // transitions and journal events otherwise wouldn't update the
 // timeline since they happen server-side without a WS push.
+// Driven by the unified registry: /api/scenarios (the registered
+// scenarios + their cue/check timeline) plus the journal readers
+// /api/scenario (lifecycle), /api/scenario/report (live metrics + the
+// scenario-expect ledger), and /api/scenario/events (activity feed).
+// The journal tracks one scenario at a time; Run starts a scenario on
+// the wall clock, Stop ends it. Headless/deterministic runs are a
+// `swctl scenario run --stepped` / CI concern, not a UI action.
 export const scenariosPanel = (() => {
-  let cached = []; // last /api/scenarios snapshot
-  let selectedName = null;
+  let scenarios = []; // /api/scenarios snapshot
+  let summary = null; // /api/scenario (running/last journal)
+  let report = null; // /api/scenario/report
+  let events = []; // /api/scenario/events
   let pollTimer = null;
-  let lastSig = ""; // signature of the last paint to avoid thrash
 
-  function selectEl()       { return document.getElementById("scenarios-select"); }
-  function timelineEl()     { return document.getElementById("sc-timeline-track"); }
-  function stageListEl()    { return document.getElementById("sc-stage-list"); }
-  function manualBadgeEl()  { return document.getElementById("sc-manual-badge"); }
-  function descEl()         { return document.getElementById("sc-description"); }
+  function listEl() { return document.getElementById("scenarios-list"); }
 
-  function selected() {
-    return cached.find((s) => s.name === selectedName) || null;
+  // The journal holds one scenario; it's running when a name is set and
+  // it hasn't ended. `journalName` is the name it currently reflects
+  // (running or just-stopped) — drives the last-run badge + run view.
+  function runningName() {
+    return summary?.name && !summary.ended_at ? summary.name : null;
+  }
+  function journalName() { return summary?.name || null; }
+  function scenarioByName(n) { return scenarios.find((s) => s.name === n) || null; }
+
+  function fmtSecs(s) {
+    if (s == null) return "open";
+    return s < 90 ? `${Math.round(s)}s` : `${Math.round(s / 60)}min`;
+  }
+  function mkBtn(label, onClick) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "hdr-btn";
+    b.textContent = label;
+    b.addEventListener("click", onClick);
+    return b;
   }
 
-  // A scenario is "running" once `(scenario-start)` has fired and
-  // until the matching `(scenario-stop)`. `current_stage` is the
-  // distinguishing field: start sets it (always to some valid index,
-  // even if wallclock is outside the stage windows), stop clears it.
-  // `started_at` survives a stop as a historical marker, so it can't
-  // be used here.
-  function isRunning(sc) {
-    return !!(sc && sc.runtime && sc.runtime.current_stage != null);
-  }
-
-  // Reflect the running state in the header controls: Start is
-  // active only while stopped; Stop / Next / Prev are active only
-  // while running. Jump (clicking timeline blocks or stage rows)
-  // mirrors Stop / Next / Prev — it's a no-op when nothing's
-  // started.
-  function renderButtons() {
-    const sc = selected();
-    const running = isRunning(sc);
-    const startBtn = document.getElementById("sc-start");
-    if (startBtn) startBtn.disabled = !sc || running;
-    for (const id of ["sc-stop", "sc-next", "sc-prev"]) {
-      const b = document.getElementById(id);
-      if (b) b.disabled = !running;
-    }
-  }
-
-  function fmtHour(h) {
-    const hh = Math.floor(h);
-    const mm = Math.round((h - hh) * 60);
-    return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
-  }
-  function localHour() {
-    // Best-effort local-hour in the configured zone. Falls back to
-    // the browser-local time. clockState exposes the IANA name in
-    // simTz; Intl.DateTimeFormat with `hourCycle: "h23"` keeps the
-    // 0..24 framing the timeline uses.
-    const now = new Date();
-    const tz = clockState.tzInUse();
-    try {
-      const parts = new Intl.DateTimeFormat("en-US", {
-        timeZone: tz,
-        hour12: false,
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-      }).formatToParts(now);
-      const get = (t) => Number(parts.find((p) => p.type === t)?.value || 0);
-      const h = get("hour") % 24;
-      return h + get("minute") / 60 + get("second") / 3600;
-    } catch (_) {
-      return now.getHours() + now.getMinutes() / 60 + now.getSeconds() / 3600;
-    }
-  }
-
-  function renderSelect() {
-    const sel = selectEl();
-    if (!sel) return;
-    const prev = selectedName;
-    sel.innerHTML = "";
-    if (cached.length === 0) {
-      sel.disabled = true;
-      const opt = document.createElement("option");
-      opt.textContent = "(none registered)";
-      sel.appendChild(opt);
+  // ── registered-scenario list ────────────────────────────────────────
+  function renderList() {
+    const el = listEl();
+    if (!el) return;
+    const countEl = document.getElementById("sc-count");
+    if (countEl) countEl.textContent = scenarios.length ? `${scenarios.length} registered` : "";
+    if (scenarios.length === 0) {
+      el.innerHTML =
+        `<p class="muted">No scenarios registered. Load a config that calls <code>define-scenario</code>.</p>`;
       return;
     }
-    sel.disabled = false;
-    for (const s of cached) {
-      const opt = document.createElement("option");
-      opt.value = s.name;
-      opt.textContent = s.name;
-      sel.appendChild(opt);
-    }
-    if (cached.some((s) => s.name === prev)) {
-      sel.value = prev;
-    } else {
-      sel.value = cached[0].name;
-      selectedName = cached[0].name;
+    const running = runningName();
+    el.innerHTML = "";
+    for (const s of scenarios) {
+      const isRunning = s.name === running;
+      const sections = [
+        s.has_setup ? "setup" : null,
+        s.n_drive ? `drive×${s.n_drive}` : null,
+        s.n_agents ? `agents×${s.n_agents}` : null,
+        s.n_cues ? `cues×${s.n_cues}` : null,
+        s.n_expect ? `checks×${s.n_expect}` : null,
+        s.records ? "rec" : null,
+      ].filter(Boolean).join(" · ");
+      const row = document.createElement("div");
+      row.className = "sc-row";
+      if (s.name === journalName()) row.classList.add("selected");
+      row.innerHTML = `
+        <div class="sc-row-main">
+          <span class="sc-row-name">${escapeHtml(s.name)}</span>
+          <span class="sc-row-meta">${s.schedule}/${s.clock} · ${fmtSecs(s.length_s)}${
+            s.seed != null ? ` · seed ${s.seed}` : ""
+          }</span>
+          <span class="sc-row-desc muted">${escapeHtml(s.description || "")}</span>
+        </div>
+        <div class="sc-row-sections muted">${sections}</div>
+        <div class="sc-row-badge">${badgeHtml(s.name, isRunning)}</div>
+        <div class="sc-row-actions"></div>
+      `;
+      const actions = row.querySelector(".sc-row-actions");
+      if (isRunning) {
+        actions.appendChild(mkBtn("Stop", stopRun));
+      } else {
+        const run = mkBtn("Run", () => startRun(s.name));
+        run.disabled = !!running; // one journal at a time
+        run.title = running ? `${running} is running — stop it first` : "Run live";
+        actions.appendChild(run);
+      }
+      el.appendChild(row);
     }
   }
 
-  function renderTimeline() {
-    const track = timelineEl();
+  function badgeHtml(name, isRunning) {
+    if (isRunning) return `<span class="sc-badge running">running</span>`;
+    // Last-run result lives on the single journal, so only the
+    // most-recently-run scenario carries a badge.
+    if (name === journalName() && summary?.ended_at && report) {
+      const p = report.checks_passed || 0;
+      const f = report.checks_failed || 0;
+      if (p + f === 0) return `<span class="sc-badge">ran</span>`;
+      return `<span class="sc-badge ${f === 0 ? "pass" : "fail"}">✓${p} ✗${f}</span>`;
+    }
+    return "";
+  }
+
+  // ── run view ────────────────────────────────────────────────────────
+  function renderRunView() {
+    const view = document.getElementById("sc-run-view");
+    if (!view) return;
+    const name = journalName();
+    const sc = name && scenarioByName(name);
+    if (!name || !sc) { view.hidden = true; return; }
+    view.hidden = false;
+
+    const running = runningName() === name;
+    const elapsed = report ? report.scenario_elapsed_s : summary ? summary.elapsed_s : 0;
+    document.getElementById("sc-run-name").textContent = name;
+    const status = document.getElementById("sc-run-status");
+    status.textContent = running ? "running" : "stopped";
+    status.className = `sc-badge ${running ? "running" : ""}`;
+    document.getElementById("sc-run-elapsed").textContent =
+      `${Math.round(elapsed || 0)}s${sc.length_s ? ` / ${fmtSecs(sc.length_s)}` : ""}`;
+    const stopBtn = document.getElementById("sc-run-stop");
+    if (stopBtn) stopBtn.disabled = !running;
+
+    renderRunTimeline(sc, elapsed || 0);
+    renderMetrics();
+    renderChecks();
+    renderEvents();
+  }
+
+  // Cues + checks positioned over the run length; fired once elapsed
+  // passes their time, and checks coloured by their recorded result.
+  function renderRunTimeline(sc, elapsed) {
+    const track = document.getElementById("sc-run-timeline");
     if (!track) return;
     track.innerHTML = "";
-    const sc = selected();
-    if (!sc) return;
-    const running = isRunning(sc);
-    const total = 24;
-    for (let i = 0; i < sc.stages.length; i++) {
-      const st = sc.stages[i];
-      const left = (st.hour_from / total) * 100;
-      const width = ((st.hour_to - st.hour_from) / total) * 100;
-      const block = document.createElement("button");
-      block.type = "button";
-      block.className = "sc-timeline-block";
-      block.style.left = `${left.toFixed(2)}%`;
-      block.style.width = `${width.toFixed(2)}%`;
-      if (sc.runtime.current_stage === i) block.classList.add("active");
-      block.textContent = st.name;
-      block.title = `${st.name}: ${fmtHour(st.hour_from)} → ${fmtHour(st.hour_to)}`;
-      // jump-to-stage is meaningful only when the scenario is running.
-      block.disabled = !running;
-      block.addEventListener("click", () => jumpTo(i));
-      track.appendChild(block);
+    const tl = sc.timeline || [];
+    if (tl.length === 0) {
+      track.innerHTML = `<span class="muted">no cues or checks</span>`;
+      return;
     }
-    // "Now" marker positioned by local-hour. Hidden if outside any
-    // covered range — pure annotation aid.
-    const marker = document.createElement("div");
-    marker.className = "sc-timeline-now";
-    marker.style.left = `${(localHour() / total) * 100}%`;
-    marker.title = `now: ${fmtHour(localHour())}`;
-    track.appendChild(marker);
+    const span = sc.length_s || Math.max(...tl.map((t) => t.at_s), 1);
+    // Recorded checks arrive oldest-first; correlate to timeline checks
+    // (also oldest-first) by position.
+    const reportChecks = report?.checks || [];
+    let checkIdx = 0;
+    for (const t of tl) {
+      const dot = document.createElement("div");
+      dot.className = `sc-tl-mark sc-tl-${t.kind}`;
+      dot.style.left = `${Math.min(100, (t.at_s / span) * 100).toFixed(1)}%`;
+      let state = elapsed >= t.at_s ? "fired" : "pending";
+      let detail = "";
+      if (t.kind === "check") {
+        const rc = reportChecks[checkIdx++];
+        if (rc) {
+          state = rc.passed ? "pass" : "fail";
+          detail = ` — ${rc.expectation}${rc.actual != null ? ` (got ${rc.actual})` : ""}`;
+        }
+      }
+      dot.classList.add(`sc-tl-${state}`);
+      dot.title = `${t.label} @${t.at_s}s${detail}`;
+      track.appendChild(dot);
+    }
   }
 
-  function renderStageList() {
-    const list = stageListEl();
-    if (!list) return;
-    list.innerHTML = "";
-    const sc = selected();
-    if (!sc) return;
-    const running = isRunning(sc);
-    for (let i = 0; i < sc.stages.length; i++) {
-      const st = sc.stages[i];
-      const row = document.createElement("div");
-      row.className = "sc-stage-row";
-      if (sc.runtime.current_stage === i) row.classList.add("active");
-      if (!running) row.classList.add("disabled");
-      row.innerHTML = `
-        <span class="sc-stage-idx">${i}</span>
-        <span class="sc-stage-name">${escapeHtml(st.name)}</span>
-        <span class="sc-stage-window">${fmtHour(st.hour_from)} → ${fmtHour(st.hour_to)}</span>
-        <span class="sc-stage-action">${st.has_on ? "<code>on</code>" : "—"}</span>
-      `;
-      if (running) row.addEventListener("click", () => jumpTo(i));
-      list.appendChild(row);
-    }
-    const badge = manualBadgeEl();
-    if (badge) badge.hidden = !sc.runtime.manual_override;
-    if (descEl()) descEl().textContent = sc.description || "";
+  function renderMetrics() {
+    const el = document.getElementById("sc-run-metrics");
+    if (!el) return;
+    if (!report) { el.innerHTML = ""; return; }
+    const rows = [
+      ["peak import", `${(report.peak_main_meter_w / 1000).toFixed(1)} kW`],
+      ["battery charged", `${report.total_battery_charged_wh.toFixed(0)} Wh`],
+      ["battery discharged", `${report.total_battery_discharged_wh.toFixed(0)} Wh`],
+      ["PV produced", `${report.total_pv_produced_wh.toFixed(0)} Wh`],
+    ];
+    if (report.soc_stats) rows.push(["SoC mean", `${report.soc_stats.mean_pct.toFixed(0)}%`]);
+    el.innerHTML =
+      `<h3>metrics</h3>` +
+      rows.map(([k, v]) => `<div class="sc-metric"><span>${k}</span><b>${v}</b></div>`).join("");
   }
 
-  async function refresh() {
-    try {
-      const res = await fetch("/api/scenarios");
-      if (!res.ok) return;
-      cached = await res.json();
-    } catch (_) {
-      cached = [];
-    }
-    renderSelect();
-    repaint();
-    schedulePoll();
+  function renderChecks() {
+    const el = document.getElementById("sc-run-checks");
+    if (!el) return;
+    const checks = report?.checks || [];
+    const head = `<h3>checks ${report ? `(${report.checks_passed}✓ ${report.checks_failed}✗)` : ""}</h3>`;
+    if (checks.length === 0) { el.innerHTML = `${head}<p class="muted">none yet</p>`; return; }
+    const rows = checks.map((c) =>
+      `<div class="sc-check ${c.passed ? "pass" : "fail"}">
+        <span>${c.passed ? "✓" : "✗"}</span>
+        <span>#${c.component_id} ${escapeHtml(c.metric)}</span>
+        <span class="muted">${escapeHtml(c.expectation)}${c.actual != null ? ` · got ${c.actual}` : ""}</span>
+      </div>`).join("");
+    el.innerHTML = `${head}${rows}`;
   }
-  // List every scenario whose runtime says it's running. Drives the
-  // header chip alongside the Scenarios mode toggle so the operator
-  // sees which scenarios are live without flipping into Scenarios
-  // mode first.
+
+  function renderEvents() {
+    const el = document.getElementById("sc-run-events");
+    if (!el) return;
+    if (events.length === 0) { el.innerHTML = `<h3>events</h3><p class="muted">none</p>`; return; }
+    const recent = events.slice(-12).reverse();
+    el.innerHTML =
+      `<h3>events</h3>` +
+      recent.map((e) =>
+        `<div class="sc-event"><code>${escapeHtml(e.kind)}</code> ${escapeHtml(String(e.payload))}</div>`,
+      ).join("");
+  }
+
   function updateActiveChip() {
     const chip = document.getElementById("active-scenarios");
     if (!chip) return;
-    const running = cached.filter(
-      (s) => s.runtime && s.runtime.current_stage != null,
-    );
-    if (running.length === 0) {
-      chip.hidden = true;
-      chip.textContent = "";
-      return;
-    }
+    const name = runningName();
+    if (!name) { chip.hidden = true; chip.textContent = ""; return; }
     chip.hidden = false;
-    const names = running.map((s) => s.name).join(", ");
-    chip.textContent = `running: ${names}`;
-    chip.title = `Click to view ${running.length === 1 ? "it" : "them"} in Scenarios mode`;
+    chip.textContent = `running: ${name}`;
+    chip.title = "Click to view it in Scenarios mode";
   }
 
-  function repaint() {
-    const sc = selected();
-    const sig = sc ? `${JSON.stringify(sc.runtime)}|${sc.stages.length}` : "";
-    // Buttons reflect runtime state every time — cheap toggle, and
-    // the fast-path below skips re-rendering DOM that hasn't
-    // changed, which would otherwise leave the buttons stuck on
-    // their initial HTML state when no transition has happened.
-    renderButtons();
-    updateActiveChip();
-    if (sig === lastSig) {
-      // Cheap path: still nudge the now marker so it tracks time
-      // even when no transition happened.
-      const marker = document.querySelector(".sc-timeline-now");
-      if (marker) marker.style.left = `${(localHour() / 24) * 100}%`;
-      return;
-    }
-    lastSig = sig;
-    renderTimeline();
-    renderStageList();
-  }
-  function schedulePoll() {
-    // Always run — the active-scenarios chip in the header needs to
-    // stay current even when the user is in Microgrids mode, and a
-    // 5 s poll is cheap. Inside Scenarios mode, repaint() also keeps
-    // the timeline / stage list / buttons in sync.
-    if (pollTimer) return;
-    pollTimer = setInterval(async () => {
-      try {
-        const res = await fetch("/api/scenarios");
-        if (res.ok) cached = await res.json();
-      } catch (_) {}
-      repaint();
-    }, 5000);
-  }
-  async function post(action) {
-    if (!selectedName) return;
-    const r = await fetch(`/api/scenarios/${encodeURIComponent(selectedName)}/${action}`, {
-      method: "POST",
-    });
-    if (!r.ok) {
-      const body = await r.text();
-      notify(`${action} failed: ${body}`);
-    }
+  // ── actions ─────────────────────────────────────────────────────────
+  async function startRun(name) {
+    const r = await fetch(`/api/scenarios/${encodeURIComponent(name)}/start`, { method: "POST" });
+    if (!r.ok) notify(`run failed: ${await r.text()}`);
     await refresh();
   }
-  function jumpTo(idx) {
-    if (!selectedName) return;
-    post(`jump/${idx}`);
+  async function stopRun() {
+    const r = await fetch("/api/scenarios/stop", { method: "POST" });
+    if (!r.ok) notify(`stop failed: ${await r.text()}`);
+    await refresh();
   }
+
+  function render() {
+    renderList();
+    renderRunView();
+    updateActiveChip();
+  }
+
+  async function refresh() {
+    try { scenarios = await (await fetch("/api/scenarios")).json(); } catch (_) { scenarios = []; }
+    try { summary = await (await fetch("/api/scenario")).json(); } catch (_) { summary = null; }
+    if (journalName()) {
+      try { report = await (await fetch("/api/scenario/report")).json(); } catch (_) { report = null; }
+      try {
+        const e = await (await fetch("/api/scenario/events?limit=50")).json();
+        events = e.events || [];
+      } catch (_) { events = []; }
+    } else {
+      report = null;
+      events = [];
+    }
+    render();
+    schedulePoll();
+  }
+
+  function schedulePoll() {
+    if (pollTimer) return;
+    // Cheap 3 s poll — server-side scenario time + checks have no WS
+    // push, so the run view + header chip stay live by polling.
+    pollTimer = setInterval(refresh, 3000);
+  }
+
   function setup() {
-    selectEl()?.addEventListener("change", (e) => {
-      selectedName = e.target.value;
-      lastSig = ""; // force repaint
-      repaint();
+    document.getElementById("sc-run-stop")?.addEventListener("click", stopRun);
+    document.getElementById("active-scenarios")?.addEventListener("click", () => {
+      document.querySelector("#mode-toggle .mode-btn[data-mode='scenarios']")?.click();
     });
-    document.getElementById("sc-start")?.addEventListener("click", () => post("start"));
-    document.getElementById("sc-stop")?.addEventListener("click", () => post("stop"));
-    document.getElementById("sc-next")?.addEventListener("click", () => post("next"));
-    document.getElementById("sc-prev")?.addEventListener("click", () => post("prev"));
-    // Header chip → jump to Scenarios mode. Clicking is the natural
-    // next step when the user notices something's running.
-    document
-      .getElementById("active-scenarios")
-      ?.addEventListener("click", () => {
-        const btn = document.querySelector(
-          "#mode-toggle .mode-btn[data-mode='scenarios']",
-        );
-        btn?.click();
-      });
-    // Kick the polling loop + first chip paint immediately so the
-    // header chip shows the right thing even before the user enters
-    // Scenarios mode for the first time.
     refresh();
   }
   return { setup, refresh };
