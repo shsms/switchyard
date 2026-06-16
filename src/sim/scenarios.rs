@@ -109,6 +109,97 @@ pub struct ScenarioDef {
     pub expect: Vec<TulispObject>,
     /// Recording directive (`'csv` or a directory).
     pub record: Option<TulispObject>,
+    /// Cue + check times extracted at registration, for the UI run
+    /// view's fired/passed/failed timeline. Sorted by `at_s`.
+    pub timeline: Vec<TimelineEntry>,
+}
+
+/// One scheduled item on a scenario's timeline — a cue (timed action)
+/// or a check (timed assertion) — with its relative time and a label.
+/// Lets the UI render the timeline + correlate report checks back to
+/// their definitions without re-parsing the lisp forms.
+#[derive(Clone, Debug, Serialize)]
+pub struct TimelineEntry {
+    pub kind: TimelineKind,
+    pub at_s: f64,
+    pub label: String,
+    /// For checks: the asserted component + metric (used to match a
+    /// recorded `scenario-expect` result back to this entry).
+    pub component: Option<i64>,
+    pub metric: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TimelineKind {
+    Cue,
+    Check,
+}
+
+/// Read a value from a tulisp plist form by keyword name (e.g.
+/// `":at-s"`). Walks the cons list in key/value pairs; no `ctx`
+/// needed (cons traversal is pure).
+fn plist_get(form: &TulispObject, key: &str) -> Option<TulispObject> {
+    let mut it = form.base_iter();
+    while let Some(k) = it.next() {
+        let v = it.next();
+        if k.symbolp() && k.to_string() == key {
+            return v;
+        }
+    }
+    None
+}
+
+fn sym_or_str(o: &TulispObject) -> Option<String> {
+    if o.symbolp() {
+        Some(o.to_string())
+    } else {
+        String::try_from(o.clone()).ok()
+    }
+}
+
+/// Extract the timeline (cues + checks, each with its `at_s` time)
+/// from the raw section forms the wrappers produced.
+pub fn build_timeline(cues: &[TulispObject], expect: &[TulispObject]) -> Vec<TimelineEntry> {
+    let mut out = Vec::new();
+    for c in cues {
+        if let Some(at) = plist_get(c, ":at-s").and_then(|o| f64::try_from(o).ok()) {
+            out.push(TimelineEntry {
+                kind: TimelineKind::Cue,
+                at_s: at,
+                label: format!("cue @{at}s"),
+                component: None,
+                metric: None,
+            });
+        }
+    }
+    for e in expect {
+        let Some(at) = plist_get(e, ":at-s").and_then(|o| f64::try_from(o).ok()) else {
+            continue;
+        };
+        let spec = plist_get(e, ":expect");
+        let component = spec
+            .as_ref()
+            .and_then(|s| plist_get(s, ":component"))
+            .and_then(|o| i64::try_from(o).ok());
+        let metric = spec
+            .as_ref()
+            .and_then(|s| plist_get(s, ":metric"))
+            .and_then(|o| sym_or_str(&o));
+        let label = match (component, &metric) {
+            (Some(c), Some(m)) => format!("check {c} {m}"),
+            _ => "check".to_string(),
+        };
+        out.push(TimelineEntry {
+            kind: TimelineKind::Check,
+            at_s: at,
+            label,
+            component,
+            metric,
+        });
+    }
+    out.sort_by(|a, b| a.at_s.partial_cmp(&b.at_s).unwrap_or(std::cmp::Ordering::Equal));
+    out
 }
 
 pub type SharedScenarios = Arc<Mutex<HashMap<String, ScenarioDef>>>;
@@ -136,6 +227,8 @@ pub struct ScenarioView {
     pub n_cues: usize,
     pub n_expect: usize,
     pub records: bool,
+    /// Cue + check timeline (sorted by time) for the run view.
+    pub timeline: Vec<TimelineEntry>,
 }
 
 impl From<&ScenarioDef> for ScenarioView {
@@ -154,6 +247,7 @@ impl From<&ScenarioDef> for ScenarioView {
             n_cues: d.cues.len(),
             n_expect: d.expect.len(),
             records: d.record.is_some(),
+            timeline: d.timeline.clone(),
         }
     }
 }
@@ -270,6 +364,7 @@ mod tests {
             cues: Vec::new(),
             expect: Vec::new(),
             record: None,
+            timeline: Vec::new(),
         }
     }
 

@@ -149,6 +149,9 @@ pub(in crate::lisp) fn register_registry(
                 ),
             };
 
+            let cues = form_list(a.cues);
+            let expect = form_list(a.expect);
+            let timeline = crate::sim::scenarios::build_timeline(&cues, &expect);
             let def = ScenarioDef {
                 name: a.name.clone(),
                 description: a.description.unwrap_or_default(),
@@ -160,9 +163,10 @@ pub(in crate::lisp) fn register_registry(
                 setup: opt_form(a.setup),
                 drive: form_list(a.drive),
                 agents: form_list(a.agents),
-                cues: form_list(a.cues),
-                expect: form_list(a.expect),
+                cues,
+                expect,
                 record: opt_form(a.record),
+                timeline,
             };
             scenarios.lock().insert(a.name.clone(), def);
             Ok(a.name)
@@ -731,6 +735,43 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].kind, "clouds");
         assert!(events[0].payload.contains("rolling in"));
+    }
+
+    /// `define-scenario` extracts a sorted cue + check timeline from
+    /// the `at` / `check` wrappers, with each entry's relative time and
+    /// (for checks) the asserted component + metric — what the UI run
+    /// view renders and correlates report checks against.
+    #[test]
+    fn define_scenario_extracts_timeline() {
+        use crate::sim::scenarios::TimelineKind;
+        let (cfg, dir) = config_with("(set-microgrid-id 9)");
+        let src = std::path::Path::new("sim/scenarios.lisp");
+        let dst_dir = dir.join("sim");
+        std::fs::create_dir_all(&dst_dir).unwrap();
+        std::fs::copy(src, dst_dir.join("scenarios.lisp")).unwrap();
+        cfg.eval("(load \"sim/scenarios.lisp\")").unwrap();
+        cfg.eval(
+            r#"
+            (define-scenario :name "t" :schedule 'relative :length "3min"
+              :cues (list (at "60s" (lambda () nil))
+                          (at "10s" (lambda () nil)))
+              :expect (list (check "120s" :component 2 :metric 'active-power
+                                   :approx 5000.0 :tol 100.0)))
+            "#,
+        )
+        .unwrap();
+        let regs = cfg.scenarios();
+        let r = regs.lock();
+        let tl = &r.get("t").unwrap().timeline;
+        // Sorted by time: cue@10, cue@60, check@120.
+        assert_eq!(tl.len(), 3);
+        assert_eq!(tl[0].at_s, 10.0);
+        assert_eq!(tl[0].kind, TimelineKind::Cue);
+        assert_eq!(tl[1].at_s, 60.0);
+        assert_eq!(tl[2].at_s, 120.0);
+        assert_eq!(tl[2].kind, TimelineKind::Check);
+        assert_eq!(tl[2].component, Some(2));
+        assert_eq!(tl[2].metric.as_deref(), Some("active-power"));
     }
 
     /// The outage chain keeps exactly one live handle on
