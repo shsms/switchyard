@@ -309,6 +309,29 @@ impl Config {
         steps
     }
 
+    /// Run a registered scenario on the headless sim clock for its
+    /// declared `:length`, stepping by `dt`. Returns the number of
+    /// steps. The stepped runner (todo §J2): compiles the scenario via
+    /// the Lisp `scenario--run` (so its cue / check timers fire on the
+    /// sim clock) then drives `sim_run`, deterministically and faster
+    /// than real time. Pair with `scenario-expect` + `scenario report
+    /// --assert` for a CI gate. Errors on a live `Config`, an unknown
+    /// scenario, or one without a `:length`.
+    pub fn run_scenario_stepped(&self, name: &str, dt: Duration) -> Result<u64, String> {
+        if self.sim_clock.is_none() {
+            return Err("run_scenario_stepped requires a headless Config".to_string());
+        }
+        let length_s = self
+            .scenarios
+            .lock()
+            .get(name)
+            .ok_or_else(|| format!("no scenario named {name:?}"))?
+            .length_s
+            .ok_or_else(|| format!("scenario {name:?} has no :length for a stepped run"))?;
+        crate::sim::scenarios::start(&self.ctx, &self.scenarios, name)?;
+        Ok(self.sim_run(Duration::from_secs_f64(length_s), dt))
+    }
+
     /// Spawn the Lisp refresh + timer-drain loop. Runs at 100 ms
     /// cadence on its own tokio task; sole acquirer of the
     /// interpreter lock for refresh purposes (eval still contends
@@ -733,6 +756,68 @@ mod tests {
             "t",
             "battery SoC should integrate on sim-time to ~56%",
         );
+    }
+
+    /// The stepped runner drives a registered scenario end-to-end on
+    /// the sim clock: `define-scenario` sections (a `timeline` drive +
+    /// timed `check`s) compile through `scenario--run`, the checks fire
+    /// as sim-time timers, and `run_scenario_stepped` advances the
+    /// clock for the declared `:length`. Deterministic + faster than
+    /// real time — the J2 CI gate.
+    #[test]
+    fn stepped_runner_runs_a_registered_scenario() {
+        use std::time::Duration;
+        // Copy the scenario DSL the config (load …)s.
+        let mut dir = std::env::temp_dir();
+        dir.push(format!(
+            "switchyard-stepped-{}-{}",
+            std::process::id(),
+            next_unique(),
+        ));
+        let sim = dir.join("sim");
+        std::fs::create_dir_all(&sim).unwrap();
+        for f in ["common.lisp", "scenarios.lisp"] {
+            std::fs::copy(format!("sim/{f}"), sim.join(f)).unwrap();
+        }
+        let body = "(set-enterprise-id 1)
+(load \"sim/common.lisp\")
+(load \"sim/scenarios.lisp\")
+(make-microgrid :id 9 :grpc-port 18903 :topology
+  (lambda ()
+    (%make-grid-connection-point :id 1
+      :successors (list (%make-meter :id 2 :main t :power 0.0)))))
+(define-scenario :name \"ramp\"
+  :schedule 'relative :clock 'stepped :length \"60s\" :seed 7
+  :drive (list (drive-meter 2 (timeline (hold 1000.0 :for 30)
+                                        (ramp :to 5000.0 :over 30))))
+  :expect (list (check \"10s\" :component 2 :metric 'active-power
+                       :approx 1000.0 :tol 200.0)
+                (check \"59s\" :component 2 :metric 'active-power
+                       :approx 5000.0 :tol 800.0)))";
+        let path = dir.join("config.lisp");
+        std::fs::write(&path, body).unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let (cfg, _clock) = rt
+            .block_on(async { Config::new_headless(path.to_str().unwrap()) })
+            .expect("headless config builds");
+        std::mem::forget(rt);
+
+        let start = std::time::Instant::now();
+        let steps = cfg
+            .run_scenario_stepped("ramp", Duration::from_secs(1))
+            .expect("scenario runs");
+        let wall = start.elapsed();
+        assert_eq!(steps, 60);
+        assert!(wall < Duration::from_secs(5), "stepped wall time {wall:?}");
+
+        // Both timed checks fired and passed; none failed.
+        let report = cfg.site().scenario_report(chrono::Utc::now());
+        assert_eq!(report.checks_passed, 2, "report: {report:?}");
+        assert_eq!(report.checks_failed, 0, "report: {report:?}");
+
+        // A scenario without :length can't be stepped; an unknown one
+        // errors too.
+        assert!(cfg.run_scenario_stepped("nope", Duration::from_secs(1)).is_err());
     }
 
     /// `Config::refresh_once` drains tulisp-async's pending-timer

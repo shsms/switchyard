@@ -28,7 +28,7 @@ use std::sync::Arc;
 use chrono::NaiveDate;
 use parking_lot::Mutex;
 use serde::Serialize;
-use tulisp::TulispObject;
+use tulisp::{SharedMut, TulispContext, TulispObject};
 
 /// How a scenario's cue / check / stage times are written.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -164,6 +164,81 @@ pub fn snapshot(registry: &SharedScenarios) -> Vec<ScenarioView> {
     let mut out: Vec<_> = registry.lock().values().map(ScenarioView::from).collect();
     out.sort_by(|a, b| a.name.cmp(&b.name));
     out
+}
+
+/// Wrap `obj` in `(quote OBJ)` so a pre-built value (a lambda, a
+/// section plist, a list) rides through `eval` intact rather than
+/// being evaluated as code.
+fn quoted(ctx: &mut TulispContext, obj: TulispObject) -> TulispObject {
+    [ctx.intern("quote"), obj].into_iter().collect()
+}
+
+/// Resolve a scenario's `record` directive to a directory. The Lisp
+/// runner can't branch on symbol-vs-string (tulisp has no
+/// `stringp`/`symbolp` defun), so it's done here: a symbol (`'csv`)
+/// becomes a default per-scenario dir, a string is taken verbatim.
+fn record_dir(o: &TulispObject, name: &str) -> Result<String, String> {
+    if o.symbolp() {
+        Ok(format!("scenario-{name}"))
+    } else {
+        String::try_from(o.clone()).map_err(|e| format!("record: {e:?}"))
+    }
+}
+
+/// Start a registered scenario by compiling its sections to the
+/// existing primitives via the Lisp `scenario--run` runner (in
+/// `sim/scenarios.lisp`) and evaluating the call. The cue / check
+/// timers it installs fire on whatever clock the caller drives — the
+/// wall clock (live runner) or the sim clock (stepped runner). Errors
+/// if the scenario is unknown or `scenario--run` isn't loaded.
+pub fn start(
+    ctx: &SharedMut<TulispContext>,
+    registry: &SharedScenarios,
+    name: &str,
+) -> Result<(), String> {
+    // Snapshot the section forms under the registry lock; release it
+    // before grabbing the interpreter lock to keep the two orderings
+    // from ever crossing.
+    let (sname, seed, setup, drive, agents, cues, expect, rec) = {
+        let r = registry.lock();
+        let d = r
+            .get(name)
+            .ok_or_else(|| format!("no scenario named {name:?}"))?;
+        let rec = match &d.record {
+            Some(o) => Some(record_dir(o, &d.name)?),
+            None => None,
+        };
+        (
+            d.name.clone(),
+            d.seed,
+            d.setup.clone(),
+            d.drive.clone(),
+            d.agents.clone(),
+            d.cues.clone(),
+            d.expect.clone(),
+            rec,
+        )
+    };
+
+    let mut c = ctx.borrow_mut();
+    // (scenario--run NAME SEED SETUP DRIVE AGENTS CUES EXPECT RECORD-DIR),
+    // every arg quoted so the already-built section values pass through.
+    let args = [
+        TulispObject::from(sname),
+        seed.map_or_else(TulispObject::nil, TulispObject::from),
+        setup.unwrap_or_else(TulispObject::nil),
+        drive.into_iter().collect(),
+        agents.into_iter().collect(),
+        cues.into_iter().collect(),
+        expect.into_iter().collect(),
+        rec.map_or_else(TulispObject::nil, TulispObject::from),
+    ];
+    let mut call = vec![c.intern("scenario--run")];
+    for a in args {
+        call.push(quoted(&mut c, a));
+    }
+    let call: TulispObject = call.into_iter().collect();
+    c.eval(&call).map(|_| ()).map_err(|e| e.format(&c))
 }
 
 #[cfg(test)]

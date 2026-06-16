@@ -179,10 +179,11 @@ A ramp without :from continues from the previous segment's end value
 dynamic source like `timeline`). Compiles to `set-meter-power`."
   (list :kind 'drive-meter :target id :source source))
 
-(defun drive-solar (target source)
-  "Drive section: feed solar inverter(s) TARGET (an id or id list)
-sunlight % from SOURCE. Compiles to `set-solar-sunlight`."
-  (list :kind 'drive-solar :target target :source source))
+(defun drive-solar (id source)
+  "Drive section: feed solar inverter ID sunlight % from SOURCE (a
+constant, a symbol, or a dynamic source like `timeline`). Compiles to
+`set-solar-sunlight`; for several inverters use one drive-solar each."
+  (list :kind 'drive-solar :target id :source source))
 
 (defun controller (id &rest args)
   "Agents section: an in-sim controller named ID firing :every TIME
@@ -209,3 +210,59 @@ with EXPECT-ARGS (the same plist scenario-expect takes:
   "Cue action: a thunk that journals a `scenario-event` when run. Use
 inside `at`, e.g. (at \"60s\" (event 'clouds \"rolling in\"))."
   (lambda () (scenario-event kind payload)))
+
+;; -----------------------------------------------------------------------------
+;; Runner — compile a scenario's sections to the existing primitives
+;; -----------------------------------------------------------------------------
+;;
+;; `scenario--run` is what both runners (todo §J2) drive: the Rust
+;; entrypoint looks a scenario up in the registry and calls this with
+;; its section data. It compiles down to the primitives that already
+;; exist — `scenario-start`, `set-meter-power` / `set-solar-sunlight`,
+;; `define-controller`, `run-with-timer`, `scenario-expect`,
+;; `scenario-record-csv` — so there's no separate runner machinery:
+;;
+;;  - the live runner funcalls this on the wall clock; cue/check timers
+;;    fire on the refresh loop.
+;;  - the stepped runner funcalls this then advances the sim clock with
+;;    `sim_run`; the same timers fire deterministically on sim-time.
+;;
+;; RECORD-DIR is resolved Rust-side ('csv -> a default dir, a string ->
+;; itself, nil -> no recording) since tulisp has no stringp/symbolp to
+;; branch on here.
+
+(defun scenario--drive (d)
+  "Install one drive item D — a `drive-meter` / `drive-solar` plist."
+  (let ((target (plist-get d :target))
+        (source (plist-get d :source)))
+    (if (eq (plist-get d :kind) 'drive-solar)
+        (set-solar-sunlight target source)
+      (set-meter-power target source))))
+
+(defun scenario--agent (a)
+  "Install one agent A — a `controller` plist — as an in-sim controller."
+  (define-controller :id (plist-get a :id)
+                     :on-tick (plist-get a :on-tick)
+                     :every-ms (plist-get a :every-ms)))
+
+(defun scenario--at (secs thunk)
+  "Schedule THUNK to run once at scenario time SECS (seconds)."
+  (run-with-timer secs nil thunk))
+
+(defun scenario--run (name seed setup drive agents cues expect record-dir)
+  "Compile and start the scenario NAME: reset the journal, seed RNG,
+run SETUP, install DRIVE sources + AGENTS controllers, schedule CUES
+actions + EXPECT checks as timers, and open recording. Returns NAME."
+  (scenario-start name)
+  (when seed (set-random-seed seed))
+  (when setup (funcall setup))
+  (dolist (d drive) (scenario--drive d))
+  (dolist (a agents) (scenario--agent a))
+  (dolist (c cues)
+    (scenario--at (plist-get c :at-s) (plist-get c :action)))
+  (dolist (e expect)
+    (let ((args (plist-get e :expect)))
+      (scenario--at (plist-get e :at-s)
+                    (lambda () (apply 'scenario-expect args)))))
+  (when record-dir (scenario-record-csv record-dir))
+  name)
