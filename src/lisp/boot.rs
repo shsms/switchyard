@@ -768,6 +768,26 @@ mod tests {
         );
     }
 
+    /// The shipped `config.lisp` boots cleanly and its starter library
+    /// registers — a guard against a `define-scenario` schema change
+    /// (e.g. dropping the day-stage `:stages` key) silently breaking
+    /// default boot, since nothing else exercises the real config end
+    /// to end.
+    #[test]
+    fn default_config_boots_and_registers_library_scenarios() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let (cfg, _clock) = rt
+            .block_on(async { Config::new_headless("config.lisp") })
+            .expect("shipped config.lisp boots headless");
+        std::mem::forget(rt);
+        let names: Vec<String> = cfg.scenarios().lock().keys().cloned().collect();
+        assert!(
+            names.contains(&"peak-evening-load".to_string()),
+            "expected the starter library to register; got {names:?}"
+        );
+        assert!(names.len() >= 7, "expected >=7 starter scenarios, got {names:?}");
+    }
+
     /// The stepped runner drives a registered scenario end-to-end on
     /// the sim clock: `define-scenario` sections (a `timeline` drive +
     /// timed `check`s) compile through `scenario--run`, the checks fire

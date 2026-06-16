@@ -3,6 +3,10 @@
 ;; scenarios appear in the Scenarios mode dropdown on a fresh
 ;; checkout. Comment out individual loads if a sample microgrid
 ;; doesn't carry the component ids the scenario expects.
+;;
+;; The scenarios use the section wrappers (at / drive-*), so pull in
+;; the scenario DSL first.
+(load "sim/scenarios.lisp")
 
 (load "scenarios/library/peak-evening.lisp")
 (load "scenarios/library/pv-dropout.lisp")
