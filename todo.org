@@ -389,6 +389,86 @@ seeded RNG, fully reproducible) and scenario-expect (I2) makes it a CI gate. Liv
 mode is unchanged (wall-clock). tulisp-async change is on a local checkout pending
 upstream; switchyard pins it via a Cargo [patch].
 
+** J. Scenarios revamp — one unified model                          :scenarios:
+Full design write-up in =scenarios/DESIGN.md=. No back-compat: rewrite,
+delete the old day-stage model.
+
+Problem: two unrelated scenario systems that don't compose —
+=define-scenario= (registered 24-h day-stages, the only thing the UI /
+Start button drives) and ad-hoc =(load …)= driver scripts (the
+expressive ones: timeline / define-controller / scenario-expect, but
+invisible to the UI). Plus three implicit clocks. "Wall vs relative vs
+instant" is a fork in *which system* you use, not a knob.
+
+Target: one scenario abstraction on two orthogonal axes —
+- *schedule reference*: =relative= (offsets, the general case) or
+  =absolute= (calendar / =HH:MM=; today's day-stages become sugar).
+- *clock driver*: =real= (wall clock; needs real timing / live demos) or
+  =stepped= (the headless ManualClock; deterministic + fast; the home of
+  the "instant" clock — keep it for replaying a day into the reporting
+  API once that lands).
+Authoring is identical across the matrix; the runner picks the clock,
+the schedule ref only changes how cue times resolve.
+
+A scenario = name + schedule + clock + length + seed + sections, every
+section optional, any value may be a lambda (escape hatch):
+=setup= (once at start) · =drive= (continuous sources: timeline on a
+meter/sunlight) · =agents= (in-sim controllers) · =cues= (timed actions)
+· =expect= (assertions) · =record= (CSV). Day-stages are sugar over
+=drive=/=cues=; old driver scripts are =setup=+=drive=+=agents=+=cues=+
+=expect=.
+
+Key implementation insight: a scenario *compiles to* =scenario-start= +
+funcalled setup/drive/agents + =run-with-timer= cues/checks. So the two
+runners are just the existing live refresh loop (real clock) and
+headless =sim_run= (stepped clock) — almost no new runner code.
+
+Already built (on the =scenario-support= work this stacks on): =timeline=
+/ =hold= / =ramp= (I6), =define-controller= + read primitives + clamping
+=set-active-power= (I5), =scenario-expect= + =swctl scenario report
+--assert= (I2), =NowSource= / =ManualClock= / =Config::new_headless= /
+=sim_run= (I8), seeded RNG (I7), and the =parse-offset= / =parse-time-of-
+day= helpers. The revamp is the authoring + registry + runner + UI layer
+over this.
+
+*** TODO J1. Unified scenario model + DSL                    :scenarios:rust:
+New =define-scenario= data model (schedule / clock / length / seed +
+setup / drive / agents / cues / expect / record) parsed into a registry
+entry; the section wrappers (=drive-solar= / =drive-meter= / =controller=
+/ =at= / =check= / =event=, resolving human times via =parse-offset= /
+=parse-time-of-day=). Compiles to the existing primitives. Delete the
+=Stage= / =ScenarioDef= day model. Tests.
+
+*** TODO J2. Runners off the registry                        :scenarios:rust:
+=scenarios::start NAME= compiles a scenario to scenario-start + funcalled
+setup/drive/agents + scheduled run-with-timer cues/checks. Live runner =
+the existing refresh loop fires them in real time; stepped runner =
+headless =sim_run= over the registry (deterministic). Replace the
+stage-advance / jump / prev / next / auto-advance machinery (and drop
+=spawn_auto_advance= from =Config::new=). Tests.
+
+*** TODO J3. swctl + report integration                           :scenarios:
+=swctl scenario run NAME [--stepped] [--until] [--step] [--assert]= and
+=scenario list= over the new registry; keep =scenario report --assert=
+as the CI gate.
+
+*** TODO J4. Migrate scenarios + delete old                  :scenarios:rust:
+Rewrite =-consumption-*= (and any day-stage scenarios) to one
+=define-scenario= each; remove the old stage code, defuns, and the
+load-to-run path.
+
+*** TODO J5. UI revamp                                          :scenarios:ui:
+Scenarios mode lists every registered scenario (name / schedule / clock /
+length / last-run pass-fail); per scenario Run-live / Run-headless / Stop;
+a run view with a cue + expectation timeline (fired / passed / failed),
+live metrics, and CSV links. Retire the separate "load a driver file"
+concept.
+
+*** TODO J6. Decisions deferred                              :scenarios:
+- Absolute+stepped ("replay a day instantly") precise contract — settle
+  once the reporting API (S1) lands.
+- Human-time parser scope — start =ms/s/min/h= + =HH:MM=, grow as needed.
+
 * Review backlog — 2026-06-01
 
 Whole-codebase review (8-agent subsystem fan-out + clippy/fmt; clippy
