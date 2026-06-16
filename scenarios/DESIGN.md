@@ -78,7 +78,7 @@ This single model subsumes both of today's systems: day-stages are sugar over
 
 ```lisp
 (define-scenario
-  :name        "-cloud-fade"
+  :name        "cloud-fade"
   :description "PV fades under cloud; the limiter must hold the import cap."
   :schedule    'relative          ; 'relative | 'absolute
   :clock       'real              ; default driver; a runner may override
@@ -193,8 +193,7 @@ Bold revamp, but nothing stranded:
   `define-scenario` forms keep working through a shim, or are mechanically
   rewritten.
 - **Driver scripts** → wrap the body in `:setup`/`:drive`/`:agents`/`:cues`/
-  `:expect`; a `:setup`-only form covers the fully-imperative ones. The two
-  `-consumption-*` files become one `define-scenario`.
+  `:expect`; a `:setup`-only form covers the fully-imperative ones.
 - The primitives (`scenario-start/-stop/-event/-expect/-record-csv`,
   `timeline`, `define-controller`, the read primitives) stay — the new model
   compiles down to them. So this is mostly an authoring + registry + runner +

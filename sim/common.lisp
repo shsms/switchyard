@@ -75,10 +75,10 @@ state and *actuates* in response, modelling an EMS / dispatcher.
 Inside :on-tick, read live state with `component-active-power`,
 `component-bound-lower`, and `component-bound-upper` (the latter two
 report the effective bounds, so they follow any cap a bounds-driving app
-like the  has applied), and actuate with `set-active-power` —
+has applied), and actuate with `set-active-power` —
 pass its CLAMP arg `t` to command \"as much as the live cap allows\"
 without tracking the augmentations yourself. eg. a dispatcher that keeps
-a battery inverter charging at the highest power the  permits:
+a battery inverter charging at the highest power the live cap allows:
 
   (define-controller :id 'ems
     :on-tick (lambda () (set-active-power 300 (component-bound-upper 300) 2000 t)))

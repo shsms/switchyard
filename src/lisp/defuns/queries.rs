@@ -7,7 +7,7 @@
 //! that gap: a controller reads a component's current active power and
 //! its effective active-power bounds — rated ∩ live augmentations, i.e.
 //! exactly what a real EMS reads off the telemetry stream, including any
-//! cap a bounds-driving app (e.g. the ) has applied.
+//! cap a bounds-driving app has applied.
 //!
 //! Paired with `(set-active-power … CLAMP)` and scheduled by `(every …)`
 //! / `(define-controller …)`, these turn the sim genuinely closed-loop.
@@ -97,7 +97,7 @@ mod tests {
         // Rated ±4 kW before any cap.
         assert!((edge(&cfg, "(component-bound-upper 2)") - 4000.0).abs() < 1.0);
         assert!((edge(&cfg, "(component-bound-lower 2)") + 4000.0).abs() < 1.0);
-        // The  narrows the inverter to [-4 kW, +1 kW].
+        // A bounds-driving app narrows the inverter to [-4 kW, +1 kW].
         cfg.site().get(2).unwrap().augment_active_bounds(
             Utc::now(),
             VecBounds::single(-4000.0, 1000.0),

@@ -236,11 +236,10 @@ no setpoint / bounds behaviour shifts.
 
 ** I. Testing apps that drive bounds (closed-loop)
 
-Surfaced while using switchyard to test the =fz-microgrid-=
-GCP active-power limiter — an external app whose whole job is to push
+Surfaced while using switchyard to test an external GCP active-power
+limiter — an app whose whole job is to push
 =AugmentElectricalComponentBounds= and watch =power_bounds= react. It
-ran against a 2-PV microgrid (=-test.lisp=,
-=scenarios/-cases.lisp=); the gaps below are what made that
+ran against a 2-PV microgrid; the gaps below are what made that
 harder than it should be.
 
 *** DONE I2. Scenario-level assertions (expect / assert)            :testing:
@@ -310,7 +309,7 @@ replay-assertable without scraping the app's logs.
 Scenarios are open-loop: they perturb the environment but can't model
 an agent that *reacts* to live state. Testing a bound-setting app
 against a realistic dispatcher (e.g. "charge the battery at the max the
- currently allows") is impossible — the DSL can fire
+limiter currently allows") is impossible — the DSL can fire
 =set-active-power= but it errors once the cap drops below the request,
 there's no =ignore-errors= in this tulisp, and a script can't read back
 effective bounds to clamp its own command.
@@ -508,9 +507,8 @@ checks read live telemetry so the gate is unaffected.
 - State "DONE"       from "TODO"       [2026-06-16 Di 15:55]
 :END:
 
-Rewrite =-consumption-*= (and any day-stage scenarios) to one
-=define-scenario= each; remove the old stage code, defuns, and the
-load-to-run path.
+Rewrite the day-stage scenarios to one =define-scenario= each; remove
+the old stage code, defuns, and the load-to-run path.
 
 Done: the seven day-stage =:stages= library scenarios (which the new
 =define-scenario= rejects — default =config.lisp= boot was broken) are rewritten
@@ -518,7 +516,7 @@ as relative scenarios — opening state in =:setup=, stage transitions as =:cues
 one a minute via the =at= wrapper (=index.lisp= loads =sim/scenarios.lisp= for
 it). They run as UI-dropdown demos; true time-of-day (absolute-clock) scheduling
 is deferred (J6). A boot test asserts the shipped config registers the library.
-=-cases.lisp= moved from the load-to-run driver pattern to a registered
+A load-to-run driver script moved from the imperative pattern to a registered
 =define-scenario= (run via =swctl scenario run=). Absolute-schedule live cue
 firing is the remaining runner gap.
 

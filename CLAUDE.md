@@ -201,12 +201,11 @@ config.lisp does.
    `(run-with-timer …)` from the config to script behaviour over time.
 3. Demonstrate via a new line in `config.lisp` and verify via swctl.
 
-## Testing an external bounds-driving app (e.g. the )
+## Testing an external bounds-driving app
 
 Switchyard is used to test apps whose job is to push
-`AugmentElectricalComponentBounds` and watch `power_bounds` react (the
-`fz-microgrid-` GCP active-power limiter is the motivating
-case; `-test.lisp` + `scenarios/-cases.lisp`).
+`AugmentElectricalComponentBounds` and watch `power_bounds` react (a
+GCP active-power limiter is the motivating case).
 
 - **Both battery and solar inverters curtail to their effective
   (rated ∩ augmentation) bounds every tick.** `CommandDelay::poll`
@@ -228,9 +227,6 @@ case; `-test.lisp` + `scenarios/-cases.lisp`).
 - Drive sim state ad-hoc by POSTing lisp to
   `http://127.0.0.1:8801/api/eval`, e.g.
   `--data "(set-component-health 201 'error)"` → `{"ok":true,…}`.
-- The limiter app itself reads **`NITROGEN_LOG_LEVEL`** (not
-  `RUST_LOG`) for tracing: `info` shows the per-breach plan,
-  `fz_microgrid_=trace` the per-inverter caps it pushes.
 - Switchyard's physics supports closed-loop bound tests today; the
   remaining gaps are ergonomic, not physical — scenario assertions,
   an in-sim controller/actor that reacts to live bounds, declarative
