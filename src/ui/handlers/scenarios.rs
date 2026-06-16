@@ -5,8 +5,10 @@
 
 use axum::{
     Json,
+    body::Body,
     extract::{Path, Query, State},
     http::StatusCode,
+    response::Response,
 };
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -93,6 +95,71 @@ pub(in crate::ui) async fn scenario_events(
         next_event_id: summary.next_event_id,
         earliest_event_id: summary.earliest_event_id,
     })
+}
+
+#[derive(Serialize)]
+pub(in crate::ui) struct ScenarioCsvList {
+    /// Recording directory (absolute or config-relative), or null.
+    dir: Option<String>,
+    files: Vec<String>,
+}
+
+/// The CSV files the active/most-recent recording wrote, for the run
+/// view's download links. Empty when nothing has been recorded.
+pub(in crate::ui) async fn scenario_csv_list(
+    State(config): State<Config>,
+) -> Json<ScenarioCsvList> {
+    match config.site().scenario_csv_listing() {
+        Some((dir, files)) => Json(ScenarioCsvList {
+            dir: Some(dir.to_string_lossy().into_owned()),
+            files,
+        }),
+        None => Json(ScenarioCsvList {
+            dir: None,
+            files: Vec::new(),
+        }),
+    }
+}
+
+/// Download one recorded CSV by file name. The name must be a bare
+/// `*.csv` file with no path separators (rejecting traversal) and must
+/// be one the listing actually reports — so this only ever serves
+/// files inside the recording directory.
+pub(in crate::ui) async fn scenario_csv_file(
+    State(config): State<Config>,
+    Path(file): Path<String>,
+) -> Result<Response, (StatusCode, String)> {
+    if file.contains('/') || file.contains('\\') || file.contains("..") || !file.ends_with(".csv") {
+        return Err((StatusCode::BAD_REQUEST, "invalid filename".into()));
+    }
+    let (dir, files) = config
+        .site()
+        .scenario_csv_listing()
+        .ok_or((StatusCode::NOT_FOUND, "no recording".into()))?;
+    if !files.contains(&file) {
+        return Err((StatusCode::NOT_FOUND, "no such file".into()));
+    }
+    // Defense in depth: resolve symlinks and confirm the entry is a
+    // regular file that stays inside the recording directory, so a
+    // symlink planted in that dir can't turn this into an arbitrary
+    // file read. The name checks above guard the request string; this
+    // guards the entry it resolves to.
+    let canon_dir = dir
+        .canonicalize()
+        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+    let canon = dir
+        .join(&file)
+        .canonicalize()
+        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+    if !canon.starts_with(&canon_dir) || !canon.is_file() {
+        return Err((StatusCode::BAD_REQUEST, "invalid file".into()));
+    }
+    let body = std::fs::read(&canon).map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+    Response::builder()
+        .header("content-type", "text/csv")
+        .header("content-disposition", format!("attachment; filename=\"{file}\""))
+        .body(Body::from(body))
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 
 /// Aggregate metrics for the running scenario (peak main-meter

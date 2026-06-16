@@ -128,6 +128,7 @@ export const scenariosPanel = (() => {
   let summary = null; // /api/scenario (running/last journal)
   let report = null; // /api/scenario/report
   let events = []; // /api/scenario/events
+  let csv = { dir: null, files: [] }; // /api/scenario/csv
   let pollTimer = null;
 
   function listEl() { return document.getElementById("scenarios-list"); }
@@ -242,6 +243,7 @@ export const scenariosPanel = (() => {
     renderMetrics();
     renderChecks();
     renderEvents();
+    renderCsv();
   }
 
   // Cues + checks positioned over the run length; fired once elapsed
@@ -322,6 +324,16 @@ export const scenariosPanel = (() => {
       ).join("");
   }
 
+  function renderCsv() {
+    const el = document.getElementById("sc-run-csv");
+    if (!el) return;
+    if (!csv.files || csv.files.length === 0) { el.innerHTML = ""; return; }
+    const links = csv.files.map((f) =>
+      `<a class="sc-csv-link" href="/api/scenario/csv/${encodeURIComponent(f)}" download>${escapeHtml(f)}</a>`,
+    ).join("");
+    el.innerHTML = `<h3>recorded csv${csv.dir ? ` <span class="muted">${escapeHtml(csv.dir)}</span>` : ""}</h3>${links}`;
+  }
+
   function updateActiveChip() {
     const chip = document.getElementById("active-scenarios");
     if (!chip) return;
@@ -359,9 +371,11 @@ export const scenariosPanel = (() => {
         const e = await (await fetch("/api/scenario/events?limit=50")).json();
         events = e.events || [];
       } catch (_) { events = []; }
+      try { csv = await (await fetch("/api/scenario/csv")).json(); } catch (_) { csv = { dir: null, files: [] }; }
     } else {
       report = null;
       events = [];
+      csv = { dir: null, files: [] };
     }
     render();
     schedulePoll();

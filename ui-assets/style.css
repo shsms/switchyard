@@ -1091,6 +1091,13 @@ body.compact .envelope-marker { width: 10px; height: 10px; margin-left: -5px; ma
 .sc-check.fail > span:first-child { color: #d9756b; }
 .sc-event { font-size: 12px; padding: 2px 0; }
 .sc-event code { color: var(--accent, #79b8ff); }
+.sc-csv-link {
+  display: inline-block;
+  font-size: 12px;
+  margin: 2px 8px 2px 0;
+  color: var(--accent, #79b8ff);
+  font-family: var(--mono, ui-monospace, "Cascadia Mono", monospace);
+}
 
 .tier5-row {
   display: grid;

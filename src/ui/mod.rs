@@ -85,8 +85,8 @@ fn router(config: Config, microgrid: SharedMicrogrid, loopbacks: MicrogridLoopba
             persisted_bulk_remove, persisted_remove,
         },
         scenarios::{
-            scenario_events, scenario_report, scenario_summary, scenarios_list, scenarios_start,
-            scenarios_stop,
+            scenario_csv_file, scenario_csv_list, scenario_events, scenario_report,
+            scenario_summary, scenarios_list, scenarios_start, scenarios_stop,
         },
         snapshots::{snapshots_list, snapshots_load, snapshots_save},
         topology::{topology, topology_for_mg},
@@ -110,6 +110,8 @@ fn router(config: Config, microgrid: SharedMicrogrid, loopbacks: MicrogridLoopba
         .route("/api/scenario", get(scenario_summary))
         .route("/api/scenario/events", get(scenario_events))
         .route("/api/scenario/report", get(scenario_report))
+        .route("/api/scenario/csv", get(scenario_csv_list))
+        .route("/api/scenario/csv/{file}", get(scenario_csv_file))
         .route("/api/clock", get(clock_info))
         .route("/api/microgrid/status", get(microgrid_status))
         .route("/api/microgrid/latest", get(microgrid_latest))

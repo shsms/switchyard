@@ -157,7 +157,26 @@ impl MicrogridSite {
         *self.inner.scenario_csv.write() = telemetry;
         *self.inner.scenario_setpoints_csv.write() = setpoints;
         *self.inner.scenario_bounds_csv.write() = bounds;
+        *self.inner.scenario_csv_dir.write() = Some(dir.to_path_buf());
         Ok(count)
+    }
+
+    /// The directory the active/most-recent recording wrote to, plus
+    /// the `.csv` file names in it (sorted). `None` if nothing has been
+    /// recorded. Used by the UI to offer the CSVs for download.
+    pub(crate) fn scenario_csv_listing(&self) -> Option<(std::path::PathBuf, Vec<String>)> {
+        let dir = self.inner.scenario_csv_dir.read().clone()?;
+        let mut files: Vec<String> = std::fs::read_dir(&dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().into_owned();
+                name.ends_with(".csv").then_some(name)
+            })
+            .collect();
+        files.sort();
+        Some((dir, files))
     }
 
     /// Drop every active CSV sink (telemetry, setpoints, bounds).

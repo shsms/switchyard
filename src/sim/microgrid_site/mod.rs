@@ -165,6 +165,11 @@ struct MicrogridSiteInner {
     /// component, sampled by `record_history_snapshot` at the same
     /// 1 Hz pass as telemetry. Same lifecycle as `scenario_csv`.
     scenario_bounds_csv: RwLock<CsvSinks>,
+    /// Directory the active (or most recent) CSV recording wrote to,
+    /// so the UI can list + offer the files for download. Set by
+    /// `scenario_open_csv`; survives `scenario-stop-csv` so links work
+    /// after a run ends.
+    scenario_csv_dir: RwLock<Option<std::path::PathBuf>>,
     /// Optional handle on the grid frequency state. Wired
     /// in by `Config::new` so every MicrogridSite in the registry
     /// reads the same OU-driven frequency value (one AC grid →
@@ -207,6 +212,7 @@ impl MicrogridSite {
                 scenario_csv: RwLock::new(CsvSinks::new()),
                 scenario_setpoints_csv: RwLock::new(CsvSinks::new()),
                 scenario_bounds_csv: RwLock::new(CsvSinks::new()),
+                scenario_csv_dir: RwLock::new(None),
                 grid_frequency: RwLock::new(None),
                 stream_cancel_epoch: AtomicU64::new(0),
                 sample_lag_ms: AtomicU64::new(0),
