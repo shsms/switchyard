@@ -520,17 +520,51 @@ A load-to-run driver script moved from the imperative pattern to a registered
 =define-scenario= (run via =swctl scenario run=). Absolute-schedule live cue
 firing is the remaining runner gap.
 
-*** TODO J5. UI revamp                                          :scenarios:ui:
+*** DONE J5. UI revamp                                         :scenarios:ui:
+:LOGBOOK:
+- State "DONE"       from "TODO"       [2026-06-17 Mi 08:24]
+:END:
+
 Scenarios mode lists every registered scenario (name / schedule / clock /
 length / last-run pass-fail); per scenario Run-live / Run-headless / Stop;
 a run view with a cue + expectation timeline (fired / passed / failed),
 live metrics, and CSV links. Retire the separate "load a driver file"
 concept.
 
-*** TODO J6. Decisions deferred                              :scenarios:
+Done: Scenarios mode rewritten for the unified registry. A list of every
+registered scenario (schedule/clock/length + section counts + a derived last-run
+pass/fail badge) with per-row Run (live) / Stop, and a run view — a
+cue+check timeline coloured fired/passed/failed off the exposed timeline + the
+report ledger, live metrics, the scenario-expect check ledger, an events feed,
+and download links for any recorded CSVs (=GET /api/scenario/csv[/{file}]=,
+traversal-safe). =ScenarioView= gained the cue/check timeline; a name-less
+=POST /api/scenarios/stop= was added. Run-headless stays a swctl/CI concern
+(a live wall-clock server can't be deterministic); the load-a-driver concept is
+retired. biome-clean.
+
+*** DONE J6. Decisions deferred                                   :scenarios:
+:LOGBOOK:
+- State "DONE"       from "TODO"       [2026-06-17 Mi 08:24]
+:END:
+
 - Absolute+stepped ("replay a day instantly") precise contract — settle
   once the reporting API (S1) lands.
 - Human-time parser scope — start =ms/s/min/h= + =HH:MM=, grow as needed.
+
+Resolved:
+- Human-time parser scope — *settled and shipped*: =parse-offset= (=ms/s/min/h=,
+  bare number = seconds), =parse-time-of-day= (=HH:MM=), and =resolve-time=
+  (auto-detects offset vs clock time). Grow the grammar only if a scenario needs
+  it.
+- Absolute+stepped ("replay a day instantly") contract — *remains deferred* until
+  the reporting API (S1) lands; the model accommodates it but the precise
+  semantics wait for a real consumer.
+
+Remaining runner gap (not a decision — an implementation follow-up): the runner
+schedules cues/checks as *relative* offsets only, so =:schedule 'absolute= live
+scenarios don't yet fire cues at wall-clock times. The starter library was
+migrated to relative demos, so nothing depends on it today; build absolute-live
+cue resolution when a real time-of-day scenario needs it.
 
 * Review backlog — 2026-06-01
 
