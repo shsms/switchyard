@@ -47,9 +47,12 @@ pub(super) fn register(ctx: &mut TulispContext) {
     // Resolve an absolute wall time "HH:MM" (24-hour) to seconds since
     // midnight. Used by absolute-schedule cue/check times; a number
     // (seconds since midnight) rides straight through.
-    ctx.defun("parse-time-of-day", |t: TulispObject| -> Result<f64, Error> {
-        time_to_secs(&t, parse_time_of_day, "parse-time-of-day")
-    });
+    ctx.defun(
+        "parse-time-of-day",
+        |t: TulispObject| -> Result<f64, Error> {
+            time_to_secs(&t, parse_time_of_day, "parse-time-of-day")
+        },
+    );
 
     // Resolve a scenario cue/check time to seconds, auto-detecting the
     // form so the section wrappers (`at` / `check`) don't need the

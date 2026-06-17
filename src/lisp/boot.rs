@@ -785,7 +785,10 @@ mod tests {
             names.contains(&"peak-evening-load".to_string()),
             "expected the starter library to register; got {names:?}"
         );
-        assert!(names.len() >= 7, "expected >=7 starter scenarios, got {names:?}");
+        assert!(
+            names.len() >= 7,
+            "expected >=7 starter scenarios, got {names:?}"
+        );
     }
 
     /// The stepped runner drives a registered scenario end-to-end on
@@ -847,7 +850,10 @@ mod tests {
 
         // A scenario without :length can't be stepped; an unknown one
         // errors too.
-        assert!(cfg.run_scenario_stepped("nope", Duration::from_secs(1)).is_err());
+        assert!(
+            cfg.run_scenario_stepped("nope", Duration::from_secs(1))
+                .is_err()
+        );
     }
 
     /// `Config::refresh_once` drains tulisp-async's pending-timer

@@ -198,7 +198,11 @@ pub fn build_timeline(cues: &[TulispObject], expect: &[TulispObject]) -> Vec<Tim
             metric,
         });
     }
-    out.sort_by(|a, b| a.at_s.partial_cmp(&b.at_s).unwrap_or(std::cmp::Ordering::Equal));
+    out.sort_by(|a, b| {
+        a.at_s
+            .partial_cmp(&b.at_s)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     out
 }
 

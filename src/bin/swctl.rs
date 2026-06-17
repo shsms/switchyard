@@ -701,12 +701,18 @@ fn print_scenarios(resp: &serde_json::Value) {
         };
         // schedule/clock + run length, then the populated sections.
         let sections = [
-            ("setup", u64::from(s.get("has_setup").and_then(|v| v.as_bool()) == Some(true))),
+            (
+                "setup",
+                u64::from(s.get("has_setup").and_then(|v| v.as_bool()) == Some(true)),
+            ),
             ("drive", count("n_drive")),
             ("agents", count("n_agents")),
             ("cues", count("n_cues")),
             ("expect", count("n_expect")),
-            ("record", u64::from(s.get("records").and_then(|v| v.as_bool()) == Some(true))),
+            (
+                "record",
+                u64::from(s.get("records").and_then(|v| v.as_bool()) == Some(true)),
+            ),
         ]
         .iter()
         .filter(|(_, n)| *n > 0)
@@ -970,8 +976,7 @@ async fn run_scenario(
                 // the config that registered the scenario, runs on a sim
                 // clock, prints the report, and (with --assert) exits
                 // non-zero on any failed check: the CI gate.
-                let config = config
-                    .ok_or("`scenario run --stepped` needs --config <file>")?;
+                let config = config.ok_or("`scenario run --stepped` needs --config <file>")?;
                 let dt = std::time::Duration::from_millis(step.unwrap_or(100));
                 let (cfg, _clock) = switchyard::lisp::Config::new_headless(&config)
                     .map_err(|e| format!("headless boot failed: {e}"))?;

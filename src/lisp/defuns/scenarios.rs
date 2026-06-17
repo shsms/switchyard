@@ -692,15 +692,18 @@ mod tests {
 
         // drive-meter / drive-solar shape.
         assert_eq!(
-            cfg.eval("(plist-get (drive-meter 100 2000.0) :kind)").unwrap(),
+            cfg.eval("(plist-get (drive-meter 100 2000.0) :kind)")
+                .unwrap(),
             "drive-meter"
         );
         assert_eq!(
-            cfg.eval("(plist-get (drive-meter 100 2000.0) :target)").unwrap(),
+            cfg.eval("(plist-get (drive-meter 100 2000.0) :target)")
+                .unwrap(),
             "100"
         );
         assert_eq!(
-            cfg.eval("(plist-get (drive-solar 200 50.0) :kind)").unwrap(),
+            cfg.eval("(plist-get (drive-solar 200 50.0) :kind)")
+                .unwrap(),
             "drive-solar"
         );
 
@@ -730,7 +733,8 @@ mod tests {
 
         // event yields a thunk that journals a scenario-event when run.
         cfg.eval("(scenario-start \"wrap\")").unwrap();
-        cfg.eval("(funcall (event 'clouds \"rolling in\"))").unwrap();
+        cfg.eval("(funcall (event 'clouds \"rolling in\"))")
+            .unwrap();
         let events = cfg.site().scenario_events_since(0, 10);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].kind, "clouds");
@@ -887,10 +891,8 @@ mod tests {
         use crate::sim::scenarios::{ClockDriver, Schedule};
         let (cfg, _dir) = config_with("(set-microgrid-id 9)");
         cfg.eval(r#"(define-scenario :name "bare")"#).unwrap();
-        cfg.eval(
-            r#"(define-scenario :name "day" :schedule 'absolute :date "2026-06-15")"#,
-        )
-        .unwrap();
+        cfg.eval(r#"(define-scenario :name "day" :schedule 'absolute :date "2026-06-15")"#)
+            .unwrap();
         {
             let regs = cfg.scenarios();
             let r = regs.lock();

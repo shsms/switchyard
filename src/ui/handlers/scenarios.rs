@@ -157,7 +157,10 @@ pub(in crate::ui) async fn scenario_csv_file(
     let body = std::fs::read(&canon).map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
     Response::builder()
         .header("content-type", "text/csv")
-        .header("content-disposition", format!("attachment; filename=\"{file}\""))
+        .header(
+            "content-disposition",
+            format!("attachment; filename=\"{file}\""),
+        )
         .body(Body::from(body))
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
